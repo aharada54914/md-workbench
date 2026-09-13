@@ -25,6 +25,7 @@ class DistributionBoundary(unittest.TestCase):
         config = json.loads((ROOT / 'src-tauri/tauri.conf.json').read_text())
         self.assertNotIn('updater', config['plugins'])
         self.assertFalse(config['bundle']['createUpdaterArtifacts'])
+        self.assertNotIn('tauri-plugin-updater', (ROOT / 'src-tauri/Cargo.toml').read_text())
         self.assertNotIn('tauri_plugin_updater::', (ROOT / 'src-tauri/src/lib.rs').read_text())
         for path in (ROOT / 'src-tauri/capabilities').glob('*.json'):
             for permission in json.loads(path.read_text())['permissions']:
