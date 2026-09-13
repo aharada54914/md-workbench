@@ -1,6 +1,7 @@
 name: MDW T01 upstream baseline
 on:
   pull_request:
+    types: [opened, reopened]
     branches: [master]
     paths:
       - '.github/workflows/mdw-t01-baseline.yml'

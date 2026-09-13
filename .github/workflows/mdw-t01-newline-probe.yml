@@ -1,0 +1,78 @@
+name: MDW T01 Windows newline diagnosis
+on:
+  pull_request:
+    branches: [master]
+    paths: ['.github/workflows/mdw-t01-newline-probe.yml']
+permissions:
+  contents: read
+jobs:
+  newline-probe:
+    if: github.repository == 'aharada54914/md-workbench' && github.event.pull_request.number == 35
+    runs-on: windows-2022
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: 'true'
+      PYTHONUTF8: '1'
+      NO_COLOR: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: c5aecc311f5295e872002309dcf72cfd96a8ad84
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - name: Install unchanged upstream dependencies
+        run: |
+          mkdir -p evidence
+          npm install --global pnpm@11.3.0 --ignore-scripts
+          pnpm install --frozen-lockfile
+      - name: Reproduce default-checkout math test
+        run: |
+          set +e
+          pnpm exec vitest run src/__tests__/utils/math.test.ts 2>&1 | tee evidence/default-math.log
+          echo "${PIPESTATUS[0]}" > evidence/default-exit.txt
+          exit 0
+      - name: Restore only demo fixture to Git object bytes and record differences
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          p = pathlib.Path('docs/math-showcase.md')
+          before = p.read_bytes()
+          after = subprocess.check_output(['git', 'show', 'HEAD:docs/math-showcase.md'])
+          p.write_bytes(after)
+          def info(b):
+              return {'bytes': len(b), 'crlf': b.count(b'\r\n'), 'lf': b.count(b'\n'), 'sha256': hashlib.sha256(b).hexdigest()}
+          config = subprocess.run(['git', 'config', '--show-origin', '--get', 'core.autocrlf'], capture_output=True, text=True)
+          report = {'default_checkout': info(before), 'git_object_fixture': info(after), 'core_autocrlf': config.stdout.strip(), 'changed_only': 'docs/math-showcase.md', 'production_code_modified': False}
+          pathlib.Path('evidence/newlines.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(report, indent=2))
+          PY
+      - name: Diagnostic full unit run with LF demo fixture (not a product fix)
+        run: |
+          set +e
+          pnpm test:run 2>&1 | tee evidence/lf-unit.log
+          echo "${PIPESTATUS[0]}" > evidence/lf-exit.txt
+          exit 0
+      - name: Validate diagnosis without hiding the original failure
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('evidence')
+          a = int((p / 'default-exit.txt').read_text().strip())
+          b = int((p / 'lf-exit.txt').read_text().strip())
+          d = json.loads((p / 'newlines.json').read_text())
+          print('Default math exit:', a, 'LF fixture full-suite exit:', b)
+          assert d['default_checkout']['crlf'] > 0
+          assert d['git_object_fixture']['crlf'] == 0
+          assert a != 0 and b == 0, 'Diagnosis not confirmed; inspect both logs'
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mdw-t01-newline-diagnosis
+          path: evidence/
+          retention-days: 90
