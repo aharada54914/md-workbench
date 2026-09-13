@@ -162,13 +162,14 @@ def record(args):
                              'macOS RSS is not physical footprint.']}
     write_json(args.out / 'result.json', result, exclusive=True)
     tracked, samples = {}, []
-    t0 = time.monotonic_ns()
-    result['t0_ns'] = t0  # immediately before invoking the OS process-open request
-    write_json(args.out / 'request.json', {'t0_ns': t0, 'clock': 'time.monotonic_ns'})
     try:
         # No shell expansion, no automatic process termination or cache eviction.
         with (args.out / 'launcher.log').open('wb') as log:
+            # Keep file I/O and metadata preparation outside the launch interval.
+            t0 = time.monotonic_ns()
             launcher = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            result['t0_ns'] = t0
+            write_json(args.out / 'request.json', {'t0_ns': t0, 'clock': 'time.monotonic_ns'})
             if args.mode != 'warm':
                 roots[launcher.pid] = psutil.Process(launcher.pid).create_time()
             with (args.out / 'samples.jsonl').open('x', encoding='utf-8') as raw:
