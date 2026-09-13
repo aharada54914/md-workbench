@@ -1,0 +1,67 @@
+name: MDW T01 upstream baseline
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/mdw-t01-baseline.yml'
+      - 'scripts/baseline/**'
+      - 'tests/fixtures/mdw-baseline/**'
+permissions:
+  contents: read
+concurrency:
+  group: mdw-t01-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  baseline:
+    if: github.repository == 'aharada54914/md-workbench'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: '1.93.0'
+      CARGO_BUILD_JOBS: '2'
+      PYTHONUTF8: '1'
+    steps:
+      - name: Checkout verification tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, resolved 2026-09-13
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Checkout immutable upstream, not PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: c5aecc311f5295e872002309dcf72cfd96a8ad84
+          path: baseline
+          persist-credentials: false
+      - name: Set Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.16.0'
+      - name: Install pinned package manager and Rust
+        run: |
+          mkdir -p evidence
+          set -o pipefail
+          npm install --global pnpm@11.3.0 --ignore-scripts 2>&1 | tee evidence/setup-pnpm.log
+          rustup toolchain install 1.93.0 --profile minimal --no-self-update 2>&1 | tee evidence/setup-rust.log
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          set -o pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libfontconfig1-dev libfreetype-dev patchelf pkg-config 2>&1 | tee evidence/setup-system.log
+      - name: Run all upstream checks and preserve failures
+        run: python tooling/scripts/baseline/run.py --source baseline --out evidence
+      - name: Upload evidence, never publish a release
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mdw-t01-${{ matrix.os }}-${{ github.run_attempt }}
+          path: evidence/
+          retention-days: 90
+          if-no-files-found: warn
