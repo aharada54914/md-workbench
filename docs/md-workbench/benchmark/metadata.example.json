@@ -1,0 +1,22 @@
+{
+  "environment": {
+    "machine_id": "lab-device-alias-no-personal-name",
+    "cpu": "REPLACE with CPU model",
+    "ram_bytes": "REPLACE with installed RAM bytes",
+    "os": "REPLACE with exact OS build",
+    "webview": "REPLACE with WebView2/runtime version",
+    "power": "REPLACE with AC/battery and power profile",
+    "display_scale": "REPLACE with scale and resolution",
+    "antivirus": "REPLACE with scanner and exclusions",
+    "ai_state": "not started",
+    "diagram_editor_state": "not started"
+  },
+  "app": {
+    "name": "MD Workbench",
+    "version": "REPLACE with tested version and commit",
+    "build": "release",
+    "configuration": "default read mode, no AI or diagram editor"
+  },
+  "observer": "manual",
+  "observer_description": "Operator observation; includes reaction delay and is not eligible for precise latency comparisons."
+}
