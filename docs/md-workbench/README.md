@@ -17,6 +17,7 @@
 | [DECISIONS](DECISIONS.md) | 設計判断と未決事項。提案を利用者承認済みとしない |
 | [IMPLEMENTATION_PLAN](IMPLEMENTATION_PLAN.md) | 8 Epic・24タスク・依存関係・実装順 |
 | [ISSUE_BACKLOG](ISSUE_BACKLOG.md) | GitHubへの33件の登録データと重複防止手順 |
+| [ISSUE_MAP](ISSUE_MAP.md) | 計画IDと登録済みIssue #2〜#34の対応、親子・依存リンク |
 
 製品要件をPRODUCT_SPEC、永続形式をRESOURCE_FORMAT、判断履歴をDECISIONSで管理する。Issueは実行状況の正本であり、仕様を勝手に別定義しない。矛盾時は修正PRで合意し、コードの偶然の挙動を仕様へ昇格させない。
 
@@ -33,4 +34,13 @@
 
 ## 現状
 
-仕様と計画の作成であり、新機能は未実装。ビルド・Windows/macOS実機試験・性能測定は未実施。Issue作成APIは`Issues has been disabled in this repository`（HTTP 410）で拒否されたため、GitHubへの実登録は未完了。登録対象はtracking 1件、Epic 8件、task 24件。
+仕様と計画の作成であり、新機能は未実装。ビルド・Windows/macOS実機試験・性能測定は未実施。
+
+2026-09-13、Issues有効化後に**tracking 1件、Epic 8件、task 24件の計33件を登録済み**。初回登録を妨げていたHTTP 410は解消した。
+
+- [全体管理 #2](https://github.com/aharada54914/md-workbench/issues/2)
+- [全33件の対応表](ISSUE_MAP.md)
+- [最初の着手タスク T01 / #11](https://github.com/aharada54914/md-workbench/issues/11)
+- [仕様レビュー用Draft PR #1](https://github.com/aharada54914/md-workbench/pull/1)
+
+親子と依存関係はIssue本文のリンク・チェックリストで管理する。GitHub native sub-issues／Dependencies、Projects、Milestonesは未設定。登録を仕様承認・実装完了と同一視せず、PRはDraftのまま、merge／tag／releaseは未実施。
