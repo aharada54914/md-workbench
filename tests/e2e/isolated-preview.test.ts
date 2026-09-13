@@ -1,4 +1,26 @@
 import { test, expect } from '@playwright/test';
+import { setupTauriMocks } from './helpers/tauri-mock';
+
+test('preview toggle keeps the editor undo history and original file unchanged', async ({ page }) => {
+  const path = '/test/isolated.md';
+  const source = '# Original\r\n\r\n日本語の本文  \r\n';
+  const fs = await setupTauriMocks(page, { initialFs: { [path]: source }, openFilePath: path });
+  await page.goto('/');
+  const editor = page.locator('.ProseMirror').first();
+  await expect(editor).toContainText('日本語の本文');
+  await page.waitForTimeout(400); // inherited hydration dirty-event guard
+  await editor.click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type(' ADDED');
+  await expect(editor).toContainText('ADDED');
+  await page.getByRole('button', { name: 'Isolated read-only preview', exact: true }).click();
+  await expect(page.frameLocator('iframe[title="Isolated document preview"]').getByText(/ADDED/)).toBeVisible();
+  await page.getByRole('button', { name: 'Return to editor', exact: true }).click();
+  await editor.click();
+  await page.keyboard.press('Control+z');
+  await expect(editor).not.toContainText('ADDED');
+  expect(fs.getFs()[path]).toBe(source);
+});
 
 test('isolated document has no script, parent IPC, network or navigation authority', async ({ page }) => {
   await page.goto('/');

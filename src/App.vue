@@ -2127,6 +2127,10 @@ onUnmounted(async () => {
       @toggle-preview="toggleMarpPreview"
     />
 
+    <button type="button" class="isolated-preview-toggle" :aria-pressed="isolatedReadMode" @click="isolatedReadMode = !isolatedReadMode">
+      {{ isolatedReadMode ? 'Return to editor' : 'Isolated read-only preview' }}
+    </button>
+
     <!-- Main content area with optional left bar -->
     <div
       class="main-area"
@@ -2178,9 +2182,6 @@ onUnmounted(async () => {
         @toggle-ai="toggleAiPanel"
       />
 
-      <button type="button" :aria-pressed="isolatedReadMode" @click="isolatedReadMode = !isolatedReadMode">
-        {{ isolatedReadMode ? 'Return to editor' : 'Isolated read-only preview' }}
-      </button>
       <IsolatedPreview v-if="isolatedReadMode" :markdown="isolatedReadMarkdown" />
 
       <div v-show="!isolatedReadMode" style="display: contents">
@@ -2538,6 +2539,16 @@ onUnmounted(async () => {
 </template>
 
 <style scoped>
+.isolated-preview-toggle {
+  align-self: flex-start;
+  margin: 4px 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-primary, #ccd3dc);
+  border-radius: 4px;
+  background: var(--bg-secondary, #eef2f6);
+  color: var(--text-primary, #182230);
+  cursor: pointer;
+}
 .app {
   --ai-panel-width: 420px;
   display: flex;
