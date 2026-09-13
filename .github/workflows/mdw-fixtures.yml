@@ -7,6 +7,9 @@ on:
       - 'scripts/generate_mdw_fixtures.py'
       - 'scripts/test_mdw_fixtures.py'
       - 'docs/md-workbench/baseline/fixtures.lock.json'
+      - 'docs/md-workbench/baseline/upstream.Cargo.lock'
+      - 'scripts/baseline/run.py'
+      - '.gitattributes'
 permissions:
   contents: read
 jobs:
@@ -24,3 +27,5 @@ jobs:
         with:
           persist-credentials: false
       - run: python scripts/test_mdw_fixtures.py
+      - name: Verify stored Rust lock bytes and baseline runner syntax
+        run: python -c "from pathlib import Path; import hashlib; p=Path('docs/md-workbench/baseline/upstream.Cargo.lock'); assert hashlib.sha256(p.read_bytes()).hexdigest() == '55c44597a38aa33cbf7e1bc6e14df419cf16ac80e4efccce8986c2327b679439'; compile(Path('scripts/baseline/run.py').read_text(encoding='utf-8'), 'run.py', 'exec'); print('Lock checksum and runner syntax verified')"

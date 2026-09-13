@@ -1,6 +1,7 @@
 name: MDW T01 Windows newline diagnosis
 on:
   pull_request:
+    types: [opened, reopened]
     branches: [master]
     paths: ['.github/workflows/mdw-t01-newline-probe.yml']
 permissions:
