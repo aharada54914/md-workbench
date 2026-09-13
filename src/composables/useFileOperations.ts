@@ -194,21 +194,22 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
   };
 
   const writeAndUpdateTab = async (filePath: string): Promise<void> => {
+    const tabIndex = findActiveTabIndex();
+    const tab = tabIndex === -1 ? undefined : tabs.value[tabIndex];
+    // Save As of an untouched document is a byte-preserving copy, including
+    // empty source, BOM, mixed newlines, unknown syntax and trailing whitespace.
+    const unchangedSource = tab && !tab.hasChanges ? tab.originalMarkdown : null;
     // When in code view, getMarkdownOverride() returns the raw markdown directly —
     // avoids the empty-content bug caused by SplitContainer being unmounted.
-    const markdownOverride = getMarkdownOverride?.() ?? null;
+    const markdownOverride = unchangedSource ?? getMarkdownOverride?.() ?? null;
     const html = markdownOverride === null ? getEditorHtml() : null;
-    let markdown = (markdownOverride ?? htmlToMarkdown(html!)).trimEnd();
-
-    const tabIndex = findActiveTabIndex();
+    let markdown = markdownOverride ?? htmlToMarkdown(html!);
 
     // Preserve original line endings if we have the original content
-    if (tabIndex !== -1 && tabs.value[tabIndex].originalMarkdown) {
+    if (markdownOverride === null && tabIndex !== -1 && tabs.value[tabIndex].originalMarkdown) {
       const originalLineEnding = detectLineEnding(tabs.value[tabIndex].originalMarkdown!);
       markdown = applyLineEnding(markdown, originalLineEnding);
     }
-
-    markdown = markdown.trimEnd();
 
     // Pre-save conflict check
     let mergedContentApplied = false;
