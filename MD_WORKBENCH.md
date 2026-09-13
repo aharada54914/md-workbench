@@ -9,8 +9,12 @@
 - 図・画像の外部ファイル参照と文書内格納を双方向に切り替える。
 - AIへ質問し、修正案を確認して適用する。
 
-[仕様の入口](docs/md-workbench/README.md) · [製品仕様](docs/md-workbench/PRODUCT_SPEC.md) · [実装計画](docs/md-workbench/IMPLEMENTATION_PLAN.md) · [Issue登録用データ](docs/md-workbench/ISSUE_BACKLOG.md)
+[仕様の入口](docs/md-workbench/README.md) · [製品仕様](docs/md-workbench/PRODUCT_SPEC.md) · [実装計画](docs/md-workbench/IMPLEMENTATION_PLAN.md) · [Issue対応表](docs/md-workbench/ISSUE_MAP.md) · [Issue登録用データ](docs/md-workbench/ISSUE_BACKLOG.md)
 
 開始点はMerMark Editor v0.7.3由来の `c5aecc311f5295e872002309dcf72cfd96a8ad84`。上流のREADME・LICENSE・アプリコード・配布設定はこの仕様PRでは変更しません。
 
-GitHub Issuesは登録試行時に無効でした。Issueバックログはリポジトリ内に準備済みですが、GitHub Issueの作成完了とは区別してください。
+## GitHub登録状態
+
+2026-09-13、Issues有効化後に**全33件を登録済み**。全体管理は[#2](https://github.com/aharada54914/md-workbench/issues/2)、Epicは#3〜#10、実装taskは#11〜#34です。親子・依存は本文リンクとチェックリストで追跡します。native sub-issues／DependenciesやProjectsは未設定です。
+
+仕様レビューは[Draft PR #1](https://github.com/aharada54914/md-workbench/pull/1)。最初の実装タスクは[T01 / #11](https://github.com/aharada54914/md-workbench/issues/11)。Issueの登録完了を、仕様承認・機能実装・CI成功・リリース完了と混同しないでください。
