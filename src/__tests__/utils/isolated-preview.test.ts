@@ -36,4 +36,13 @@ describe('unprivileged document display copy', () => {
     expect(html).not.toContain('allow-same-origin');
     expect(html).not.toContain('data-type=');
   });
+
+  it('shows decoded Mermaid source as text, never executable HTML', () => {
+    const source = 'flowchart LR\n  A[日本語] --> B[終了]';
+    const html = buildIsolatedPreviewDocument('```mermaid\n' + source + '\n```');
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    expect(template.content.querySelector('pre')?.textContent).toBe(source);
+    expect(html).not.toContain('flowchart%20');
+  });
 });
