@@ -1,0 +1,2 @@
+# Preserve the recorded T01 lock bytes only; do not mask upstream CRLF behavior.
+docs/md-workbench/baseline/upstream.Cargo.lock text eol=lf

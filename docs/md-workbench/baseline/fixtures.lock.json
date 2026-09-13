@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "fixture_version": 1,
+  "generator": "python-stdlib-no-randomness",
+  "files": [
+    {
+      "path": "assets/box.svg",
+      "bytes": 201,
+      "sha256": "0c8a3df6e73c638603a022aff47694a24bc3b607fb24cbd466e1bdcd015b47d5"
+    },
+    {
+      "path": "assets/pixel.png",
+      "bytes": 70,
+      "sha256": "abc58d5127d7cdf313beb9ec8ee839860a9c6bfbc48c8b8eb6a3f7d8bb63de6f"
+    },
+    {
+      "path": "core-ja.md",
+      "bytes": 548,
+      "sha256": "ef0d5b9b60bdb64a7be674dfe1ef14d5f57096a6c6b7b121402d8bfcab686c82"
+    },
+    {
+      "path": "diagrams/flow.mmd",
+      "bytes": 71,
+      "sha256": "124b7ed60b64205880739d13a5cb21e64497341d212dfe958e1ca95d0b264a55"
+    },
+    {
+      "path": "diagrams/two-pages.drawio",
+      "bytes": 642,
+      "sha256": "f37c127b8a77f9e66c9d8ccb834cef7f548da234ff0b69840a2c4254e3ab40f9"
+    },
+    {
+      "path": "document-100kib.md",
+      "bytes": 102400,
+      "sha256": "979dd4b130c75c4371fe0e80f850cbae4659e4d1c16e0bfc8781454b8aa51df9"
+    },
+    {
+      "path": "document-10mib.md",
+      "bytes": 10485760,
+      "sha256": "3e04050582d266746b639563b084eafdf3c44f022aec5af5ac8d3bc1a0ef6ca9"
+    },
+    {
+      "path": "mermaid-10.md",
+      "bytes": 772,
+      "sha256": "47ccf31d09b2bcd13bdf50898cb627a812e5db1690953e77804941ce02ff7fa6"
+    },
+    {
+      "path": "source-resources.md",
+      "bytes": 253,
+      "sha256": "c9ced3e2b6baf945cf828dd288280d745b64349d030bace8877d61d85f4cfd16"
+    },
+    {
+      "path": "unknown-syntax.md",
+      "bytes": 277,
+      "sha256": "a2359a85eb348353486dc581de157f97193998effacab5d898e3eb768ff3837e"
+    },
+    {
+      "path": "日本語 空白/encoding-bom-crlf.md",
+      "bytes": 40,
+      "sha256": "007bb11f463064f06c10f83e56fdbc9f41f22b71564f8636df8589240d7a2f99"
+    }
+  ]
+}
