@@ -1,0 +1,62 @@
+name: MDW fork isolation
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'scripts/test_fork_distribution.py'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/mdw-fork-isolation.yml'
+permissions:
+  contents: read
+jobs:
+  distribution:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - run: npm install --global pnpm@11.3.0 --ignore-scripts
+      - run: pnpm install --frozen-lockfile
+      - run: python scripts/test_fork_distribution.py
+      - name: Updater policy and inherited future-updater contract
+        run: pnpm exec vitest run src/__tests__/composables/useAutoUpdate.test.ts src/__tests__/composables/useAutoUpdate.disabled.test.ts
+      - run: pnpm build
+      - name: Linux full regression (known upstream Windows CRLF defect is tracked in issue 36)
+        if: runner.os == 'Linux'
+        run: pnpm test:run
+  windows-native:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: '1.93.0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - run: npm install --global pnpm@11.3.0 --ignore-scripts
+      - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: pnpm tauri build --debug --bundles nsis
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdw-t02-unsigned-windows-${{ github.sha }}
+          path: src-tauri/target/debug/bundle/nsis/*-setup.exe
+          retention-days: 14
+          if-no-files-found: error

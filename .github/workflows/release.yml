@@ -1,220 +1,31 @@
-name: Release
-
+# T02: manual unsigned build only. Publication/signing belongs to T24 / G4.
+name: MD Workbench unsigned build
 on:
-  push:
-    branches:
-      - master
-    paths-ignore:
-      - '**.md'
-      - '.github/**'
-      - '!.github/workflows/release.yml'
-
+  workflow_dispatch:
 permissions:
-  contents: write
-
+  contents: read
 jobs:
-  create-release:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      release_id: ${{ steps.create_release.outputs.id }}
+  build:
+    if: github.repository == 'aharada54914/md-workbench'
+    runs-on: windows-2022
+    timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          fetch-depth: 0
-
-      - name: Get current version
-        id: current_version
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      # If the PR that landed already added docs/release-notes/v${current}/RELEASE_NOTES.md
-      # (i.e. the author ran /release-prep), the current package.json version is the
-      # release we want to publish — do not bump again, just tag and create the release.
-      # Otherwise fall back to the legacy auto-bump path so plain-PR merges keep working.
-      - name: Detect prepared release notes
-        id: notes
-        run: |
-          CURRENT="${{ steps.current_version.outputs.version }}"
-          FILE="docs/release-notes/v${CURRENT}/RELEASE_NOTES.md"
-          if [ -f "$FILE" ]; then
-            echo "prepared=true" >> $GITHUB_OUTPUT
-            echo "version=$CURRENT" >> $GITHUB_OUTPUT
-            echo "body_path=$FILE" >> $GITHUB_OUTPUT
-            echo "Release notes already prepared at $FILE — skipping auto-bump."
-          else
-            echo "prepared=false" >> $GITHUB_OUTPUT
-            echo "No release notes folder for v${CURRENT}; will auto-bump and create a stub."
-          fi
-
-      - name: Bump version (legacy fallback)
-        id: bump
-        if: steps.notes.outputs.prepared == 'false'
-        run: |
-          CURRENT="${{ steps.current_version.outputs.version }}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          PATCH=$((PATCH + 1))
-          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Update version files (legacy fallback)
-        if: steps.notes.outputs.prepared == 'false'
-        run: |
-          NEW="${{ steps.bump.outputs.version }}"
-          npm version "$NEW" --no-git-tag-version
-          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$NEW\"/" src-tauri/tauri.conf.json
-          sed -i "s/^version = \"[^\"]*\"/version = \"$NEW\"/" src-tauri/Cargo.toml
-
-      - name: Create release-notes stub (legacy fallback)
-        if: steps.notes.outputs.prepared == 'false'
-        run: |
-          NEW="${{ steps.bump.outputs.version }}"
-          DIR="docs/release-notes/v${NEW}"
-          mkdir -p "$DIR"
-          cat > "$DIR/RELEASE_NOTES.md" <<EOF
-          # Release v${NEW}
-
-          Auto-generated release. Edit \`${DIR}/RELEASE_NOTES.md\` to describe the changes.
-          EOF
-
-      - name: Commit version bump (legacy fallback)
-        if: steps.notes.outputs.prepared == 'false'
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml \
-                  docs/release-notes/v${{ steps.bump.outputs.version }}/RELEASE_NOTES.md
-          git commit -m "chore: bump version to ${{ steps.bump.outputs.version }}"
-          git push
-
-      - name: Resolve release version
-        id: version
-        run: |
-          if [ "${{ steps.notes.outputs.prepared }}" = "true" ]; then
-            echo "version=${{ steps.notes.outputs.version }}" >> $GITHUB_OUTPUT
-            echo "body_path=${{ steps.notes.outputs.body_path }}" >> $GITHUB_OUTPUT
-          else
-            echo "version=${{ steps.bump.outputs.version }}" >> $GITHUB_OUTPUT
-            echo "body_path=docs/release-notes/v${{ steps.bump.outputs.version }}/RELEASE_NOTES.md" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: MerMark Editor v${{ steps.version.outputs.version }}
-          body_path: ${{ steps.version.outputs.body_path }}
-          draft: false
-          prerelease: false
-
-  build-tauri:
-    needs: create-release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            args: ''
-          - platform: ubuntu-24.04
-            args: ''
-          - platform: macos-latest
-            args: '--target universal-apple-darwin'
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: master
-
-      - name: Pull latest changes
-        run: git pull origin master
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-24.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
-      # tauri-bundler downloads linuxdeploy from tauri-apps/binary-releases (built 2024-07-29,
-      # excludelist predates the libwayland-client.so.0 entry added 2024-11-03). That stale
-      # excludelist bundles noble's libwayland-client 1.22 into the AppImage; host Mesa >= 24.2
-      # needs wl_display_create_queue_with_name (wayland 1.23) -> EGL vendor load fails ->
-      # "Could not create default EGL display: EGL_BAD_PARAMETER" blank window (#106).
-      # The bundler skips the download when the file already sits in its tools cache, so we
-      # pre-seed a pinned upstream build whose compiled-in excludelist has the fix.
-      - name: Pre-seed linuxdeploy with fixed excludelist (#106)
-        if: matrix.platform == 'ubuntu-24.04'
-        run: |
-          mkdir -p ~/.cache/tauri
-          curl -fsSL --retry 3 -o ~/.cache/tauri/linuxdeploy-x86_64.AppImage \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
-          chmod +x ~/.cache/tauri/linuxdeploy-x86_64.AppImage
-
-      # linuxdeploy-plugin-gtk writes an AppRun hook that pins GDK_BACKEND=x11, so the
-      # AppImage always lands on XWayland on a Wayland session and inherits its
-      # resize bugs (#126). That workaround targets tauri-apps/tauri#8541, a GSettings
-      # schema mismatch from building on Ubuntu 20.04 — we build on 24.04, where the
-      # bundled schemas match the bundled GTK. Same cache pre-seed trick as above:
-      # the bundler only downloads the plugin when it is not already cached.
-      - name: Pre-seed linuxdeploy GTK plugin without a pinned GDK_BACKEND (#126)
-        if: matrix.platform == 'ubuntu-24.04'
-        run: |
-          mkdir -p ~/.cache/tauri
-          curl -fsSL --retry 3 -o ~/.cache/tauri/linuxdeploy-plugin-gtk.sh \
-            https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh
-          sed -i '/^export GDK_BACKEND=/d' ~/.cache/tauri/linuxdeploy-plugin-gtk.sh
-          if grep -q 'GDK_BACKEND' ~/.cache/tauri/linuxdeploy-plugin-gtk.sh; then
-            echo "::error::linuxdeploy-plugin-gtk still assigns GDK_BACKEND after patching (#126)"
-            exit 1
-          fi
-          chmod +x ~/.cache/tauri/linuxdeploy-plugin-gtk.sh
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - name: Install frontend dependencies
-        run: pnpm install
-
-      - name: Build and upload release assets
-        uses: tauri-apps/tauri-action@v0
+          node-version: '22.16.0'
+      - run: npm install --global pnpm@11.3.0 --ignore-scripts
+      - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
+      - run: python scripts/test_fork_distribution.py
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tauri build --bundles nsis
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          RUSTUP_TOOLCHAIN: '1.93.0'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          releaseId: ${{ needs.create-release.outputs.release_id }}
-          includeUpdaterJson: true
-          args: ${{ matrix.args }}
-
-      - name: Assert AppImage bundles no libwayland-client (#106)
-        if: matrix.platform == 'ubuntu-24.04'
-        run: |
-          APPIMAGE=$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' | head -1)
-          test -n "$APPIMAGE"
-          "$APPIMAGE" --appimage-extract > /dev/null
-          find squashfs-root/usr/lib -name 'libwebkit2gtk-4.1.so*' | grep -q . # sanity: extraction worked
-          if find squashfs-root/usr/lib -name 'libwayland-client.so*' | grep -q .; then
-            echo "::error::AppImage bundles libwayland-client.so.0 — breaks EGL on Mesa >= 24.2 hosts (#106)"
-            exit 1
-          fi
-
-      - name: Assert AppRun hooks pin no GDK_BACKEND (#126)
-        if: matrix.platform == 'ubuntu-24.04'
-        run: |
-          if grep -rn 'GDK_BACKEND' squashfs-root/apprun-hooks; then
-            echo "::error::AppRun hook pins GDK_BACKEND — forces XWayland on Wayland sessions (#126)"
-            exit 1
-          fi
+          name: md-workbench-unsigned-windows-${{ github.sha }}
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14

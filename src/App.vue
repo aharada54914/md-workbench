@@ -1861,7 +1861,7 @@ onMounted(async () => {
   // Set window title with version
   try {
     const version = await getVersion();
-    await getCurrentWindow().setTitle(`MerMark Editor v${version}`);
+    await getCurrentWindow().setTitle(`MD Workbench v${version}`);
   } catch (error) {
     console.error('[App] Error setting window title:', error);
   }

@@ -1,4 +1,5 @@
 import { ref } from 'vue';
+import { UPDATES_ENABLED, RELEASE_REPOSITORY } from '../config/distribution';
 
 export interface UpdateInfo {
   version: string;
@@ -6,6 +7,7 @@ export interface UpdateInfo {
 }
 
 export interface UseAutoUpdateReturn {
+  updatesEnabled: boolean;
   showUpdateDialog: ReturnType<typeof ref<boolean>>;
   updateInfo: ReturnType<typeof ref<UpdateInfo | null>>;
   updateProgress: ReturnType<typeof ref<number>>;
@@ -19,8 +21,8 @@ export interface UseAutoUpdateReturn {
   closeUpdateDialog: () => void;
 }
 
-const DISMISSED_KEY = 'mermark-dismissed-update-version';
-const GITHUB_REPO = 'Vesperino/MerMarkEditor';
+const DISMISSED_KEY = 'md-workbench-dismissed-update-version';
+const GITHUB_REPO = RELEASE_REPOSITORY;
 
 // Module-level singletons so App.vue and SettingsModal share the same state.
 const showUpdateDialog = ref(false);
@@ -46,6 +48,7 @@ async function fetchGitHubReleaseNotes(version: string): Promise<string> {
 
 async function runCheck(ignoreDismissed: boolean): Promise<void> {
   noUpdateFound.value = false;
+  if (!UPDATES_ENABLED) return;
   isCheckingForUpdates.value = true;
   try {
     const { check } = await import('@tauri-apps/plugin-updater');
@@ -80,6 +83,7 @@ export function useAutoUpdate(): UseAutoUpdateReturn {
   const checkForUpdatesManual = (): Promise<void> => runCheck(true);
 
   const downloadAndInstallUpdate = async (): Promise<void> => {
+    if (!UPDATES_ENABLED) return;
     try {
       isUpdating.value = true;
       updateError.value = null;
@@ -129,6 +133,7 @@ export function useAutoUpdate(): UseAutoUpdateReturn {
   };
 
   return {
+    updatesEnabled: UPDATES_ENABLED,
     showUpdateDialog,
     updateInfo,
     updateProgress,

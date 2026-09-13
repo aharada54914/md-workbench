@@ -54,7 +54,6 @@
     },
     "shell:allow-open",
     "deep-link:default",
-    "updater:default",
     "process:default",
     "core:window:allow-set-focus",
     "core:window:allow-set-title",

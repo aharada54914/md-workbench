@@ -7,7 +7,7 @@ const zhCN: Translations = {
   mathDelete: '删除公式',
   mathSource: 'LaTeX 源码',
   aiCodexPathHint: '请选择 Codex CLI（.exe 或 .cmd），而不是桌面应用启动器。也会搜索 %LOCALAPPDATA%\\OpenAI\\Codex\\bin。可以粘贴完整路径。',
-  appName: 'MerMark 编辑器',
+  appName: 'MD Workbench',
 
   // Toolbar - File operations
   new: '新建',
@@ -230,6 +230,7 @@ const zhCN: Translations = {
   supportDevTooltip: 'MerMark 免费且开源。如果它帮助到你，可以请我喝杯咖啡 — 完全自愿。',
   buyMeACoffee: '请我喝咖啡',
   updatesTab: '更新',
+  updatesDisabled: '此开发版本已禁用更新。',
   checkForUpdates: '检查更新',
   checkingForUpdates: '正在检查...',
   upToDate: '已是最新版本',
