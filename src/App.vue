@@ -151,7 +151,7 @@ provide('hasChanges', hasChanges);
 const windowTitle = computed(() => {
   const fileName = activeTab.value?.fileName || t.value.newDocument;
   const changeIndicator = activeTab.value?.hasChanges ? ' *' : '';
-  return `${fileName}${changeIndicator} - MdReader`;
+  return `${fileName}${changeIndicator} - MD Workbench`;
 });
 
 watchEffect(() => {
