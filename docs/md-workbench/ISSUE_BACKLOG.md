@@ -1,7 +1,8 @@
 # GitHub Issueバックログ v0.2
 
 登録先: `aharada54914/md-workbench`。schema version 1。
-状態: **未登録（GitHub Issues無効、create_issueがHTTP 410）**。
+状態: **全33件登録済み（2026-09-13、初回HTTP 410はIssues有効化で解消）**。
+全体管理は[#2](https://github.com/aharada54914/md-workbench/issues/2)、Epicは#3〜#10、taskは#11〜#34。全件の実番号・URL・親子・依存関係は[ISSUE_MAP](ISSUE_MAP.md)に記録した。登録時は全件openで、機能実装・仕様承認・テスト成功を意味しない。
 
 1 tracking、8 Epic、24taskを次のJSON Linesに保存する。`id`は計画内の安定IDでありGitHub Issue番号ではない。各recordにtitle、scope、acceptance、parent、depends_on、requirementsを持つ。
 
