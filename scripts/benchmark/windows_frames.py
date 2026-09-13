@@ -69,7 +69,7 @@ def capture(user32, pids, region):
     hwnd, bounds = before
     rectangle = region_bounds(bounds, region)
     begin = time.monotonic_ns()
-    pixels = ImageGrab.grab(bbox=rectangle, all_screens=True).convert('RGB')
+    pixels = ImageGrab.grab(bbox=rectangle, window=hwnd).convert('RGB')
     end = time.monotonic_ns()
     # Reject a moved/replaced/occluded-by-foreground window during acquisition.
     if foreground_client(user32, pids) != before:
