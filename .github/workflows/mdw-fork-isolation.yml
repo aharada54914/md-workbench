@@ -33,8 +33,7 @@ jobs:
       - name: Updater policy and inherited future-updater contract
         run: pnpm exec vitest run src/__tests__/composables/useAutoUpdate.test.ts src/__tests__/composables/useAutoUpdate.disabled.test.ts
       - run: pnpm build
-      - name: Linux full regression (known upstream Windows CRLF defect is tracked in issue 36)
-        if: runner.os == 'Linux'
+      - name: Full regression including deterministic LF, CRLF and BOM fixtures
         run: pnpm test:run
   windows-native:
     runs-on: windows-2022

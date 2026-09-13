@@ -378,7 +378,7 @@ export function markdownToHtmlWithMeta(
   md: string,
   readFormats: MermaidFormat[] = getCurrentMermaidReadFormats(),
 ): MarkdownConversionResult {
-  let html = md.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  let html = md;
 
   // Leading YAML front matter -> compact badge node (rendered after escaping so
   // its HTML is not mangled). Keeps the raw block for a verbatim round-trip.
@@ -386,8 +386,8 @@ export function markdownToHtmlWithMeta(
   // Marp deck — `marp:` in the leading front matter. Plain markdown (even with
   // front matter or HTML comments) is left exactly as before: no regression.
   let frontmatterHtml = '';
-  const fmMatch = html.match(/^---[ \t]*\n([\s\S]*?)\n---[ \t]*(?:\n|$)/);
-  const isMarpDoc = !!fmMatch && /(?:^|\n)[ \t]*marp[ \t]*:[ \t]*true\b/i.test(fmMatch[1]);
+  const fmMatch = html.match(/^---[ \t]*(?:\r\n|\r|\n)([\s\S]*?)(?:\r\n|\r|\n)---[ \t]*(?:\r\n|\r|\n|$)/);
+  const isMarpDoc = !!fmMatch && /(?:^|[\r\n])[ \t]*marp[ \t]*:[ \t]*true\b/i.test(fmMatch[1]);
   if (fmMatch && isMarpDoc) {
     frontmatterHtml = buildFrontmatterBadge(fmMatch[1]);
     html = html.slice(fmMatch[0].length);
@@ -411,7 +411,9 @@ export function markdownToHtmlWithMeta(
   }
 
   const math = protectMath(html);
-  html = math.text;
+  // Encode authoritative math source before structural newline normalization.
+  // Normalizing first loses CRLF inside otherwise untouched atomic math nodes.
+  html = math.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
   // Extract page breaks and code blocks before escaping
   html = extractPageBreaks(html);
