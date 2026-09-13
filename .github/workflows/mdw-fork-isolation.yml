@@ -7,6 +7,7 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'scripts/test_fork_distribution.py'
+      - 'scripts/test_windows_coexistence.ps1'
       - '.github/workflows/release.yml'
       - '.github/workflows/mdw-fork-isolation.yml'
 permissions:
@@ -54,9 +55,18 @@ jobs:
       - run: pnpm build
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: pnpm tauri build --debug --bundles nsis
+      - name: Install, run side by side, and uninstall the fork on disposable Windows
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem src-tauri/target/debug/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $installer) { throw 'No fork installer' }
+          ./scripts/test_windows_coexistence.ps1 -ForkInstaller $installer.FullName
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: mdw-t02-unsigned-windows-${{ github.sha }}
-          path: src-tauri/target/debug/bundle/nsis/*-setup.exe
+          path: |
+            src-tauri/target/debug/bundle/nsis/*-setup.exe
+            t02-coexistence.json
           retention-days: 14
           if-no-files-found: error
