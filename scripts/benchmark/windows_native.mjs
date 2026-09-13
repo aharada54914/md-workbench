@@ -2,10 +2,11 @@
 // CDP is enabled ONLY in the launched test process environment, never app config.
 import { chromium } from '@playwright/test';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import sharp from 'sharp';
 
 if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') {
   throw new Error('Restricted to disposable GitHub-hosted Windows runners');
@@ -15,7 +16,7 @@ if (!binaryArg || !outArg || !appName) throw new Error('Usage: windows_native.mj
 const binary = resolve(binaryArg), out = resolve(outArg);
 await mkdir(out, { recursive: false });
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-const trials = [], owned = new Set();
+const trials = [], owned = new Map();
 const port = 9222;
 const env = { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` };
 const report = {
@@ -39,11 +40,29 @@ for (const [name, newline, bom] of [['lf', '\n', ''], ['crlf', '\r\n', ''], ['bo
   await writeFile(path, source, { flag: 'wx' });
   fixtures.push({ path, marker, sha256: hash(Buffer.from(source)) });
 }
+async function watchMemory(pid, name) {
+  const directory = join(out, name);
+  const child = spawn('python', ['scripts/benchmark/native_memory.py', '--pid', String(pid), '--out', directory], { stdio: 'inherit' });
+  const exited = new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });
+  const deadline = Date.now() + 15000;
+  let ready = false;
+  while (Date.now() < deadline) {
+    try { await access(join(directory, 'ready.json')); ready = true; break; } catch {}
+    if (child.exitCode !== null) break;
+    await delay(20);
+  }
+  if (!ready) throw new Error('Process-tree observer failed to initialize');
+  return async () => {
+    await writeFile(join(directory, 'stop'), '', { flag: 'wx' });
+    if (await exited !== 0) throw new Error('Incomplete native process-tree memory observation');
+    return JSON.parse(await readFile(join(directory, 'memory.json'), 'utf8'));
+  };
+}
 function launch(fixture) {
   const child = spawn(binary, [fixture.path], { env, stdio: 'ignore' });
   child.on('error', () => {});
   if (!child.pid) throw new Error('Native process launch failed');
-  owned.add(child.pid);
+  owned.set(child.pid, child);
   child.once('exit', () => owned.delete(child.pid));
   return child;
 }
@@ -66,18 +85,46 @@ async function observe(browser, fixture, imagePath) {
         await document.fonts.ready;
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       });
+      const unobscured = await heading.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        const x = box.left + box.width / 2, y = box.top + box.height / 2;
+        const top = document.elementFromPoint(x, y);
+        return box.width > 0 && box.height > 0 && box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight && !!top && element.contains(top);
+      });
+      if (!unobscured) throw new Error('Heading is clipped or obscured');
+      const session = await context.newCDPSession(page);
+      let fonts;
+      try {
+        await session.send('DOM.enable'); await session.send('CSS.enable');
+        await session.send('DOM.getDocument');
+        const object = await session.send('Runtime.evaluate', { expression: `Array.from(document.querySelectorAll('h1')).find(e => e.textContent === ${JSON.stringify(fixture.marker)})` });
+        const { nodeId } = await session.send('DOM.requestNode', { objectId: object.result.objectId });
+        ({ fonts } = await session.send('CSS.getPlatformFontsForNode', { nodeId }));
+        // The mixed ASCII/Japanese heading must use a CJK-capable platform font,
+        // not merely contain Japanese DOM text rendered as missing-glyph boxes.
+        if (!fonts.some(font => /Yu Gothic|YuGothic|Meiryo|MS Gothic|MS PGothic|MS UI Gothic|Noto.*CJK|Noto.*JP|Yu Mincho|MS Mincho|ＭＳ|メイリオ|游ゴシック/i.test(font.familyName) && font.glyphCount >= 8)) {
+          throw new Error(`No verified Japanese platform font: ${JSON.stringify(fonts)}`);
+        }
+      } finally { await session.detach(); }
+      const pixels = await heading.screenshot();
+      const stats = await sharp(pixels).removeAlpha().stats();
+      if (Math.max(...stats.channels.map(channel => channel.stdev)) < 8) throw new Error('Heading frame is blank/uniform');
       // A screenshot is a renderer-frame witness, not a guessed sleep or window title.
       await page.screenshot({ path: imagePath });
-      return { url: page.url(), viewport: await page.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, userAgent: navigator.userAgent })) };
+      return { url: page.url(), fonts, heading_frame_sha256: hash(pixels), viewport: await page.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, userAgent: navigator.userAgent })) };
     }
     await delay(50);
   }
   throw new Error(`No visible native document body: ${fixture.marker}`);
 }
-function killOwned(pid) {
-  if (!owned.has(pid)) throw new Error('Unowned process termination refused');
+async function killOwned(pid) {
+  const child = owned.get(pid);
+  if (!child) throw new Error('Unowned process termination refused');
   // Exact PID tree on a disposable runner. Never kill by process name.
-  try { execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { stdio: 'pipe' }); } catch {}
+  execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { stdio: 'pipe' });
+  const deadline = Date.now() + 10000;
+  while (child.exitCode === null && child.signalCode === null && Date.now() < deadline) await delay(20);
+  if (child.exitCode === null && child.signalCode === null) throw new Error('Native process did not exit; next cold trial refused');
   owned.delete(pid);
 }
 async function verifyInputs() {
@@ -89,11 +136,14 @@ try {
     const fixture = fixtures[index % fixtures.length];
     const begin = process.hrtime.bigint();
     child = launch(fixture);
+    const stopMemory = await watchMemory(child.pid, `cold-${index}`);
     browser = await connect();
     const view = await observe(browser, fixture, join(out, 'latest-frame.png'));
-    trials.push({ mode: 'cold-process', index, fixture: fixture.sha256, observed_ms: Number(process.hrtime.bigint() - begin) / 1e6, view, status: 'success' });
+    const observed_ms = Number(process.hrtime.bigint() - begin) / 1e6;
+    const memory = await stopMemory();
+    trials.push({ mode: 'cold-process', index, fixture: fixture.sha256, observed_ms, memory, view, status: 'success' });
     await browser.close();
-    killOwned(child.pid);
+    await killOwned(child.pid);
     await verifyInputs();
     await writeFile(join(out, 'native-results.json'), JSON.stringify(report, null, 2));
   }
@@ -103,21 +153,27 @@ try {
   for (let index = 0; index < 50; index++) {
     // Alternate distinct documents so an already-visible frame cannot pass.
     const fixture = fixtures[(index + 1) % fixtures.length];
+    const stopMemory = await watchMemory(child.pid, `warm-${index}`);
     const begin = process.hrtime.bigint();
     launch(fixture);
     const view = await observe(browser, fixture, join(out, 'latest-frame.png'));
-    trials.push({ mode: 'warm', index, fixture: fixture.sha256, observed_ms: Number(process.hrtime.bigint() - begin) / 1e6, view, status: 'success' });
+    const observed_ms = Number(process.hrtime.bigint() - begin) / 1e6;
+    const memory = await stopMemory();
+    trials.push({ mode: 'warm', index, fixture: fixture.sha256, observed_ms, memory, view, status: 'success' });
     await verifyInputs();
     await writeFile(join(out, 'native-results.json'), JSON.stringify(report, null, 2));
   }
   await browser.close();
-  killOwned(child.pid);
+  await killOwned(child.pid);
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.error = String(error);
   process.exitCode = 1;
 } finally {
-  for (const pid of owned) killOwned(pid);
+  for (const pid of [...owned.keys()]) {
+    try { if (owned.has(pid)) await killOwned(pid); }
+    catch (error) { report.status = 'failed'; report.cleanup_error = String(error); process.exitCode = 1; }
+  }
   await writeFile(join(out, 'native-results.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ app: appName, status: report.status, completed_trials: trials.length, error: report.error }));
 }
