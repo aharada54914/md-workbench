@@ -236,6 +236,7 @@ export interface Translations {
   supportDevTooltip: string;
   buyMeACoffee: string;
   updatesTab: string;
+  updatesDisabled: string;
   checkForUpdates: string;
   checkingForUpdates: string;
   upToDate: string;

@@ -143,6 +143,7 @@ function hideHelpTip() {
 }
 
 const {
+  updatesEnabled,
   updateInfo,
   updateProgress,
   isUpdating,
@@ -977,7 +978,7 @@ onUnmounted(() => {
               <div class="setting-control update-check-control">
                 <button
                   class="update-check-btn"
-                  :disabled="isCheckingForUpdates || isUpdating"
+                  :disabled="!updatesEnabled || isCheckingForUpdates || isUpdating"
                   @click="checkForUpdatesManual()"
                 >
                   <svg v-if="!isCheckingForUpdates" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -996,6 +997,7 @@ onUnmounted(() => {
                   </svg>
                   {{ isCheckingForUpdates ? t.checkingForUpdates : t.checkForUpdates }}
                 </button>
+                <span v-if="!updatesEnabled" class="update-status">{{ t.updatesDisabled }}</span>
                 <span v-if="noUpdateFound && !isCheckingForUpdates && !updateInfo" class="update-status up-to-date">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"/>

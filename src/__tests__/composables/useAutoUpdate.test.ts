@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useAutoUpdate } from '../../composables/useAutoUpdate';
 
-const DISMISSED_KEY = 'mermark-dismissed-update-version';
+// Preserve the inherited updater contract under an explicitly mocked future distribution.
+vi.mock('../../config/distribution', () => ({
+  UPDATES_ENABLED: true, RELEASE_REPOSITORY: 'aharada54914/md-workbench',
+}));
+
+const DISMISSED_KEY = 'md-workbench-dismissed-update-version';
 
 // Hoisted mock state for @tauri-apps/plugin-updater
 const mockCheckResult = vi.hoisted(() => ({ value: null as { version: string; body: string } | null }));
@@ -102,7 +107,7 @@ describe('useAutoUpdate', () => {
     await checkForUpdates();
 
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining('api.github.com/repos/Vesperino/MerMarkEditor/releases/tags/v0.1.72'),
+      expect.stringContaining('api.github.com/repos/aharada54914/md-workbench/releases/tags/v0.1.72'),
     );
     expect(updateInfo.value?.notes).toBe('From GitHub API');
   });

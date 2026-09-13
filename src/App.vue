@@ -151,7 +151,7 @@ provide('hasChanges', hasChanges);
 const windowTitle = computed(() => {
   const fileName = activeTab.value?.fileName || t.value.newDocument;
   const changeIndicator = activeTab.value?.hasChanges ? ' *' : '';
-  return `${fileName}${changeIndicator} - MdReader`;
+  return `${fileName}${changeIndicator} - MD Workbench`;
 });
 
 watchEffect(() => {
@@ -1861,7 +1861,7 @@ onMounted(async () => {
   // Set window title with version
   try {
     const version = await getVersion();
-    await getCurrentWindow().setTitle(`MerMark Editor v${version}`);
+    await getCurrentWindow().setTitle(`MD Workbench v${version}`);
   } catch (error) {
     console.error('[App] Error setting window title:', error);
   }

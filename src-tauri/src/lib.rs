@@ -154,7 +154,7 @@ async fn print_document(app: tauri::AppHandle, html: String) -> Result<(), Strin
     let url = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
 
     WebviewWindowBuilder::new(&app, PRINT_WINDOW_LABEL, WebviewUrl::CustomProtocol(url))
-        .title("MerMark — Print / PDF")
+        .title("MD Workbench — Print / PDF")
         .inner_size(900.0, 1100.0)
         .center()
         .initialization_script("window.addEventListener('afterprint',function(){window.close();});")
@@ -867,7 +867,7 @@ async fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> 
         &window_label,
         WebviewUrl::App(url.into())
     )
-    .title("MerMark Editor")
+    .title("MD Workbench")
     .inner_size(1200.0, 800.0)
     .resizable(true)
     .center()
@@ -988,7 +988,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // When another instance is launched with arguments (file association)

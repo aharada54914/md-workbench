@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MerMark Editor",
-  "version": "0.7.3",
-  "identifier": "com.mermark.editor",
+  "productName": "MD Workbench",
+  "version": "0.1.0",
+  "identifier": "io.github.aharada54914.mdworkbench",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "MerMark Editor",
+        "title": "MD Workbench",
         "width": 1200,
         "height": 800,
         "resizable": true,
@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "icon": [
       "icons/icon.png",
       "icons/icon.ico",
@@ -51,7 +51,7 @@
           "Polish"
         ],
         "displayLanguageSelector": true,
-        "installMode": "perMachine"
+        "installMode": "currentUser"
       }
     },
     "macOS": {
@@ -72,7 +72,7 @@
     },
     "category": "Productivity",
     "shortDescription": "Modern Markdown editor with Mermaid diagrams",
-    "longDescription": "MerMark Editor is a modern, open-source Markdown editor with built-in Mermaid diagram support. Create beautiful documents with flowcharts, sequence diagrams, and more.",
+    "longDescription": "MD Workbench is a Markdown editor based on MerMark Editor, with diagram and AI tools.",
     "fileAssociations": [
       {
         "ext": [
@@ -87,18 +87,13 @@
     ]
   },
   "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcyOThEMzhFM0ZBN0Q0MzYKUldRMjFLYy9qdE9ZY2hYTUZZcXB2UERCWXFMaDdjS1BaeThaWUJmVHVjUHlkMTdHU1J4blc5SEIK",
-      "endpoints": [
-        "https://github.com/Vesperino/MerMarkEditor/releases/latest/download/latest.json"
-      ]
-    },
     "deep-link": {
       "desktop": {
         "schemes": [
-          "mermark"
+          "md-workbench"
         ]
       }
     }
-  }
+  },
+  "mainBinaryName": "md-workbench"
 }

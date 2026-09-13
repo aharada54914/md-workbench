@@ -1,7 +1,7 @@
 import type { Translations } from '../index';
 
 const en: Translations = {
-  appName: 'MerMark Editor',
+  appName: 'MD Workbench',
   mathInline: 'Inline formula',
   mathBlock: 'Block formula',
   mathEdit: 'Edit formula',
@@ -230,6 +230,7 @@ const en: Translations = {
   supportDevTooltip: 'MerMark is free and open source. If it helps you, you can buy me a coffee — totally optional.',
   buyMeACoffee: 'Buy me a coffee',
   updatesTab: 'Updates',
+  updatesDisabled: "Updates are disabled in this development build.",
   checkForUpdates: 'Check for updates',
   checkingForUpdates: 'Checking...',
   upToDate: "You're up to date",
