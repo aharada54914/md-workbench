@@ -20,7 +20,7 @@ const variants = [
 
 describe('math source and editor round trips', () => {
   describe.each([
-    ['LF', '\n', ''], ['CRLF', '\r\n', ''], ['BOM + CRLF', '\r\n', '\uFEFF'],
+    ['LF', '\n', ''], ['CRLF', '\r\n', ''], ['BOM + CRLF', '\r\n', '\uFEFF'], ['CR', '\r', ''],
   ])('%s source independent of checkout settings', (_name, newline, bom) => {
     it.each(['```', '~~~', '````'])('keeps %s code fences opaque and scans subsequent math', fence => {
       const source = bom + [fence + 'text', '$not_math$', fence, '', '$real$'].join(newline);
@@ -31,6 +31,10 @@ describe('math source and editor round trips', () => {
 
     it('keeps indented code after a blank line opaque', () => {
       expect(findMath(bom + ['Prose', '', '    $not_math$', '', '$real$'].join(newline)).map(m => m.source)).toEqual(['$real$']);
+    });
+
+    it('does not let indented code interrupt a paragraph', () => {
+      expect(findMath(bom + ['Prose', '    $real$'].join(newline)).map(m => m.source)).toEqual(['$real$']);
     });
 
     it.each(variants)('preserves exact atomic math source: %s', variant => {
@@ -46,6 +50,12 @@ describe('math source and editor round trips', () => {
       const before = findMath(source).map(m => m.source);
       expect(before).not.toContain('$to_jest_kod$');
       expect(findMath(htmlToMarkdown(markdownToHtml(source))).map(m => m.source)).toEqual(before);
+    });
+
+    it('recognizes Marp frontmatter before source protection', () => {
+      const source = ['---', 'marp: true', '---', '', '$x$'].join(newline);
+      expect(markdownToHtml(source)).toContain('data-marp-frontmatter=');
+      expect(findMath(htmlToMarkdown(markdownToHtml(source))).map(m => m.source)).toEqual(['$x$']);
     });
   });
 

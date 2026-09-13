@@ -22,24 +22,24 @@ export function findMath(text: string): MathSource[] {
   const found: MathSource[] = [];
   let i = 0;
   while (i < text.length) {
-    const lineStart = i === 0 || (i === 1 && text[0] === '\uFEFF') || text[i - 1] === '\n';
+    const lineStart = i === 0 || (i === 1 && text[0] === '\uFEFF') || text[i - 1] === '\n' || (text[i - 1] === '\r' && text[i] !== '\n');
     if (lineStart) {
-      const fence = /^( {0,3})(`{3,}|~{3,})([^\n]*)\n/.exec(text.slice(i));
+      const fence = /^( {0,3})(`{3,}|~{3,})([^\r\n]*)(?:\r\n|\r|\n)/.exec(text.slice(i));
       if (fence) {
         const marker = fence[2];
-        const closeRe = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \\t]*(?=\\r?\\n|$)`, 'gm');
+        const closeRe = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \\t]*(?=[\\r\\n]|$)`, 'gm');
         closeRe.lastIndex = i + fence[0].length;
         const close = closeRe.exec(text);
         const end = close ? close.index + close[0].length : text.length;
         if (close && /^(math|latex|tex)$/i.test(fence[3].trim())) {
-          found.push({ start: i, end, formula: text.slice(i + fence[0].length, close.index).replace(/\r?\n$/, ''), source: text.slice(i, end), display: true });
+          found.push({ start: i, end, formula: text.slice(i + fence[0].length, close.index).replace(/(?:\r\n|\r|\n)$/, ''), source: text.slice(i, end), display: true });
         }
         i = end;
         continue;
       }
       // An indented code block cannot interrupt a paragraph.
-      if (/^( {4}|\t)/.test(text.slice(i)) && (i === 0 || (i === 1 && text[0] === '\uFEFF') || /\n[ \t]*\r?\n$/.test(text.slice(0, i)))) {
-        const code = /^(?:(?: {4}|\t)[^\n]*(?:\n|$)|[ \t]*\n)+/.exec(text.slice(i));
+      if (/^( {4}|\t)/.test(text.slice(i)) && (i === 0 || (i === 1 && text[0] === '\uFEFF') || /(?:\r\n|\r(?!\n)|\n)[ \t]*(?:\r\n|\r|\n)$/.test(text.slice(0, i)))) {
+        const code = /^(?:(?: {4}|\t)[^\r\n]*(?:\r\n|\r|\n|$)|[ \t]*(?:\r\n|\r|\n))+/.exec(text.slice(i));
         if (code) { i += code[0].length; continue; }
       }
     }
@@ -107,7 +107,7 @@ export function findMath(text: string): MathSource[] {
     if (end < 0) { i += open.length; continue; }
     const inner = text.slice(i + open.length, end);
     // Avoid interpreting currency prose ($5 and $10) as an equation.
-    if ((!display && inner.includes('\n')) || !inner.trim() || (open === '$' && /\d/.test(text[end + 1] ?? ''))) {
+    if ((!display && /[\r\n]/.test(inner)) || !inner.trim() || (open === '$' && /\d/.test(text[end + 1] ?? ''))) {
       i += open.length; continue;
     }
     end += close.length;

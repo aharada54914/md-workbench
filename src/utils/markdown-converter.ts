@@ -386,8 +386,8 @@ export function markdownToHtmlWithMeta(
   // Marp deck — `marp:` in the leading front matter. Plain markdown (even with
   // front matter or HTML comments) is left exactly as before: no regression.
   let frontmatterHtml = '';
-  const fmMatch = html.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
-  const isMarpDoc = !!fmMatch && /(?:^|\n)[ \t]*marp[ \t]*:[ \t]*true\b/i.test(fmMatch[1]);
+  const fmMatch = html.match(/^---[ \t]*(?:\r\n|\r|\n)([\s\S]*?)(?:\r\n|\r|\n)---[ \t]*(?:\r\n|\r|\n|$)/);
+  const isMarpDoc = !!fmMatch && /(?:^|[\r\n])[ \t]*marp[ \t]*:[ \t]*true\b/i.test(fmMatch[1]);
   if (fmMatch && isMarpDoc) {
     frontmatterHtml = buildFrontmatterBadge(fmMatch[1]);
     html = html.slice(fmMatch[0].length);
