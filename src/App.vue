@@ -20,6 +20,7 @@ import UpdateDialog from './components/UpdateDialog.vue';
 import CodeEditor from './components/CodeEditor.vue';
 import LazyMarkdownPreview from './components/LazyMarkdownPreview.vue';
 import Editor from './components/Editor.vue';
+import IsolatedPreview from './components/IsolatedPreview.vue';
 import SaveConfirmDialog from './components/SaveConfirmDialog.vue';
 import SplitContainer from './components/SplitContainer.vue';
 import TabBar from './components/TabBar.vue';
@@ -113,6 +114,15 @@ const activeTab = computed(() => {
   const tab = getActiveTabForPane(activePaneId.value);
   // Return a default tab if none exists (should never happen in practice)
   return tab || { id: '', filePath: null, fileName: t.value.newDocument, content: '<p></p>', hasChanges: false, scrollTop: 0, originalMarkdown: null };
+});
+const isolatedReadMode = ref(false);
+const isolatedReadMarkdown = computed(() => {
+  if (codeView.value) return codeContent.value;
+  if (splitEditorActive.value) return splitMarkdownSource.value;
+  const tab = activeTab.value;
+  if ('pendingMarkdown' in tab && typeof tab.pendingMarkdown === 'string') return tab.pendingMarkdown;
+  if (!tab.hasChanges && tab.originalMarkdown !== null) return tab.originalMarkdown;
+  return htmlToMarkdown(tab.content);
 });
 
 // ============ Editor References ============
@@ -2168,6 +2178,12 @@ onUnmounted(async () => {
         @toggle-ai="toggleAiPanel"
       />
 
+      <button type="button" :aria-pressed="isolatedReadMode" @click="isolatedReadMode = !isolatedReadMode">
+        {{ isolatedReadMode ? 'Return to editor' : 'Isolated read-only preview' }}
+      </button>
+      <IsolatedPreview v-if="isolatedReadMode" :markdown="isolatedReadMarkdown" />
+
+      <div v-show="!isolatedReadMode" style="display: contents">
       <!-- Code + Preview split: raw markdown (left) -> live WYSIWYG render (right) -->
       <div v-if="splitEditorActive && !codeView" class="split-editor-area" :class="{ 'is-marp': isMarp }">
         <TabBar
@@ -2275,6 +2291,7 @@ onUnmounted(async () => {
           />
         </div>
       </template>
+      </div>
     </div>
 
     <!-- Status Bar (configurable) -->
