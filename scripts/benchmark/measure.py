@@ -50,8 +50,8 @@ def validate_metadata(meta):
                 raise ValueError(f'Replace example value for {group}.{name}')
     if meta['app']['build'] != 'release':
         raise ValueError('Performance comparisons require a release build')
-    if meta.get('observer') not in ('instrumented-frame', 'manual'):
-        raise ValueError('observer must be instrumented-frame or manual')
+    if meta.get('observer') not in ('instrumented-frame', 'screen-sampled', 'manual'):
+        raise ValueError('observer must be instrumented-frame, screen-sampled, or manual')
     if not meta.get('observer_description'):
         raise ValueError('Describe the body/viewport observation method')
 
@@ -169,9 +169,12 @@ def record(args):
             t0 = time.monotonic_ns()
             launcher = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
             result['t0_ns'] = t0
-            write_json(args.out / 'request.json', {'t0_ns': t0, 'clock': 'time.monotonic_ns'})
             if args.mode != 'warm':
                 roots[launcher.pid] = psutil.Process(launcher.pid).create_time()
+            request_tmp = args.out / 'request.tmp'
+            write_json(request_tmp, {'t0_ns': t0, 'clock': 'time.monotonic_ns',
+                                     'root_pids': list(roots), 'root_created': roots})
+            request_tmp.replace(args.out / 'request.json')
             with (args.out / 'samples.jsonl').open('x', encoding='utf-8') as raw:
                 deadline = time.monotonic() + args.timeout
                 while time.monotonic() < deadline:
@@ -188,6 +191,10 @@ def record(args):
             result['markers'] = read_markers(args.out, t0, time.monotonic_ns())
             if len(result['markers']) != 2:
                 raise ValueError('Render observation timeout; no guessed startup latency')
+            if meta['observer'] == 'screen-sampled':
+                result['observer_configuration'] = json.loads((args.out / 'observer.json').read_text(encoding='utf-8'))
+                if any(m.get('observer') != 'screen-sampled' for m in result['markers'].values()):
+                    raise ValueError('Screen-sampled trials require native frame observer markers')
             if fixture_hashes != [digest(path) for path in inputs]:
                 raise ValueError('Input bytes changed during the trial')
             if not samples or not all(s['complete'] for s in samples):
@@ -231,7 +238,8 @@ def summarize(records, minimum_cold=30, minimum_warm=50):
         if result['mode'] not in MODES:
             raise ValueError('Unknown mode')
         identity = {'metadata': result['metadata'], 'mode': result['mode'],
-                    'fixture_hashes': result['fixture_hashes']}
+                    'fixture_hashes': result['fixture_hashes'],
+                    'observer_configuration': result.get('observer_configuration')}
         key = json.dumps(identity, sort_keys=True)
         group = groups.setdefault(key, {'identity': identity, 'trials': []})
         group['trials'].append(result)
@@ -244,6 +252,8 @@ def summarize(records, minimum_cold=30, minimum_warm=50):
                 reasons.append(trial.get('reason', trial['status']))
                 continue
             try:
+                if trial['metadata']['observer'] == 'screen-sampled' and not trial.get('observer_configuration'):
+                    raise ValueError('Missing native frame observer configuration')
                 t0, t1, t2 = (trial['t0_ns'], trial['markers']['body']['time_ns'],
                               trial['markers']['viewport']['time_ns'])
                 if not all(isinstance(t, int) and not isinstance(t, bool) for t in (t0, t1, t2)):
@@ -266,7 +276,10 @@ def summarize(records, minimum_cold=30, minimum_warm=50):
                      failure_reasons=reasons, required_samples=required,
                      sample_target_met=len(valid) >= required,
                      eligible_for_latency_comparison=(len(valid) >= required and
-                         group['identity']['metadata']['observer'] == 'instrumented-frame'),
+                         group['identity']['metadata']['observer'] in ('instrumented-frame', 'screen-sampled')),
+                     latency_precision=('sampled upper bound including capture overhead'
+                         if group['identity']['metadata']['observer'] == 'screen-sampled'
+                         else group['identity']['metadata']['observer']),
                      metrics={k: {'n': len(v), 'p50': percentile(v, .5), 'p95': percentile(v, .95)}
                               for k, v in fields.items()})
         output.append(group)

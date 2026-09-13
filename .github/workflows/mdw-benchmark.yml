@@ -24,3 +24,5 @@ jobs:
       - run: python -m pip install -r scripts/benchmark/requirements.txt
       - name: Sampler, CLI, failure preservation and statistical contracts
         run: python scripts/benchmark/test_measure.py
+      - name: Frame contracts and actual native Windows capture
+        run: python scripts/benchmark/test_windows_frames.py

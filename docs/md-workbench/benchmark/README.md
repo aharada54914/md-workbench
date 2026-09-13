@@ -11,7 +11,7 @@ and grouped P50/P95 summaries. It does not claim a benchmark result merely becau
 the harness tests pass. No application source, production dependency, public release
 or user's settings are changed by this PR.
 
-`psutil==7.2.2` is a measurement-only Python dependency. Windows records working set
+`psutil==7.2.2` and `Pillow==12.3.0` are measurement-only Python dependencies. Windows records working set
 and private bytes separately; Linux/macOS record RSS. **macOS RSS is not physical
 footprint:** a native physical-footprint adapter is still needed for that acceptance.
 Keep OS metrics separate. Summed working set/RSS can double-count shared pages.
@@ -89,10 +89,53 @@ emit the two marks from another terminal when the relevant content is visible.
 precise latency comparison, regardless of sample count. Window creation, process
 existence and arbitrary sleeps are not substitutes for readable-frame observations.
 
-Application-specific automatic frame observers for native MerMark/VS Code/the fork
-are not supplied here. Instrument them before treating collected latency as the
-TEST_PLAN performance acceptance. The implemented adapter boundary lets each observer
-use the same timestamp/marker contract without modifying the measured app by default.
+### Native Windows screen observation
+
+`windows_frames.py` can observe any of the three applications using reference
+regions from a fully rendered **synthetic** fixture. It captures only specified
+rectangles inside the target foreground client window, validates window identity
+before and after capture, and refuses rectangles extending outside it. It does not
+capture the entire desktop or save each captured frame. The reference images and
+per-probe timestamp/difference records remain local.
+
+First open the fixture normally, fix the window position/size/scale, and choose
+small distinctive content rectangles: readable body text for T1, and the last
+expected viewport diagram for T2. Avoid blank backgrounds, scrolling regions,
+cursors and animations. Capture each reference (the default three-second delay
+lets you focus the application after running the command):
+
+```powershell
+python scripts/benchmark/windows_frames.py reference --pid APP_PID `
+  --region 20 100 400 150 --out C:/mdw-bench/body.png
+python scripts/benchmark/windows_frames.py reference --pid APP_PID `
+  --region 20 300 400 200 --out C:/mdw-bench/viewport.png
+```
+
+These rectangle coordinates are examples; select actual content within your
+application client area. Do not use a reference containing an unrelated document.
+Set `observer: screen-sampled` in the trial metadata and describe the regions.
+Start the observer in another terminal just before the `record` command:
+
+```powershell
+python scripts/benchmark/windows_frames.py observe --out C:/mdw-bench/trials/fork-cold-001 `
+  --body-reference C:/mdw-bench/body.png --body-position 20 100 `
+  --viewport-reference C:/mdw-bench/viewport.png --viewport-position 20 300
+```
+
+The observer gets the actual root PID/creation time from the recorder's atomic
+`request.json`. It requires the target app to be in the foreground. Exact pixel
+matching is the default; a limited `--max-difference` tolerance of 0–5 mean RGB
+units may be explicitly configured. Uniform blank references are rejected.
+The observer records capture duration, cadence, difference, reference hashes and
+region geometry. Failed matches time out instead of becoming successful zeroes.
+The reference hashes/tolerance/cadence form part of summary grouping.
+
+These measurements are **sampled upper bounds including capture overhead**, not
+exact renderer-event timings. The summary preserves that distinction. Use the same
+observer conditions across trials, inspect reference quality, and record any
+foreground obstruction. A completed reference region is only evidence for that
+region: choose all meaningful initial-viewport content when judging T2. A native
+renderer event adapter may still supply `instrumented-frame` for higher precision.
 
 ## Raw data and comparison
 
@@ -129,8 +172,11 @@ metadata grouping, insufficient samples and manual-observer exclusion.
 These are **tooling tests with artificial inputs**, not real app performance data.
 The test host is the synthetic warm root, avoiding nested test PID-namespace ambiguity.
 CI runs the same tooling tests on Windows Server 2022 and Ubuntu 24.04.
+The frame suite additionally tests region bounds, exact matching and marker
+immutability, and runs real native capture/observer CLI against a synthetic Tk
+window on Windows. That native case is explicitly skipped on Linux.
 
-Pending: Windows 11 desktop and measurement conditions, native frame observers,
+Pending: Windows 11 desktop and measurement conditions, calibrated reference regions,
 30/50-trial real application comparison, and macOS physical footprint. No startup
 or memory target is declared achieved. Keep #13 / Epic #3 open until real measurement
 acceptance is supported. Rollback removes the added tooling/docs/workflow; there are
