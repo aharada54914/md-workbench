@@ -19,6 +19,36 @@ const variants = [
 ];
 
 describe('math source and editor round trips', () => {
+  describe.each([
+    ['LF', '\n', ''], ['CRLF', '\r\n', ''], ['BOM + CRLF', '\r\n', '\uFEFF'],
+  ])('%s source independent of checkout settings', (_name, newline, bom) => {
+    it.each(['```', '~~~', '````'])('keeps %s code fences opaque and scans subsequent math', fence => {
+      const source = bom + [fence + 'text', '$not_math$', fence, '', '$real$'].join(newline);
+      const matches = findMath(source);
+      expect(matches.map(m => m.source)).toEqual(['$real$']);
+      expect(source.slice(matches[0].start, matches[0].end)).toBe('$real$');
+    });
+
+    it('keeps indented code after a blank line opaque', () => {
+      expect(findMath(bom + ['Prose', '', '    $not_math$', '', '$real$'].join(newline)).map(m => m.source)).toEqual(['$real$']);
+    });
+
+    it.each(variants)('preserves exact atomic math source: %s', variant => {
+      const source = variant.replace(/\n/g, newline);
+      const editor = new Editor({ extensions: [StarterKit, KatexBlockExtension, KatexInlineExtension], content: markdownToHtml(bom + source) });
+      try {
+        expect(findMath(htmlToMarkdown(editor.getHTML())).map(m => m.source)).toEqual([source]);
+      } finally { editor.destroy(); }
+    });
+
+    it('round-trips demonstration math without accepting code as math', () => {
+      const source = bom + readFileSync('docs/math-showcase.md', 'utf8').replace(/\r\n/g, '\n').replace(/\n/g, newline);
+      const before = findMath(source).map(m => m.source);
+      expect(before).not.toContain('$to_jest_kod$');
+      expect(findMath(htmlToMarkdown(markdownToHtml(source))).map(m => m.source)).toEqual(before);
+    });
+  });
+
   it.each(variants)('preserves %s through the actual TipTap schema', source => {
     const before = findMath(source);
     expect(before).toHaveLength(1);
