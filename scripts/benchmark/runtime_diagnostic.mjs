@@ -29,7 +29,7 @@ const report = {
   runner_image: process.env.ImageOS, runner_image_version: process.env.ImageVersion,
   environment: { os_release: os.release(), os_version: os.version(), arch: os.arch(), runner_arch: process.env.RUNNER_ARCH,
     processor_architecture: process.env.PROCESSOR_ARCHITECTURE, processor_architew6432: process.env.PROCESSOR_ARCHITEW6432,
-    binary_arch: 'x64', cpu: os.cpus()[0]?.model, ram_bytes: os.totalmem(),
+    binary_arch: 'x64', launch_security: process.env.MDW_NATIVE_SECURITY ?? 'runner default', cpu: os.cpus()[0]?.model, ram_bytes: os.totalmem(),
     power: execFileSync('powercfg.exe', ['/getactivescheme'], { encoding: 'utf8' }).trim(),
     antivirus: 'GitHub-hosted runner default; no exclusions or protection changes requested',
     ai_state: 'not invoked', diagram_editor_state: 'not invoked' },
@@ -85,17 +85,31 @@ async function connect() {
   }
   throw new Error('Native WebView CDP endpoint unavailable');
 }
-async function observe(browser, fixture, imagePath) {
+async function bounded(operation, milliseconds, label) {
+  let timer;
+  try {
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out at ${report.observer_stage}`)), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+function observe(...args) {
+  return bounded(observeInternal(...args), 20000, 'Native renderer observation');
+}
+async function observeInternal(browser, fixture, imagePath) {
+  report.observer_stage = 'locate body';
   const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
     for (const context of browser.contexts()) for (const page of context.pages()) {
       const heading = page.getByRole('heading', { name: fixture.marker, exact: true });
       if (!await heading.isVisible().catch(() => false)) continue;
       await page.getByText('MDW-END-本文末尾', { exact: true }).first().waitFor({ state: 'visible', timeout: 10000 });
+      report.observer_stage = 'font and animation-frame readiness';
       await page.evaluate(async () => {
         await document.fonts.ready;
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       });
+      report.observer_stage = 'heading geometry';
       const unobscured = await heading.evaluate(element => {
         const box = element.getBoundingClientRect();
         const x = box.left + box.width / 2, y = box.top + box.height / 2;
@@ -103,6 +117,7 @@ async function observe(browser, fixture, imagePath) {
         return box.width > 0 && box.height > 0 && box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight && !!top && element.contains(top);
       });
       if (!unobscured) throw new Error('Heading is clipped or obscured');
+      report.observer_stage = 'platform font coverage';
       const session = await context.newCDPSession(page);
       let fonts;
       try {
@@ -121,11 +136,13 @@ async function observe(browser, fixture, imagePath) {
           throw new Error(`No verified Japanese platform font: ${JSON.stringify(fonts)}`);
         }
       } finally { await session.detach(); }
-      const pixels = await heading.screenshot();
+      report.observer_stage = 'heading screenshot';
+      const pixels = await heading.screenshot({ timeout: 10000 });
       const stats = await sharp(pixels).removeAlpha().stats();
       if (Math.max(...stats.channels.map(channel => channel.stdev)) < 8) throw new Error('Heading frame is blank/uniform');
       // A screenshot is a renderer-frame witness, not a guessed sleep or window title.
-      await page.screenshot({ path: imagePath });
+      report.observer_stage = 'page screenshot';
+      await page.screenshot({ path: imagePath, timeout: 10000 });
       return { url: page.url(), fonts, heading_frame_sha256: hash(pixels), viewport: await page.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, userAgent: navigator.userAgent })) };
     }
     await delay(50);
@@ -156,6 +173,8 @@ async function verifyNativeEditor(browser) {
     await observe(browser, { marker }, join(out, 'functional-frame.png'));
     const page = browser.contexts().flatMap(context => context.pages()).find(page => page.url().startsWith('http://tauri.localhost') || page.url().startsWith('https://tauri.localhost'));
     if (!page) throw new Error('Native application page unavailable for functional check');
+    page.setDefaultTimeout(10000);
+    report.observer_stage = 'open isolated preview';
     await page.getByRole('button', { name: 'Isolated read-only preview', exact: true }).click();
     const body = page.frameLocator('iframe[title="Isolated document preview"]').locator('body');
     await body.getByRole('heading', { name: marker, exact: true }).waitFor({ state: 'visible' });
@@ -174,7 +193,8 @@ async function verifyNativeEditor(browser) {
     let boundary;
     const frameDeadline = Date.now() + 10000;
     while (!boundary && Date.now() < frameDeadline) {
-      try { boundary = await inspectBoundary(); }
+      report.observer_stage = 'isolated iframe boundary evaluation';
+      try { boundary = await bounded(inspectBoundary(), 5000, 'Isolated boundary evaluation'); }
       catch (error) {
         // srcdoc may be replaced when the inherited file hydration completes.
         // Retry only a destroyed context; never retry a failed boundary result.
@@ -186,6 +206,7 @@ async function verifyNativeEditor(browser) {
     if (!boundary.parentBlocked || !boundary.networkPolicyBlocked || boundary.tauri || boundary.scripts !== 0) throw new Error(`Native isolated boundary failed: ${JSON.stringify(boundary)}`);
     if (!Buffer.from(source).equals(await readFile(path))) throw new Error('Native preview changed source bytes');
     await page.getByRole('button', { name: 'Return to editor', exact: true }).click();
+    report.observer_stage = 'native CodeMirror edit and save';
     await page.getByRole('button', { name: 'Code', exact: true }).click();
     const editor = page.locator('.code-editor .cm-content');
     await editor.click();
@@ -243,7 +264,7 @@ try {
     await verifyInputs();
     await writeFile(join(out, 'native-results.json'), JSON.stringify(report, null, 2));
   }
-  if (functionalFlag === '--verify-editor') await verifyNativeEditor(browser);
+  if (functionalFlag === '--verify-editor') await bounded(verifyNativeEditor(browser), 90000, 'Native functional checks');
   await browser.close();
   await killOwned(child.pid);
   report.status = 'passed';
