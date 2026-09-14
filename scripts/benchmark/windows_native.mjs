@@ -13,7 +13,8 @@ import { summarizeNative } from './native_summary.mjs';
 if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') {
   throw new Error('Restricted to disposable GitHub-hosted Windows runners');
 }
-const [binaryArg, outArg, appName] = process.argv.slice(2);
+const [binaryArg, outArg, appName, functionalFlag] = process.argv.slice(2);
+if (functionalFlag && functionalFlag !== '--verify-editor') throw new Error('Unknown functional option');
 if (!binaryArg || !outArg || !appName) throw new Error('Usage: windows_native.mjs BINARY OUT APP_NAME');
 const binary = resolve(binaryArg), out = resolve(outArg);
 await mkdir(out, { recursive: false });
@@ -144,6 +145,55 @@ async function killOwned(pid) {
 async function verifyInputs() {
   for (const fixture of fixtures) if (hash(await readFile(fixture.path)) !== fixture.sha256) throw new Error('Viewing changed source bytes');
 }
+async function verifyNativeEditor(browser) {
+  report.functional = [];
+  for (const fixture of fixtures) {
+    const marker = `${fixture.marker}-savecheck`;
+    const source = (await readFile(fixture.path, 'utf8')).replace(fixture.marker, marker);
+    const path = `${fixture.path}.savecheck.md`;
+    await writeFile(path, source, { flag: 'wx' });
+    launch({ path });
+    await observe(browser, { marker }, join(out, 'functional-frame.png'));
+    const page = browser.contexts().flatMap(context => context.pages()).find(page => page.url().startsWith('http://tauri.localhost') || page.url().startsWith('https://tauri.localhost'));
+    if (!page) throw new Error('Native application page unavailable for functional check');
+    await page.getByRole('button', { name: 'Isolated read-only preview', exact: true }).click();
+    const body = page.frameLocator('iframe[title="Isolated document preview"]').locator('body');
+    await body.getByRole('heading', { name: marker, exact: true }).waitFor({ state: 'visible' });
+    const boundary = await body.evaluate(async () => {
+      let parentBlocked = false;
+      try { void parent.document; } catch { parentBlocked = true; }
+      const violation = new Promise(resolve => {
+        const timer = setTimeout(() => resolve(false), 2000);
+        document.addEventListener('securitypolicyviolation', event => {
+          if (event.violatedDirective === 'connect-src') { clearTimeout(timer); resolve(true); }
+        }, { once: true });
+      });
+      await fetch('https://example.invalid/native-csp-probe').catch(() => {});
+      return { parentBlocked, networkPolicyBlocked: await violation, tauri: '__TAURI_INTERNALS__' in window || '__TAURI__' in window, scripts: document.scripts.length };
+    });
+    if (!boundary.parentBlocked || !boundary.networkPolicyBlocked || boundary.tauri || boundary.scripts !== 0) throw new Error(`Native isolated boundary failed: ${JSON.stringify(boundary)}`);
+    if (!Buffer.from(source).equals(await readFile(path))) throw new Error('Native preview changed source bytes');
+    await page.getByRole('button', { name: 'Return to editor', exact: true }).click();
+    await page.getByRole('button', { name: 'Code', exact: true }).click();
+    const editor = page.locator('.code-editor .cm-content');
+    await editor.click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.insertText('追記😀');
+    await page.keyboard.press('Control+s');
+    const expected = Buffer.from(source + '追記😀');
+    const deadline = Date.now() + 10000;
+    let saved = false;
+    while (Date.now() < deadline) {
+      if (expected.equals(await readFile(path))) { saved = true; break; }
+      await delay(50);
+    }
+    if (!saved) throw new Error(`Native Source save changed BOM/newlines or did not complete: ${marker}`);
+    report.functional.push({ fixture: fixture.sha256, boundary, source_save_sha256: hash(expected), status: 'passed' });
+    await page.getByRole('button', { name: 'Visual', exact: true }).click();
+    await verifyInputs();
+  }
+  console.log(JSON.stringify({ app: appName, native_functional: report.functional }));
+}
 try {
   let child, browser;
   for (let index = 0; index < 30; index++) {
@@ -181,6 +231,7 @@ try {
     await verifyInputs();
     await writeFile(join(out, 'native-results.json'), JSON.stringify(report, null, 2));
   }
+  if (functionalFlag === '--verify-editor') await verifyNativeEditor(browser);
   await browser.close();
   await killOwned(child.pid);
   report.status = 'passed';

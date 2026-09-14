@@ -8,6 +8,14 @@ not use the Vite application, Tauri mocks, Wine, or a fabricated Windows label.
 Each OS job installs checksum-pinned upstream MerMark 0.7.3 and repeats the
 exercise. Each application performs 30 process-cold and 50 warm document opens.
 
+The fork additionally runs `--verify-editor`: three disposable document copies
+are opened in the packaged application, switched into the actual sandboxed
+preview, checked for parent/IPC denial and a `connect-src` policy violation,
+then edited through CodeMirror and saved with the normal Ctrl+S handler. The
+observer reads actual filesystem bytes to assert BOM/newlines/source plus the
+Japanese/emoji suffix. These checks use no Tauri or filesystem mocks and are
+reported separately from timing trials. Original benchmark fixtures stay intact.
+
 The observer connects to the actual WebView through a loopback CDP endpoint,
 enabled only in test child-process environment. It checks a visible heading and
 end-of-body, font readiness, platform CJK font glyph counts, unobscured heading

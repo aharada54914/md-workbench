@@ -69,7 +69,7 @@ jobs:
           name: mdw-native-x64-release-${{ github.sha }}
           path: native-binary
       - name: Native release document exercise (30 cold and 50 warm)
-        run: node scripts/benchmark/windows_native.mjs native-binary/md-workbench.exe native-fork MD-Workbench
+        run: node scripts/benchmark/windows_native.mjs native-binary/md-workbench.exe native-fork MD-Workbench --verify-editor
       - name: Install pinned upstream on this same disposable machine
         if: always()
         shell: pwsh
