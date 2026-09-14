@@ -15,6 +15,8 @@ import {
 } from '../constants';
 
 export interface UseCodeViewOptions {
+  /** Exact source while Visual has not changed; avoids a lossy no-op round trip. */
+  getUnchangedMarkdown?: () => string | null;
   getActiveContent: () => string;
   setActiveContent: (content: string) => void;
   markAsChanged: () => void;
@@ -619,7 +621,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
       if (editor) {
         const { from } = editor.state.selection;
 
-        codeContent.value = htmlToMarkdown(editor.getHTML());
+        codeContent.value = options.getUnchangedMarkdown?.() ?? htmlToMarkdown(editor.getHTML());
 
         try {
           const $pos = editor.state.doc.resolve(from);
@@ -698,7 +700,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
         }
       } else {
         const html = getActiveContent();
-        codeContent.value = htmlToMarkdown(html);
+        codeContent.value = options.getUnchangedMarkdown?.() ?? htmlToMarkdown(html);
       }
 
       codeContentSnapshot = codeContent.value;

@@ -4,7 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { copyFile, writeTextFile, exists, readTextFile, remove } from '@tauri-apps/plugin-fs';
+import { copyFile, writeTextFile, exists, remove } from '@tauri-apps/plugin-fs';
+import { readTextFile } from './services/documentText';
 import { open } from '@tauri-apps/plugin-dialog';
 import { htmlToMarkdown, detectLineEnding, applyLineEnding, markdownToHtml } from './utils/markdown-converter';
 import { inlineMarkdownImages, getDirectoryFromFilePath } from './utils/image-resolver';
@@ -797,6 +798,7 @@ const {
   enterCodeViewWithMarkdown,
   seedCodeContent,
 } = useCodeView({
+  getUnchangedMarkdown: () => activeTab.value?.hasChanges ? null : activeTab.value?.originalMarkdown ?? null,
   getActiveContent: () => activeTab.value?.content || '<p></p>',
   setActiveContent: (content: string) => {
     if (activeTab.value) {

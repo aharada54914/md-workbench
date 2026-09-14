@@ -13,6 +13,9 @@ const mockRemove = vi.fn();
 const mockOpenDialog = vi.fn();
 const mockSaveDialog = vi.fn();
 const mockOpenShell = vi.fn();
+vi.mock('../../services/documentText', () => ({
+  readTextFile: (...args: unknown[]) => mockReadTextFile(...args),
+}));
 const mockGetCurrentWindow = vi.fn(() => ({
   isMaximized: vi.fn(async () => false),
   maximize: vi.fn(async () => {}),
@@ -371,6 +374,28 @@ describe('useFileOperations', () => {
   // ----------------------------------------------------------
 
   describe('saveFile', () => {
+    it.each(['', '\uFEFF# 日本語\r\n\r\n:::unknown untouched\r\n$$a+b$$  \r\n\t\r\n', '# mixed\r\nUnknown  \nlast\r'])('Save As preserves unchanged source bytes: %j', source => {
+      mockSaveDialog.mockResolvedValue('/new/copy.md');
+      mockReadTextFile.mockImplementation(async (path: string) => path.endsWith('.tmp') ? source : '');
+      const { options, tabs, getEditorHtml } = makeOptions({ hasChanges: false, originalMarkdown: source });
+      const { saveFileAs } = useFileOperations(options);
+      return saveFileAs().then(() => {
+        expect(mockWriteTextFile).toHaveBeenCalledWith('/new/copy.md.tmp', source);
+        expect(getEditorHtml).not.toHaveBeenCalled();
+        expect(htmlToMarkdown).not.toHaveBeenCalled();
+        expect(tabs.value[0].originalMarkdown).toBe(source);
+      });
+    });
+
+    it('preserves authoritative Source edits including BOM, mixed newlines and trailing whitespace', async () => {
+      const source = '\uFEFF# changed\r\n:::unknown\n$$x$$  \r\n\t';
+      mockReadTextFile.mockImplementation(async (path: string) => path.endsWith('.tmp') ? source : '# hello');
+      const { options } = makeOptions({}, { getMarkdownOverride: () => source });
+      await useFileOperations(options).saveFile();
+      expect(mockWriteTextFile).toHaveBeenCalledWith('/test/file.md.tmp', source);
+      expect(htmlToMarkdown).not.toHaveBeenCalled();
+    });
+
     it('skips save when file exists and has no changes', async () => {
       const { options } = makeOptions({ hasChanges: false });
       const { saveFile } = useFileOperations(options);

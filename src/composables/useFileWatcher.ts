@@ -1,4 +1,5 @@
-import { watch as watchFs, readTextFile, type UnwatchFn } from '@tauri-apps/plugin-fs';
+import { watch as watchFs, type UnwatchFn } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '../services/documentText';
 import { TIMING } from '../constants';
 
 export interface UseFileWatcherOptions {

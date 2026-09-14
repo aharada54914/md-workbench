@@ -1,5 +1,5 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
-import { readTextFile } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '../services/documentText';
 import { markdownToHtml, htmlToMarkdown } from '../utils/markdown-converter';
 import { generateDiff, type DiffLine, type DiffStats } from './useDiffPreview';
 import { useFileWatcher } from './useFileWatcher';

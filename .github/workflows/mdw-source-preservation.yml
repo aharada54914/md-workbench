@@ -1,0 +1,31 @@
+name: MDW source preservation
+on:
+  pull_request:
+    paths:
+      - 'src/composables/useFileOperations.ts'
+      - 'src/__tests__/composables/useFileOperations.test.ts'
+      - 'tests/e2e/source-preservation.test.ts'
+      - '.github/workflows/mdw-source-preservation.yml'
+permissions:
+  contents: read
+jobs:
+  source-roundtrip:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - run: npm install --global pnpm@11.3.0 --ignore-scripts
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:run
+      - run: pnpm build
+      - run: pnpm exec playwright test
