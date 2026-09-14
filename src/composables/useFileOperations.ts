@@ -46,7 +46,7 @@ export interface UseFileOperationsReturn {
   pendingExternalUrl: Ref<string>;
   openFile: () => Promise<void>;
   openFileFromPath: (filePath: string) => Promise<void>;
-  saveFile: () => Promise<void>;
+  saveFile: () => Promise<boolean>;
   saveFileAs: () => Promise<void>;
   handleLinkClick: (href: string) => void;
   confirmExternalLink: () => Promise<void>;
@@ -251,14 +251,14 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     return true;
   };
 
-  const saveFile = async (): Promise<void> => {
+  const saveFile = async (): Promise<boolean> => {
     try {
       let filePath = currentFile.value;
       const tabIndex = findActiveTabIndex();
 
       // Skip save if file exists and has no changes
       if (filePath && tabIndex !== -1 && !tabs.value[tabIndex].hasChanges) {
-        return;
+        return true;
       }
 
       if (!filePath) {
@@ -269,10 +269,12 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       }
 
       if (filePath) {
-        await writeAndUpdateTab(filePath);
+        return await writeAndUpdateTab(filePath);
       }
+      return false;
     } catch (error) {
       console.error('Error saving file:', error);
+      return false;
     }
   };
 

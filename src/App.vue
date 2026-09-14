@@ -81,6 +81,7 @@ import type { CodeEditorHandle } from './types/code-editor';
 const {
   splitState,
   activePaneId,
+  setActivePane,
   activePane,
   isSplitActive,
   toggleSplit,
@@ -1537,10 +1538,17 @@ const {
   handleDiscard,
   handleCancel,
 } = useCloseConfirmation({
-  tabs,
-  activeTabId,
-  getEditorHtml: getEditorContent,
-  switchToTab,
+  tabs: computed(() => splitState.value.panes.flatMap(pane => pane.tabs)),
+  switchToTab: async (tabId: string) => {
+    const pane = splitState.value.panes.find(pane => pane.tabs.some(tab => tab.id === tabId));
+    if (!pane) throw new Error('The document to save is no longer open');
+    setActivePane(pane.id);
+    await switchToTab(tabId);
+  },
+  saveTab: async (tab) => {
+    if (activeTab.value.id !== tab.id) return false;
+    return saveFile();
+  },
   syncActiveTabContent,
 });
 

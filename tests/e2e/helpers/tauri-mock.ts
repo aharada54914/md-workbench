@@ -36,6 +36,7 @@ export async function setupTauriMocks(
    * The file must already be watched by the app (i.e. opened in a tab).
    */
   triggerExternalChange: (filePath: string, newContent: string) => Promise<void>;
+  triggerWindowClose: () => Promise<void>;
 }> {
   const fs: MockFs = { ...(opts.initialFs ?? {}) };
   const calls: Array<{ cmd: string; args: unknown }> = [];
@@ -96,6 +97,16 @@ export async function setupTauriMocks(
       // Mutable dialog save path — tests override this via page.evaluate
       // Using a plain window variable (NOT page.exposeFunction) so it can be reassigned
       (window as Record<string, unknown>).__mockDialogSavePath = null;
+      const listeners = new Map<number, { event: string; handler: number }>();
+      let nextListener = 1;
+      (window as any).__mockWindowCommands = [];
+      (window as any).__triggerWindowClose = async () => {
+        for (const [id, listener] of listeners) {
+          if (listener.event === 'tauri://close-requested') {
+            await (window as any)['_cb_' + listener.handler]({ event: listener.event, id, payload: null });
+          }
+        }
+      };
 
       // Watcher callback registry: path -> Tauri callback id
       // Filled when plugin:fs|watch is invoked (see invoke handler below).
@@ -193,15 +204,26 @@ export async function setupTauriMocks(
           if (cmd === 'plugin:app|version' || cmd === 'app_get_version') return version;
 
           // ── event system ──────────────────────────────────────────
-          if (cmd === 'plugin:event|listen') return 1; // return numeric event ID
-          if (cmd === 'plugin:event|unlisten') return undefined;
+          if (cmd === 'plugin:event|listen') {
+            const id = nextListener++;
+            const request = args as { event: string; handler: number };
+            listeners.set(id, request);
+            return id;
+          }
+          if (cmd === 'plugin:event|unlisten') {
+            listeners.delete((args as { eventId: number }).eventId);
+            return undefined;
+          }
           if (cmd === 'plugin:event|emit' || cmd === 'plugin:event|emit_to') return undefined;
 
           // ── window commands ────────────────────────────────────────
           if (cmd === 'plugin:window|set_title' || cmd === 'plugin:core|set_title') return undefined;
           if (cmd === 'plugin:window|is_maximized') return false;
           if (cmd === 'plugin:window|maximize' || cmd === 'plugin:window|unmaximize') return undefined;
-          if (cmd === 'plugin:window|close' || cmd === 'plugin:window|destroy') return undefined;
+          if (cmd === 'plugin:window|close' || cmd === 'plugin:window|destroy' || cmd === 'plugin:process|exit') {
+            (window as any).__mockWindowCommands.push(cmd);
+            return undefined;
+          }
           if (cmd.startsWith('plugin:window|')) return undefined;
 
           // ── deep-link / process ────────────────────────────────────
@@ -243,5 +265,6 @@ export async function setupTauriMocks(
     getFs: () => ({ ...fs }),
     getCalls: () => [...calls],
     triggerExternalChange,
+    triggerWindowClose: () => page.evaluate(async () => { await (window as any).__triggerWindowClose(); }),
   };
 }
