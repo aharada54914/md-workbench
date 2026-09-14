@@ -96,7 +96,21 @@ function Assert-Foreground([IntPtr]$handle) {
     [OwnedWindowInput]::RequestClose($foreground)
     Start-Sleep -Milliseconds 500
   }
+  $foreground = [OwnedWindowInput]::GetForegroundWindow()
+  if ([OwnedWindowInput]::Title($foreground) -eq 'Search') {
+    $searchProcess = Get-Process -Id ([OwnedWindowInput]::Owner($foreground))
+    Write-Output "Hosted search window process=$($searchProcess.ProcessName) path=$($searchProcess.Path)"
+    if ($searchProcess.ProcessName -ne 'SearchHost' -or -not $searchProcess.Path.StartsWith((Join-Path $env:windir 'SystemApps\'), [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Unexpected Search window owner; refusing to interact'
+    }
+    [OwnedWindowInput]::RequestClose($foreground)
+    Start-Sleep -Milliseconds 500
+  }
   [void][OwnedWindowInput]::ShowWindow($handle, 9)
+  if ([OwnedWindowInput]::GetForegroundWindow() -ne $handle) {
+    Write-Output "Owned caption click after startup UI close=$([OwnedWindowInput]::ClickOwnedCaption($handle))"
+    Start-Sleep -Milliseconds 200
+  }
   $shell = New-Object -ComObject WScript.Shell
   [void]$shell.AppActivate([int]$child.Id)
   [void][OwnedWindowInput]::SetForegroundWindow($handle)
