@@ -525,6 +525,17 @@ describe('useCodeView markdown-first API (issue #129)', () => {
     expect(markAsChanged).not.toHaveBeenCalled();
   });
 
+  it('a newly selected Source tab can exit while the previous cursor restore is pending', async () => {
+    const { cv, setActiveContent } = make({ forceConvertOnExit: () => true });
+    await cv.enterCodeViewWithMarkdown('# left');
+    await cv.toggleCodeView(null);
+    cv.seedCodeContent('# right');
+    cv.codeView.value = true;
+    await cv.toggleCodeView(null);
+    expect(cv.codeView.value).toBe(false);
+    expect(setActiveContent).toHaveBeenLastCalledWith('<p>HTML from: # right</p>');
+  });
+
   it('exit with forceConvertOnExit converts but does not mark changed', async () => {
     const { cv, setActiveContent, markAsChanged } = make({ forceConvertOnExit: () => true });
     await cv.enterCodeViewWithMarkdown('# raw');

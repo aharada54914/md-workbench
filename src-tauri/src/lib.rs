@@ -15,6 +15,13 @@ pub struct OpenFileState(pub Mutex<Option<String>>);
 // Global registry of open files: file_path -> window_label
 pub struct OpenFilesRegistry(pub Mutex<HashMap<String, String>>);
 
+impl OpenFilesRegistry {
+    fn remove_window(&self, window_label: &str) {
+        let mut files = self.0.lock().unwrap();
+        files.retain(|_, label| label != window_label);
+    }
+}
+
 // Counter for unique window IDs
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
 
@@ -67,8 +74,7 @@ fn unregister_window_files(
     registry: tauri::State<'_, OpenFilesRegistry>,
     window_label: String,
 ) {
-    let mut files = registry.0.lock().unwrap();
-    files.retain(|_, label| label != &window_label);
+    registry.remove_window(&window_label);
 }
 
 // Check if a file is already open and return the window label if so
@@ -1125,23 +1131,10 @@ pub fn run() {
                         }
                     }
                 }
-                RunEvent::WindowEvent { label, event: WindowEvent::CloseRequested { api, .. }, .. } => {
-                    // The print helper window is auxiliary — never let it gate app lifecycle.
-                    if label == PRINT_WINDOW_LABEL {
-                        return;
-                    }
-                    let editor_windows = app
-                        .webview_windows()
-                        .keys()
-                        .filter(|l| *l != PRINT_WINDOW_LABEL)
-                        .count();
-                    if editor_windows <= 1 {
-                        return;
-                    }
-                    if let Some(window) = app.get_webview_window(&label) {
-                        let _ = window.destroy();
-                    }
-                    api.prevent_close();
+                RunEvent::WindowEvent { label, event: WindowEvent::Destroyed, .. } => {
+                    // Webview destruction does not guarantee Vue unmount hooks.
+                    // Keep remaining windows able to reopen these documents.
+                    app.state::<OpenFilesRegistry>().remove_window(&label);
                 }
                 _ => {}
             }
@@ -1152,6 +1145,21 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn destroyed_window_releases_only_its_current_file_registrations() {
+        let registry = OpenFilesRegistry(Mutex::new(HashMap::from([
+            ("closed.md".to_string(), "window-1".to_string()),
+            ("remaining.md".to_string(), "main".to_string()),
+            ("transferred.md".to_string(), "main".to_string()),
+        ])));
+        registry.remove_window("window-1");
+        registry.remove_window("window-1"); // destruction cleanup is idempotent
+        let files = registry.0.lock().unwrap();
+        assert!(!files.contains_key("closed.md"));
+        assert_eq!(files.get("remaining.md").map(String::as_str), Some("main"));
+        assert_eq!(files.get("transferred.md").map(String::as_str), Some("main"));
+    }
 
     #[test]
     fn webkit_override_applies_when_unset_or_blank() {

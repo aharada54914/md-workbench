@@ -35,6 +35,13 @@ describe('useSplitEditor', () => {
   });
 
   describe('enter', () => {
+    it.each(['', '\uFEFF# Source\r\n\r\n:::unknown  \r\n'])('uses authoritative raw source %j instead of stale cached HTML', (source) => {
+      const { enter, markdownSource, previewHtml } = useSplitEditor();
+      enter('<p>stale</p>', source);
+      expect(markdownSource.value).toBe(source);
+      expect(previewHtml.value).toBe('<p>HTML:' + source + '</p>');
+    });
+
     it('seeds markdownSource from html and computes previewHtml from it', () => {
       const { enter, markdownSource, previewHtml } = useSplitEditor();
 

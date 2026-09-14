@@ -589,6 +589,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
   const savedScrollRatio = ref(0);
   let codeContentSnapshot = '';
   let isToggling = false;
+  let transitionGeneration = 0;
 
   // Inject styles on module load
   injectHighlightStyles();
@@ -596,14 +597,20 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
   const { getActiveContent, setActiveContent, markAsChanged, forceConvertOnExit } = options;
 
   const enterCodeViewWithMarkdown = async (markdown: string): Promise<void> => {
+    const generation = ++transitionGeneration;
+    isToggling = false;
     codeContent.value = markdown;
     codeContentSnapshot = markdown;
     codeView.value = true;
     await nextTick();
+    if (generation !== transitionGeneration) return;
     codeEditorRef.value?.focus();
   };
 
   const seedCodeContent = (markdown: string): void => {
+    // A different tab invalidates the previous tab's deferred cursor restore.
+    transitionGeneration++;
+    isToggling = false;
     codeContent.value = markdown;
     codeContentSnapshot = markdown;
   };
@@ -611,6 +618,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
   const toggleCodeView = async (editor: Editor | null | undefined): Promise<void> => {
     if (isToggling) return;
     isToggling = true;
+    const generation = ++transitionGeneration;
     if (!codeView.value) {
       // ═══════════════════════════════════════════════════════════════════
       // VISUAL → CODE
@@ -716,6 +724,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
 
       await nextTick();
       await nextTick();
+      if (generation !== transitionGeneration) return;
 
       if (codeEditorRef.value) {
         codeEditorRef.value.focus();
@@ -728,6 +737,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
         }
 
         window.setTimeout(() => {
+          if (generation !== transitionGeneration) return;
           codeEditorRef.value?.highlightSelectionLine(TIMING.CODE_HIGHLIGHT_DURATION);
           isToggling = false;
         }, TIMING.HIGHLIGHT_DELAY);
@@ -779,6 +789,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
 
       await nextTick();
       await nextTick();
+      if (generation !== transitionGeneration) return;
 
       // Restore cursor position — retry until DOM is ready (needed after content change)
       const scheduleVisualRestore = () => {
@@ -786,6 +797,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
         const maxAttempts = MAX_DOM_RESTORE_ATTEMPTS;
 
         const tryRestore = () => {
+          if (generation !== transitionGeneration) return;
           const editorContainer = getActiveEditorContainer() ||
             (attempts >= maxAttempts - 1 ? getFallbackEditorContainer() : null);
 
@@ -870,6 +882,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
 
               // Highlight the specific line within the code block
               requestAnimationFrame(() => {
+                if (generation !== transitionGeneration) return;
                 clearVisualHighlight();
                 const blockRect = targetElement!.getBoundingClientRect();
                 const lineTop = blockRect.top + blockPadTop + lineInCodeBlock * codeLh;
@@ -891,7 +904,11 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
               });
             } else {
               scrollContainerToElement(editorContainer, targetElement, SCROLL_OFFSET);
-              requestAnimationFrame(() => { highlightVisualElement(targetElement!); isToggling = false; });
+              requestAnimationFrame(() => {
+                if (generation !== transitionGeneration) return;
+                highlightVisualElement(targetElement!);
+                isToggling = false;
+              });
             }
             return;
           }

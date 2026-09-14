@@ -133,6 +133,7 @@ const zhCN: Translations = {
 
   // Dialogs
   unsavedChanges: '未保存的更改',
+  autoSavePaused: '自动保存已暂停。请使用“保存”检查并保存更改。',
   saveBeforeWindowTransfer: '将此标签页移到另一个窗口前，请先保存更改。',
   unsavedChangesMessage: '此文档有未保存的更改。是否在关闭前保存？',
   dontSave: '不保存',

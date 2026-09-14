@@ -9,7 +9,7 @@ export interface UseSplitEditorReturn {
   splitEditorActive: Ref<boolean>;
   markdownSource: Ref<string>;
   previewHtml: ComputedRef<string>;
-  enter: (html: string) => void;
+  enter: (html: string, markdown?: string | null) => void;
   exit: () => string;
   onMarkdownInput: (value: string) => void;
   syncFromVisual: (html: string) => void;
@@ -22,8 +22,8 @@ export function useSplitEditor(): UseSplitEditorReturn {
 
   const previewHtml = computed(() => markdownToHtml(debouncedSource.value));
 
-  const enter = (html: string): void => {
-    const md = htmlToMarkdown(html);
+  const enter = (html: string, markdown?: string | null): void => {
+    const md = markdown ?? htmlToMarkdown(html);
     markdownSource.value = md;
     debouncedSource.value = md;
     if (debounceTimer !== null) {

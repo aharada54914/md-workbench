@@ -6,6 +6,7 @@ import type { Tab } from '../../composables/useTabs';
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: vi.fn(() => ({
     onCloseRequested: vi.fn(() => Promise.resolve(() => {})),
+    destroy: vi.fn(() => Promise.resolve()),
   })),
 }));
 
@@ -49,6 +50,7 @@ describe('useCloseConfirmation', () => {
       getEditorHtml: vi.fn(() => '<p>Editor content</p>'),
       switchToTab: vi.fn(() => Promise.resolve()),
       syncActiveTabContent: vi.fn(),
+      saveTab: vi.fn(async (tab: Tab) => { tab.hasChanges = false; return true; }),
     };
   };
 
@@ -126,7 +128,7 @@ describe('useCloseConfirmation', () => {
   });
 
   describe('handleDiscard', () => {
-    it('should mark current tab as not having changes', async () => {
+    it('should defer discarding dirty state until the window closes', async () => {
       const tab = createMockTab({ hasChanges: true });
       const options = createMockOptions([tab]);
       const { currentTabToSave, handleDiscard } = useCloseConfirmation(options);
@@ -134,9 +136,9 @@ describe('useCloseConfirmation', () => {
       // Simulate having a current tab to save
       currentTabToSave.value = { tab, index: 0 };
 
-      handleDiscard();
+      await handleDiscard();
 
-      expect(tab.hasChanges).toBe(false);
+      expect(tab.hasChanges).toBe(true);
     });
 
     it('should do nothing if no current tab to save', () => {

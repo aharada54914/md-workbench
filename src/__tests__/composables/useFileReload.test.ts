@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ref, computed, type Ref } from 'vue';
 import type { Tab } from '../../composables/useTabs';
 import type { UseFileReloadOptions } from '../../composables/useFileReload';
@@ -57,6 +57,7 @@ describe('useFileReload', () => {
   let mockFindTabByFilePathSplit: UseFileReloadOptions['findTabByFilePathSplit'];
 
   beforeEach(() => {
+    vi.useFakeTimers();
     vi.clearAllMocks();
 
     mockActivePaneId = ref('left');
@@ -336,4 +337,9 @@ describe('useFileReload', () => {
       expect(mockSetEditorContent).not.toHaveBeenCalled();
     });
   });
+});
+afterEach(() => {
+  // Finish bounded scroll/notification retries before jsdom is destroyed.
+  vi.runAllTimers();
+  vi.useRealTimers();
 });
