@@ -61,7 +61,7 @@ function Assert-Foreground([IntPtr]$handle) {
   if ([OwnedWindowInput]::Title($foreground) -eq 'Microsoft account') {
     $accountProcess = Get-Process -Id ([OwnedWindowInput]::Owner($foreground))
     Write-Output "Hosted account prompt process=$($accountProcess.ProcessName) path=$($accountProcess.Path)"
-    if (-not $accountProcess.Path -or -not $accountProcess.Path.StartsWith(($env:windir + '\\SystemApps\\'), [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not [String]::Equals($accountProcess.Path, (Join-Path $env:windir 'System32\WWAHost.exe'), [StringComparison]::OrdinalIgnoreCase)) {
       throw 'Unexpected Microsoft account window owner; refusing to interact'
     }
     $accountWindow = [System.Windows.Automation.AutomationElement]::FromHandle($foreground)
