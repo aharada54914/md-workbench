@@ -1,6 +1,7 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { readTextFile, writeTextFile, rename, remove } from '@tauri-apps/plugin-fs';
+import { writeTextFile, rename, remove } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '../services/documentText';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { htmlToMarkdown, markdownToHtml, detectLineEnding, applyLineEnding, generateSlug } from '../utils/markdown-converter';
 import { aiCommands } from '../services/aiCommands';

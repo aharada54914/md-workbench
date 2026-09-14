@@ -13,6 +13,9 @@ const mockRemove = vi.fn();
 const mockOpenDialog = vi.fn();
 const mockSaveDialog = vi.fn();
 const mockOpenShell = vi.fn();
+vi.mock('../../services/documentText', () => ({
+  readTextFile: (...args: unknown[]) => mockReadTextFile(...args),
+}));
 const mockGetCurrentWindow = vi.fn(() => ({
   isMaximized: vi.fn(async () => false),
   maximize: vi.fn(async () => {}),

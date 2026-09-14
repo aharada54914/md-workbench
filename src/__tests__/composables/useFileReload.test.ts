@@ -6,6 +6,8 @@ import type { UseFileReloadOptions } from '../../composables/useFileReload';
 // Mock dependencies
 vi.mock('@tauri-apps/plugin-fs', () => ({
   watch: vi.fn(async () => vi.fn()),
+}));
+vi.mock('../../services/documentText', () => ({
   readTextFile: vi.fn(async () => 'disk content'),
 }));
 
@@ -42,7 +44,7 @@ vi.mock('../../i18n', () => ({
 }));
 
 import { useFileReload } from '../../composables/useFileReload';
-import { readTextFile } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '../../services/documentText';
 import { markdownToHtml } from '../../utils/markdown-converter';
 
 describe('useFileReload', () => {
