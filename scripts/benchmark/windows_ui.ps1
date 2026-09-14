@@ -24,6 +24,8 @@ public static class OwnedWindowInput {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
+  [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
+  public static void RequestClose(IntPtr window) { UIntPtr result; if (SendMessageTimeout(window,0x10,UIntPtr.Zero,IntPtr.Zero,2,5000,out result)==IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()); }
   [StructLayout(LayoutKind.Sequential)] public struct Keyboard { public ushort vk, scan; public uint flags, time; public UIntPtr extra; }
   [StructLayout(LayoutKind.Explicit, Size=40)] public struct Input { [FieldOffset(0)] public uint type; [FieldOffset(8)] public Keyboard key; }
   [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint count, Input[] events, int size);
@@ -64,9 +66,9 @@ function Assert-Foreground([IntPtr]$handle) {
     if (-not [String]::Equals($accountProcess.Path, (Join-Path $env:windir 'System32\WWAHost.exe'), [StringComparison]::OrdinalIgnoreCase)) {
       throw 'Unexpected Microsoft account window owner; refusing to interact'
     }
-    $accountWindow = [System.Windows.Automation.AutomationElement]::FromHandle($foreground)
-    $windowPattern = $accountWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
-    $windowPattern.Close()
+    # WWAHost does not expose UIA WindowPattern. WM_CLOSE is the ordinary
+    # window-close request; the system app remains free to decline it.
+    [OwnedWindowInput]::RequestClose($foreground)
     Start-Sleep -Milliseconds 500
   }
   [void][OwnedWindowInput]::ShowWindow($handle, 9)
