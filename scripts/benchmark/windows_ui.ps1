@@ -57,7 +57,6 @@ function Assert-Foreground([IntPtr]$handle) {
   [void][OwnedWindowInput]::ShowWindow($handle, 9)
   $shell = New-Object -ComObject WScript.Shell
   [void]$shell.AppActivate([int]$child.Id)
-  [System.Windows.Automation.AutomationElement]::FromHandle($handle).SetFocus()
   [void][OwnedWindowInput]::SetForegroundWindow($handle)
   $until = [DateTime]::UtcNow.AddSeconds(5)
   while ([OwnedWindowInput]::GetForegroundWindow() -ne $handle -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 100 }
