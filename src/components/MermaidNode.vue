@@ -271,7 +271,7 @@ const renderPreview = async () => {
   mermaid.initialize({
     startOnLoad: false,
     theme: "base",
-    securityLevel: "loose",
+    securityLevel: "strict",
     themeVariables: isDark.value
       ? {
           // Dark palette — overrides every Mermaid "base" theme color so
@@ -444,7 +444,7 @@ const renderMermaid = async () => {
   mermaid.initialize({
     startOnLoad: false,
     theme: "base",
-    securityLevel: "loose",
+    securityLevel: "strict",
     themeVariables: isDark.value
       ? {
           // Dark palette — overrides every Mermaid "base" theme color so
