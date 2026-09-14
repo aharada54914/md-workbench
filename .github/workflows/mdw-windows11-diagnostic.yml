@@ -1,38 +1,29 @@
 name: MDW Windows 11 runtime diagnosis
 on:
   pull_request:
-    paths: ['.github/workflows/mdw-windows11-diagnostic.yml', 'scripts/benchmark/run_limited.py']
+    paths: ['.github/workflows/mdw-windows11-diagnostic.yml', 'scripts/benchmark/windows_ui.ps1']
 permissions:
   contents: read
   actions: read
 jobs:
   inspect-owned-release:
     runs-on: windows-11-arm
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: '22.16.0'
-          architecture: x64
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           github-token: ${{ github.token }}
           run-id: 34793053160
           name: mdw-native-x64-release-b3ea081dcbedd39b66b976d1366faf37a3d29945
           path: native-binary
-      - run: npm install --global pnpm@11.3.0 --ignore-scripts
-      - run: pnpm install --frozen-lockfile
-      - run: python -m pip install -r scripts/benchmark/requirements.txt
-      - name: Verify non-elevated medium-integrity child
-        run: python scripts/benchmark/run_limited.py python scripts/benchmark/run_limited.py --verify
-      - name: Same release and current WebView with lowered test privileges
-        run: python scripts/benchmark/run_limited.py node scripts/benchmark/runtime_diagnostic.mjs native-binary/md-workbench.exe native-limited MD-Workbench --verify-editor
+      - name: Native Windows UI and exact source save without debugger
+        run: powershell.exe -NoProfile -STA -File scripts/benchmark/windows_ui.ps1 -Binary native-binary/md-workbench.exe -Output native-ui -VerifyEditor
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: mdw-win11-limited-diagnostic-${{ github.sha }}
-          path: native-limited/**
+          name: mdw-win11-ui-diagnostic-${{ github.sha }}
+          path: native-ui/**
           retention-days: 3
