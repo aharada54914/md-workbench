@@ -143,7 +143,8 @@ export async function setupTauriMocks(
             // plugin-fs v2: body = Uint8Array, path in options.headers.path (URL-encoded)
             const headers = (options as Record<string, unknown>)?.headers as Record<string, string> | undefined;
             const path = decodeURIComponent(headers?.path ?? '');
-            const content = new TextDecoder().decode(args as Uint8Array);
+            // Native write_text_file writes the supplied bytes verbatim.
+            const content = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }).decode(args as Uint8Array);
             return call('__mockFsWrite', path, content);
           }
           if (cmd === 'plugin:fs|rename') {

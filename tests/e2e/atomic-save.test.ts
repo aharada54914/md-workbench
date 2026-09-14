@@ -154,8 +154,8 @@ test.describe('Code View Save — no 0KB bug (#28)', () => {
     await saveAs(page, SAVE_PATH);
 
     const finalFs = getFs();
-    // Save normalizes trailing whitespace but otherwise keeps raw Markdown (no HTML conversion).
-    expect(finalFs[SAVE_PATH]).toBe(expectedContent.trimEnd());
+    // Source save now preserves every supplied character, including its final newline.
+    expect(finalFs[SAVE_PATH]).toBe(expectedContent);
   });
 
   test('code view does not save empty file (regression test for 0KB bug)', async ({ page }) => {

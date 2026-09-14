@@ -1,9 +1,11 @@
 # Native Windows reproduction
 
 `MDW Windows native reproduction` builds a real Tauri release executable and
-opens synthetic LF/CRLF/BOM+CRLF Japanese documents on `windows-2022`. It does
+opens synthetic LF/CRLF/BOM+CRLF Japanese documents on `windows-2022` and
+`windows-11-arm`. The x64 release is built once on Windows Server and transferred
+through a same-run, SHA-pinned Actions artifact download. It does
 not use the Vite application, Tauri mocks, Wine, or a fabricated Windows label.
-The same job installs checksum-pinned upstream MerMark 0.7.3 and repeats the
+Each OS job installs checksum-pinned upstream MerMark 0.7.3 and repeats the
 exercise. Each application performs 30 process-cold and 50 warm document opens.
 
 The observer connects to the actual WebView through a loopback CDP endpoint,
@@ -27,6 +29,13 @@ Missing samples are not zeros. Input document hashes must remain unchanged.
 - `latest-frame.png`: synthetic document only, not a desktop/user screenshot.
 
 Windows Server 2022 CI is **not Windows 11 physical-machine acceptance**. The
+Windows 11 ARM job uses an actual Windows 11 desktop OS with x64 emulation,
+not a Windows 11 x64 physical machine. `runner_arch`, process architecture,
+OS version, image version and binary hash are retained; do not pool its timing
+with Server x64 results. The compatibility job must pass before claiming Windows
+11 validation. The runner labels are documented in
+[GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+The
 CDP observer and memory observer add overhead, and cold sampling starts after
 process launch. These are diagnostic upper bounds and process-memory samples,
 not precise native present events or uninstrumented product benchmarks.
@@ -35,7 +44,7 @@ power-policy changes, antivirus exclusions, AI calls or diagram-editor launch
 are performed. Glyph evidence is not a complete Japanese IME test.
 
 T03 remains open pending the agreed same-fixture 30/50 accepted observations,
-VS Code comparison, complete environment acceptance and Windows 11 validation.
+VS Code comparison and complete Windows 11 x64 environment acceptance.
 The first run `34790461175` passed 80 opens in each real application before
 the stricter glyph/memory checks were added; do not attribute later checks to it.
 

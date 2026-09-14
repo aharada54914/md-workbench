@@ -346,7 +346,7 @@ async function onSend() {
 
   if (!docNeedsSave.value) {
     try {
-      const { readTextFile } = await import('@tauri-apps/plugin-fs');
+      const { readTextFile } = await import('../../services/documentText');
       const onDiskBefore = await readTextFile(props.docPath);
       await aiCommands.snapshotCreate(
         props.docPath,
