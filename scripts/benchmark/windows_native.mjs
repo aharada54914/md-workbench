@@ -7,6 +7,8 @@ import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import sharp from 'sharp';
+import os from 'node:os';
+import { summarizeNative } from './native_summary.mjs';
 
 if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') {
   throw new Error('Restricted to disposable GitHub-hosted Windows runners');
@@ -17,12 +19,17 @@ const binary = resolve(binaryArg), out = resolve(outArg);
 await mkdir(out, { recursive: false });
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const trials = [], owned = new Map();
+let currentTrial = null;
 const port = 9222;
 const env = { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1` };
 const report = {
   schema: 1, app: appName, binary_sha256: hash(await readFile(binary)),
   commit: process.env.GITHUB_SHA, runner_os: process.env.RUNNER_OS,
   runner_image: process.env.ImageOS, runner_image_version: process.env.ImageVersion,
+  environment: { os_release: os.release(), os_version: os.version(), arch: os.arch(), cpu: os.cpus()[0]?.model, ram_bytes: os.totalmem(),
+    power: execFileSync('powercfg.exe', ['/getactivescheme'], { encoding: 'utf8' }).trim(),
+    antivirus: 'GitHub-hosted runner default; no exclusions or protection changes requested',
+    ai_state: 'not invoked', diagram_editor_state: 'not invoked' },
   status: 'running', trials,
   limitations: [
     'Native Windows Server runner, not Windows 11 physical hardware or Japanese IME acceptance.',
@@ -102,7 +109,9 @@ async function observe(browser, fixture, imagePath) {
         ({ fonts } = await session.send('CSS.getPlatformFontsForNode', { nodeId }));
         // The mixed ASCII/Japanese heading must use a CJK-capable platform font,
         // not merely contain Japanese DOM text rendered as missing-glyph boxes.
-        if (!fonts.some(font => /Yu Gothic|YuGothic|Meiryo|MS Gothic|MS PGothic|MS UI Gothic|Noto.*CJK|Noto.*JP|Yu Mincho|MS Mincho|ＭＳ|メイリオ|游ゴシック/i.test(font.familyName) && font.glyphCount >= 8)) {
+        const japaneseGlyphs = [...fixture.marker].filter(char => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(char)).length;
+        const renderedJapaneseGlyphs = fonts.filter(font => /Yu Gothic|YuGothic|Meiryo|MS Gothic|MS PGothic|MS UI Gothic|Noto.*CJK|Noto.*JP|Yu Mincho|MS Mincho|ＭＳ|メイリオ|游ゴシック/i.test(font.familyName)).reduce((sum, font) => sum + font.glyphCount, 0);
+        if (renderedJapaneseGlyphs < japaneseGlyphs) {
           throw new Error(`No verified Japanese platform font: ${JSON.stringify(fonts)}`);
         }
       } finally { await session.detach(); }
@@ -134,6 +143,7 @@ try {
   let child, browser;
   for (let index = 0; index < 30; index++) {
     const fixture = fixtures[index % fixtures.length];
+    currentTrial = { mode: 'cold-process', index, fixture: fixture.sha256 };
     const begin = process.hrtime.bigint();
     child = launch(fixture);
     const stopMemory = await watchMemory(child.pid, `cold-${index}`);
@@ -142,6 +152,7 @@ try {
     const observed_ms = Number(process.hrtime.bigint() - begin) / 1e6;
     const memory = await stopMemory();
     trials.push({ mode: 'cold-process', index, fixture: fixture.sha256, observed_ms, memory, view, status: 'success' });
+    currentTrial = null;
     await browser.close();
     await killOwned(child.pid);
     await verifyInputs();
@@ -153,6 +164,7 @@ try {
   for (let index = 0; index < 50; index++) {
     // Alternate distinct documents so an already-visible frame cannot pass.
     const fixture = fixtures[(index + 1) % fixtures.length];
+    currentTrial = { mode: 'warm', index, fixture: fixture.sha256 };
     const stopMemory = await watchMemory(child.pid, `warm-${index}`);
     const begin = process.hrtime.bigint();
     launch(fixture);
@@ -160,6 +172,7 @@ try {
     const observed_ms = Number(process.hrtime.bigint() - begin) / 1e6;
     const memory = await stopMemory();
     trials.push({ mode: 'warm', index, fixture: fixture.sha256, observed_ms, memory, view, status: 'success' });
+    currentTrial = null;
     await verifyInputs();
     await writeFile(join(out, 'native-results.json'), JSON.stringify(report, null, 2));
   }
@@ -167,6 +180,7 @@ try {
   await killOwned(child.pid);
   report.status = 'passed';
 } catch (error) {
+  if (currentTrial) trials.push({ ...currentTrial, status: 'failed', error: String(error) });
   report.status = 'failed'; report.error = String(error);
   process.exitCode = 1;
 } finally {
@@ -175,5 +189,8 @@ try {
     catch (error) { report.status = 'failed'; report.cleanup_error = String(error); process.exitCode = 1; }
   }
   await writeFile(join(out, 'native-results.json'), JSON.stringify(report, null, 2));
+  report.summary = summarizeNative(trials);
+  await writeFile(join(out, 'native-summary.json'), JSON.stringify({ app: appName, environment: report.environment, status: report.status, summary: report.summary }, null, 2));
+  console.log(JSON.stringify({ app: appName, environment: report.environment, diagnostic_summary: report.summary }));
   console.log(JSON.stringify({ app: appName, status: report.status, completed_trials: trials.length, error: report.error }));
 }

@@ -8,6 +8,8 @@ on:
       - 'pnpm-lock.yaml'
       - 'scripts/benchmark/windows_native.mjs'
       - 'scripts/benchmark/native_memory.py'
+      - 'scripts/benchmark/native_summary.mjs'
+      - 'scripts/benchmark/native_summary.test.mjs'
       - 'scripts/benchmark/measure.py'
       - '.github/workflows/mdw-windows-native.yml'
 permissions:
@@ -28,6 +30,7 @@ jobs:
           node-version: '22.16.0'
       - run: npm install --global pnpm@11.3.0 --ignore-scripts
       - run: pnpm install --frozen-lockfile
+      - run: node --test scripts/benchmark/native_summary.test.mjs
       - run: python -m pip install -r scripts/benchmark/requirements.txt
       - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
       - name: Build native release (not dev server or debug build)
