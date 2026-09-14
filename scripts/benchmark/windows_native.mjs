@@ -41,7 +41,7 @@ const report = {
 };
 const fixtures = [];
 for (const [name, newline, bom] of [['lf', '\n', ''], ['crlf', '\r\n', ''], ['bom-crlf', '\r\n', '\uFEFF']]) {
-  const marker = `MDW-${name}-日本語表示確認`;
+  const marker = `MDW-${name}-日本語の表示テスト`;
   const path = join(out, `${name}.md`);
   const source = bom + [`# ${marker}`, '', '日本語の本文を実際のWindows WebViewで表示する。', '', '```text', '$not_math$', '```', '', '$$a+b$$', '', 'MDW-END-本文末尾', ''].join(newline);
   await writeFile(path, source, { flag: 'wx' });
@@ -109,9 +109,11 @@ async function observe(browser, fixture, imagePath) {
         ({ fonts } = await session.send('CSS.getPlatformFontsForNode', { nodeId }));
         // The mixed ASCII/Japanese heading must use a CJK-capable platform font,
         // not merely contain Japanese DOM text rendered as missing-glyph boxes.
-        const japaneseGlyphs = [...fixture.marker].filter(char => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(char)).length;
-        const renderedJapaneseGlyphs = fonts.filter(font => /Yu Gothic|YuGothic|Meiryo|MS Gothic|MS PGothic|MS UI Gothic|Noto.*CJK|Noto.*JP|Yu Mincho|MS Mincho|ＭＳ|メイリオ|游ゴシック/i.test(font.familyName)).reduce((sum, font) => sum + font.glyphCount, 0);
-        if (renderedJapaneseGlyphs < japaneseGlyphs) {
+        const japaneseText = [...fixture.marker].filter(char => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(char)).join('');
+        const coverage = JSON.parse(execFileSync('python', ['scripts/benchmark/windows_glyphs.py', japaneseText, ...fonts.map(font => font.familyName)], { encoding: 'utf8' }));
+        fonts = fonts.map((font, index) => ({ ...font, coverage: coverage[index] }));
+        const renderedJapaneseGlyphs = fonts.filter(font => font.coverage.supported).reduce((sum, font) => sum + font.glyphCount, 0);
+        if (renderedJapaneseGlyphs < japaneseText.length) {
           throw new Error(`No verified Japanese platform font: ${JSON.stringify(fonts)}`);
         }
       } finally { await session.detach(); }
