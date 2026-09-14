@@ -20,7 +20,7 @@ export interface Tab {
   largeFile?: boolean;
   /**
    * Raw markdown source of truth while no HTML has been generated yet.
-   * Non-null only for large files that have never entered a visual view.
+   * Also retains parked Source/Split buffers until their HTML cache is rebuilt.
    */
   pendingMarkdown?: string | null;
 }

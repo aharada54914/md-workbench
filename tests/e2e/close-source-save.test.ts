@@ -27,6 +27,9 @@ test('cross-pane close selection and Cancel preserve the live Source document', 
   await fs.triggerWindowClose();
   await expect(page.getByRole('heading', { name: 'Unsaved Changes' })).toBeVisible();
   await page.locator('.dialog-actions .btn-cancel').click();
+  // Switching the other pane to Visual must not make the parked right-hand
+  // Source tab fall back to its stale pre-edit HTML on reactivation.
+  await page.getByRole('button', { name: 'Visual', exact: true }).click();
   await page.evaluate(async () => {
     const modulePath = '/src/composables/useSplitView.ts';
     const { useSplitView } = await import(/* @vite-ignore */ modulePath);

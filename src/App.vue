@@ -943,6 +943,15 @@ watch(activeTabId, (_newId, oldId) => {
     return;
   }
 
+  // A parked Source tab may be selected after another tab switched to Visual.
+  // Its cached HTML is stale: resume Source until an explicit Visual transition
+  // regenerates that cache, rather than displaying or saving the stale copy.
+  if (tab?.pendingMarkdown != null && !splitEditorActive.value) {
+    seedCodeContent(tab.pendingMarkdown);
+    codeView.value = true;
+    return;
+  }
+
   if (codeView.value) {
     seedCodeContent(tab?.pendingMarkdown
       ?? (!tab?.hasChanges ? tab?.originalMarkdown : null)
