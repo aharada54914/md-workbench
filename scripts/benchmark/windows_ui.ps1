@@ -132,9 +132,21 @@ function Assert-Foreground([IntPtr]$handle) {
   }
 }
 function Invoke-Button($root, [string]$name) {
-  $button = Wait-Name $root $name
-  $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-  $pattern.Invoke()
+  [void](Wait-Name $root $name)
+  $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)
+  $buttons = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+  foreach ($button in $buttons) {
+    if ($button.Current.IsOffscreen) { continue }
+    $pattern = $null
+    if ($button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+      $pattern.Invoke(); return
+    }
+    # aria-pressed is exposed by WebView2 as TogglePattern, not InvokePattern.
+    if ($button.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
+      $pattern.Toggle(); return
+    }
+  }
+  throw "Named UI element has neither Invoke nor Toggle pattern: $name"
 }
 
 foreach ($format in @('lf','crlf','bom-crlf')) {
