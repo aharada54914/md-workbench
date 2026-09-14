@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
+import { codeEditor, openCodeView } from './helpers/code-editor';
 
 for (const [name, newline, bom] of [['LF', '\n', ''], ['CRLF', '\r\n', ''], ['BOM-CRLF', '\r\n', '\uFEFF']]) {
   test(`unchanged ${name} Save As keeps source, unknown syntax and trailing spaces`, async ({ page }) => {
@@ -11,6 +12,13 @@ for (const [name, newline, bom] of [['LF', '\n', ''], ['CRLF', '\r\n', ''], ['BO
     await page.evaluate(path => { (window as Record<string, unknown>).__mockDialogSavePath = path; }, copy);
     await page.keyboard.press('Control+Shift+s');
     await expect.poll(() => fs.getFs()[copy]).toBe(source);
+    expect(fs.getFs()[path]).toBe(source);
+    await openCodeView(page);
+    await codeEditor(page).click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.insertText('追記😀');
+    await page.keyboard.press('Control+s');
+    await expect.poll(() => fs.getFs()[copy]).toBe(source + '追記😀');
     expect(fs.getFs()[path]).toBe(source);
   });
 }

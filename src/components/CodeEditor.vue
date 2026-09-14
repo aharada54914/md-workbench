@@ -9,6 +9,7 @@ import { tags } from '@lezer/highlight';
 import { useEditorZoom } from '../composables/useEditorZoom';
 import { useSettings } from '../composables/useSettings';
 import type { CodeEditorHandle } from '../types/code-editor';
+import { applySourceEdits, sourceOffset, editorOffset, type SourceEdit } from '../utils/source-edits';
 
 const props = defineProps<{ modelValue: string }>();
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
@@ -50,16 +51,16 @@ const codeZoomStyle = computed(() => ({ zoom: zoomScale.value }));
 
 const editor: CodeEditorHandle = {
   focus: () => view?.focus(),
-  getValue: () => view?.state.doc.toString() ?? props.modelValue,
+  getValue: () => lastSyncedValue,
   getSelection: () => {
     const range = view?.state.selection.main;
-    return range ? { start: range.from, end: range.to } : { start: 0, end: 0 };
+    return range ? { start: sourceOffset(lastSyncedValue, range.from), end: sourceOffset(lastSyncedValue, range.to) } : { start: 0, end: 0 };
   },
   setSelection: (start, end = start) => {
     if (!view) return;
     const length = view.state.doc.length;
-    const anchor = Math.max(0, Math.min(start, length));
-    const head = Math.max(0, Math.min(end, length));
+    const anchor = Math.max(0, Math.min(editorOffset(lastSyncedValue, start), length));
+    const head = Math.max(0, Math.min(editorOffset(lastSyncedValue, end), length));
     view.dispatch({
       selection: { anchor, head },
       effects: EditorView.scrollIntoView(head, { y: 'center' }),
@@ -70,7 +71,7 @@ const editor: CodeEditorHandle = {
     const { from, to } = view.state.selection.main;
     view.dispatch({
       changes: { from, to, insert: text },
-      selection: { anchor: from + text.length },
+      selection: { anchor: from + view.state.toText(text).length },
       scrollIntoView: true,
     });
   },
@@ -86,7 +87,7 @@ const editor: CodeEditorHandle = {
   },
   scrollToPosition: (position) => {
     if (!view) return;
-    const pos = Math.max(0, Math.min(position, view.state.doc.length));
+    const pos = Math.max(0, Math.min(editorOffset(lastSyncedValue, position), view.state.doc.length));
     view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
   },
   highlightSelectionLine: (durationMs = 1000) => {
@@ -155,7 +156,9 @@ onMounted(() => {
         gutterConfig.of(settings.value.showLineNumbers ? lineNumbers() : []),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !applyingExternalValue) {
-            lastSyncedValue = update.state.doc.toString();
+            const edits: SourceEdit[] = [];
+            update.changes.iterChanges((from, to, _fromB, _toB, inserted) => edits.push({ from, to, insert: inserted.toString() }));
+            lastSyncedValue = applySourceEdits(lastSyncedValue, edits);
             emit('update:modelValue', lastSyncedValue);
           }
         }),

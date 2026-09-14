@@ -798,6 +798,7 @@ const {
   enterCodeViewWithMarkdown,
   seedCodeContent,
 } = useCodeView({
+  getUnchangedMarkdown: () => activeTab.value?.hasChanges ? null : activeTab.value?.originalMarkdown ?? null,
   getActiveContent: () => activeTab.value?.content || '<p></p>',
   setActiveContent: (content: string) => {
     if (activeTab.value) {

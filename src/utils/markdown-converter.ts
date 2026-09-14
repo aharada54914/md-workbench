@@ -378,7 +378,8 @@ export function markdownToHtmlWithMeta(
   md: string,
   readFormats: MermaidFormat[] = getCurrentMermaidReadFormats(),
 ): MarkdownConversionResult {
-  let html = md;
+  // BOM belongs to authoritative source, not the first Markdown token.
+  let html = md.startsWith('\uFEFF') ? md.slice(1) : md;
 
   // Leading YAML front matter -> compact badge node (rendered after escaping so
   // its HTML is not mangled). Keeps the raw block for a verbatim round-trip.
