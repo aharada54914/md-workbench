@@ -133,6 +133,7 @@ const en: Translations = {
 
   // Dialogs
   unsavedChanges: 'Unsaved Changes',
+  saveBeforeWindowTransfer: 'Save your changes before moving this tab to another window.',
   unsavedChangesMessage: 'This document has unsaved changes. Do you want to save before closing?',
   dontSave: "Don't Save",
   cancel: 'Cancel',

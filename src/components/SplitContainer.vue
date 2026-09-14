@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { message } from '@tauri-apps/plugin-dialog';
 import { useSplitView } from '../composables/useSplitView';
 import { useTabDrag } from '../composables/useTabDrag';
 import { useWindowManager } from '../composables/useWindowManager';
-import { htmlToMarkdown } from '../utils/markdown-converter';
+import { t } from '../i18n';
 import EditorPane from './EditorPane.vue';
 
 const {
@@ -75,15 +75,22 @@ onMounted(() => {
       const pane = splitState.value.panes.find(p => p.id === paneId);
       const tab = pane?.tabs.find(t => t.id === tabId);
 
-      // Save file content before transfer
-      if (tab && tab.content) {
-        const markdownContent = htmlToMarkdown(tab.content).trimEnd();
-        await writeTextFile(filePath, markdownContent);
+      // A transfer is not a save. The normal Save command owns conflict
+      // detection and byte preservation; never serialize editor HTML here.
+      if (!tab || tab.filePath !== filePath) return;
+      if (tab.hasChanges) {
+        await message(t.value.saveBeforeWindowTransfer, { title: t.value.unsavedChanges, kind: 'info' });
+        return;
       }
+      const initialContent = tab.content;
+      const initialSource = tab.originalMarkdown;
+      const isUnchanged = () => pane?.tabs.includes(tab) && tab.filePath === filePath
+        && !tab.hasChanges && tab.content === initialContent && tab.originalMarkdown === initialSource;
 
       // Get current window label and all windows
       const currentWindow = await getCurrentWindowLabel();
       const allWindows = await getAllWindows();
+      if (!isUnchanged()) return;
 
       // Find other windows (excluding current one)
       const otherWindows = allWindows.filter(w => w !== currentWindow);
@@ -105,9 +112,9 @@ onMounted(() => {
         await createNewWindow(filePath);
       }
 
-      if (tab) {
-        tab.hasChanges = false;
-      }
+      // Input can arrive while the native transfer request is pending.
+      // Keep those edits in the source window instead of silently discarding.
+      if (!isUnchanged()) return;
       removeTabWithoutCreate(paneId, tabId);
 
       if (isWindowEmpty()) {
