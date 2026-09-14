@@ -27,7 +27,27 @@ public static class OwnedWindowInput {
   [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
   public static void RequestClose(IntPtr window) { UIntPtr result; if (SendMessageTimeout(window,0x10,UIntPtr.Zero,IntPtr.Zero,2,5000,out result)==IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()); }
   [StructLayout(LayoutKind.Sequential)] public struct Keyboard { public ushort vk, scan; public uint flags, time; public UIntPtr extra; }
-  [StructLayout(LayoutKind.Explicit, Size=40)] public struct Input { [FieldOffset(0)] public uint type; [FieldOffset(8)] public Keyboard key; }
+  [StructLayout(LayoutKind.Sequential)] public struct Mouse { public int dx, dy; public uint data, flags, time; public UIntPtr extra; }
+  [StructLayout(LayoutKind.Explicit, Size=40)] public struct Input { [FieldOffset(0)] public uint type; [FieldOffset(8)] public Keyboard key; [FieldOffset(8)] public Mouse mouse; }
+  [StructLayout(LayoutKind.Sequential)] struct Point { public int x,y; public Point(int x,int y) { this.x=x; this.y=y; } }
+  [StructLayout(LayoutKind.Sequential)] struct Rect { public int left,top,right,bottom; }
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rect);
+  [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint flags);
+  [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+  public static bool ClickOwnedCaption(IntPtr window) {
+    Rect rect; if(!GetWindowRect(window,out rect)) return false;
+    foreach(int divisor in new [] { 2,3,4 }) {
+      Point point=new Point(rect.left+(rect.right-rect.left)/divisor,rect.top+12);
+      // Hit testing must show our own top-level window at the exact point.
+      // Never click through an overlay, another window or a system prompt.
+      if(GetAncestor(WindowFromPoint(point),2)!=window) continue;
+      if(!SetCursorPos(point.x,point.y) || GetAncestor(WindowFromPoint(point),2)!=window) return false;
+      Send(new [] { new Input { type=0,mouse=new Mouse { flags=2 } },new Input { type=0,mouse=new Mouse { flags=4 } } });
+      return true;
+    }
+    return false;
+  }
   [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint count, Input[] events, int size);
   static Input Event(ushort vk, ushort scan, uint flags) { return new Input { type=1, key=new Keyboard { vk=vk, scan=scan, flags=flags } }; }
   public static void Control(ushort key) { Send(new [] { Event(17,0,0), Event(key,0,0), Event(key,0,2), Event(17,0,2) }); }
@@ -57,6 +77,11 @@ function Wait-Name($root, [string]$name) {
   throw "No visible native UI element: $name"
 }
 function Assert-Foreground([IntPtr]$handle) {
+  [void][OwnedWindowInput]::ShowWindow($handle, 9)
+  if ([OwnedWindowInput]::GetForegroundWindow() -ne $handle) {
+    Write-Output "Owned caption click=$([OwnedWindowInput]::ClickOwnedCaption($handle))"
+    Start-Sleep -Milliseconds 200
+  }
   # A fresh hosted Win11 image may display an optional Microsoft-account
   # window. Cancel that UI normally, without credentials or OS policy changes.
   $foreground = [OwnedWindowInput]::GetForegroundWindow()
