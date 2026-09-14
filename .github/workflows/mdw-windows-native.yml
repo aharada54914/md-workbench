@@ -7,6 +7,7 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'scripts/benchmark/windows_native.mjs'
+      - 'scripts/benchmark/windows_ui.ps1'
       - 'scripts/benchmark/native_memory.py'
       - 'scripts/benchmark/windows_glyphs.py'
       - 'scripts/benchmark/test_windows_glyphs.py'
@@ -69,7 +70,10 @@ jobs:
           name: mdw-native-x64-release-${{ github.sha }}
           path: native-binary
       - name: Native release document exercise (30 cold and 50 warm)
-        run: node scripts/benchmark/windows_native.mjs native-binary/md-workbench.exe native-fork MD-Workbench --verify-editor
+        if: matrix.os == 'windows-2022'
+        run: node scripts/benchmark/windows_native.mjs native-binary/md-workbench.exe native-fork MD-Workbench
+      - name: Native UI and exact Source save without debugger
+        run: powershell.exe -NoProfile -STA -File scripts/benchmark/windows_ui.ps1 -Binary native-binary/md-workbench.exe -Output native-ui-fork -VerifyEditor
       - name: Install pinned upstream on this same disposable machine
         if: always()
         shell: pwsh
@@ -82,8 +86,11 @@ jobs:
           if (-not $proc.WaitForExit(120000) -or $proc.ExitCode -ne 0) { throw 'Upstream installer failed' }
           "MDW_UPSTREAM_EXE=$install\mdreader.exe" >> $env:GITHUB_ENV
       - name: Upstream document exercise with identical observation conditions
-        if: always() && env.MDW_UPSTREAM_EXE != ''
+        if: always() && matrix.os == 'windows-2022' && env.MDW_UPSTREAM_EXE != ''
         run: node scripts/benchmark/windows_native.mjs "$env:MDW_UPSTREAM_EXE" native-upstream MerMark-0.7.3
+      - name: Upstream native UI with identical viewing checks
+        if: always() && env.MDW_UPSTREAM_EXE != ''
+        run: powershell.exe -NoProfile -STA -File scripts/benchmark/windows_ui.ps1 -Binary "$env:MDW_UPSTREAM_EXE" -Output native-ui-upstream
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -91,5 +98,7 @@ jobs:
           path: |
             native-fork/**
             native-upstream/**
+            native-ui-fork/**
+            native-ui-upstream/**
           retention-days: 14
           if-no-files-found: error
