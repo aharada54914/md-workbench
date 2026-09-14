@@ -240,6 +240,7 @@ const createDocument = async (kind: 'plain' | 'marp') => {
   if (splitEditorActive.value && activeTab.value) {
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     activeTab.value.content = exitSplitEditor();
+    activeTab.value.pendingMarkdown = null;
     activeTab.value.hasChanges = true;
   }
   if (kind === 'marp') {
@@ -820,7 +821,7 @@ const {
       activeTab.value.hasChanges = true;
     }
   },
-  forceConvertOnExit: () => isMarkdownFirst(activeTab.value),
+  forceConvertOnExit: () => activeTab.value.pendingMarkdown != null,
 });
 
 // Sync the composable with the virtualized code editor.
@@ -893,7 +894,8 @@ const splitPreviewLatestHtml = ref('');
 const splitSourceTabId = ref<string | null>(null);
 
 const enterSplitEditor = (html: string): void => {
-  enterSplitEditorRaw(html);
+  const tab = activeTab.value;
+  enterSplitEditorRaw(html, tab.pendingMarkdown ?? (!tab.hasChanges ? tab.originalMarkdown : null));
   splitSourceTabId.value = activeTabId.value;
 };
 
@@ -908,10 +910,11 @@ const enterSplitEditor = (html: string): void => {
 watch(activeTabId, (_newId, oldId) => {
   if (!splitEditorActive.value) return;
   if (splitSourceTabId.value === oldId) {
-    const oldIndex = tabs.value.findIndex(t => t.id === oldId);
-    if (oldIndex !== -1) {
-      tabs.value[oldIndex].content = markdownToHtml(splitMarkdownSource.value);
-      tabs.value[oldIndex].hasChanges = true;
+    const oldTab = splitState.value.panes.flatMap(pane => pane.tabs).find(tab => tab.id === oldId);
+    if (oldTab) {
+      oldTab.content = markdownToHtml(splitMarkdownSource.value);
+      oldTab.pendingMarkdown = splitMarkdownSource.value;
+      oldTab.hasChanges = true;
     }
   }
   enterSplitEditor(activeTab.value?.content || '<p></p>');
@@ -920,13 +923,13 @@ watch(activeTabId, (_newId, oldId) => {
 // Markdown-first activation rule (issue #129): large tabs keep Markdown as
 // their source of truth and open in the section-virtualized visual editor.
 watch(activeTabId, (_newId, oldId) => {
-  const oldTab = tabs.value.find(t => t.id === oldId);
+  const oldTab = splitState.value.panes.flatMap(pane => pane.tabs).find(t => t.id === oldId);
   if (largeFileVisualMode.value && oldTab) {
     oldTab.pendingMarkdown = lazyMarkdownEditorRef.value?.getMarkdown() ?? oldTab.pendingMarkdown;
   }
   largeFileVisualMode.value = false;
-  if (codeView.value && isMarkdownFirst(oldTab)) {
-    oldTab!.pendingMarkdown = codeContent.value;
+  if (codeView.value && oldTab) {
+    oldTab.pendingMarkdown = codeContent.value;
   }
 
   const tab = activeTab.value;
@@ -941,7 +944,9 @@ watch(activeTabId, (_newId, oldId) => {
   }
 
   if (codeView.value) {
-    seedCodeContent(htmlToMarkdown(tab?.content || '<p></p>'));
+    seedCodeContent(tab?.pendingMarkdown
+      ?? (!tab?.hasChanges ? tab?.originalMarkdown : null)
+      ?? htmlToMarkdown(tab?.content || '<p></p>'));
   }
 });
 
@@ -971,6 +976,7 @@ const toggleSplitEditor = async () => {
   const html = exitSplitEditor();
   if (activeTab.value) {
     activeTab.value.content = html;
+    activeTab.value.pendingMarkdown = null;
     activeTab.value.hasChanges = true;
   }
   isLoadingContent.value = true;
@@ -1122,6 +1128,7 @@ const switchToTabFromSplitEditor = async (tabId: string) => {
 const closeTabFromSplitEditor = async (tabId: string) => {
   if (tabId === activeTabId.value && activeTab.value && splitSourceTabId.value === tabId) {
     activeTab.value.content = exitSplitEditor();
+    activeTab.value.pendingMarkdown = null;
     activeTab.value.hasChanges = true;
   }
   handleCloseTabRequest(activePaneId.value, tabId);
