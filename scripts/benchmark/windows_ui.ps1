@@ -55,6 +55,20 @@ function Wait-Name($root, [string]$name) {
   throw "No visible native UI element: $name"
 }
 function Assert-Foreground([IntPtr]$handle) {
+  # A fresh hosted Win11 image may display an optional Microsoft-account
+  # window. Cancel that UI normally, without credentials or OS policy changes.
+  $foreground = [OwnedWindowInput]::GetForegroundWindow()
+  if ([OwnedWindowInput]::Title($foreground) -eq 'Microsoft account') {
+    $accountProcess = Get-Process -Id ([OwnedWindowInput]::Owner($foreground))
+    Write-Output "Hosted account prompt process=$($accountProcess.ProcessName) path=$($accountProcess.Path)"
+    if (-not $accountProcess.Path -or -not $accountProcess.Path.StartsWith(($env:windir + '\\SystemApps\\'), [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Unexpected Microsoft account window owner; refusing to interact'
+    }
+    $accountWindow = [System.Windows.Automation.AutomationElement]::FromHandle($foreground)
+    $windowPattern = $accountWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+    $windowPattern.Close()
+    Start-Sleep -Milliseconds 500
+  }
   [void][OwnedWindowInput]::ShowWindow($handle, 9)
   $shell = New-Object -ComObject WScript.Shell
   [void]$shell.AppActivate([int]$child.Id)
