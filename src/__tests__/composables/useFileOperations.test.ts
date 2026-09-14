@@ -141,6 +141,75 @@ describe('useFileOperations', () => {
   // ----------------------------------------------------------
 
   describe('atomicWriteFile', () => {
+    it.each(['# A\n\n', '# A\r\n\r\n', '\uFEFF# A\r\n\r\n'])('background Source save preserves raw bytes for %j', async (source) => {
+      const candidate = source + '追記😀';
+      const { options, tabs, getEditorHtml } = makeOptions({ originalMarkdown: source }, { getMarkdownOverride: () => candidate });
+      getEditorHtml.mockImplementation(() => { throw new Error('editor is unmounted'); });
+      mockReadTextFile.mockImplementation(async path => path.endsWith('.tmp') ? candidate : source);
+      const operations = useFileOperations(options);
+      expect(await operations.saveExistingTab(tabs.value[0], { markdown: candidate, html: '' })).toBe(true);
+      expect(mockWriteTextFile).toHaveBeenCalledWith('/test/file.md.tmp', candidate);
+      expect(tabs.value[0].hasChanges).toBe(false);
+      expect(getEditorHtml).not.toHaveBeenCalled();
+    });
+
+    it('background save checks revisions even without an interactive conflict callback', async () => {
+      const { options, tabs } = makeOptions({ originalMarkdown: '' });
+      mockReadTextFile.mockResolvedValue('\r\n');
+      const operations = useFileOperations(options);
+      expect(await operations.saveExistingTab(tabs.value[0], { markdown: 'local', html: '' })).toBe(false);
+      expect(mockWriteTextFile).not.toHaveBeenCalled();
+      expect(tabs.value[0].hasChanges).toBe(true);
+    });
+
+    it('an unreadable background target is not treated as a new file', async () => {
+      const { options, tabs } = makeOptions();
+      mockReadTextFile.mockRejectedValue(new Error('read denied'));
+      mockExists.mockResolvedValue(false);
+      const operations = useFileOperations(options);
+      expect(await operations.saveExistingTab(tabs.value[0], { markdown: 'local', html: '' })).toBe(false);
+      expect(mockWriteTextFile).not.toHaveBeenCalled();
+      expect(tabs.value[0].hasChanges).toBe(true);
+    });
+
+    it('saves another pane without updating the active tab or reading its editor', async () => {
+      const { options, tabs, getEditorHtml } = makeOptions();
+      const target = makeTab({ id: 'other', filePath: '/test/other.md', originalMarkdown: 'old' });
+      mockReadTextFile.mockImplementation(async path => path.endsWith('.tmp') ? 'new' : 'old');
+      const operations = useFileOperations(options);
+      expect(await operations.saveExistingTab(target, { markdown: 'new', html: '' })).toBe(true);
+      expect(target.originalMarkdown).toBe('new');
+      expect(target.hasChanges).toBe(false);
+      expect(tabs.value[0].originalMarkdown).toBe('# hello');
+      expect(tabs.value[0].hasChanges).toBe(true);
+      expect(getEditorHtml).not.toHaveBeenCalled();
+    });
+
+    it('keeps edits arriving while raw Source bytes are being saved dirty', async () => {
+      let live = 'new';
+      const { options, tabs } = makeOptions({}, { getMarkdownOverride: () => live });
+      mockReadTextFile.mockImplementation(async path => path.endsWith('.tmp') ? 'new' : '# hello');
+      mockRename.mockImplementationOnce(async () => { live = 'newer'; });
+      const operations = useFileOperations(options);
+      expect(await operations.saveExistingTab(tabs.value[0], { markdown: 'new', html: '' })).toBe(true);
+      expect(tabs.value[0].originalMarkdown).toBe('new');
+      expect(tabs.value[0].hasChanges).toBe(true);
+    });
+
+    it('refuses an overlapping manual write to the same temporary path', async () => {
+      let finish!: () => void;
+      const { options, tabs } = makeOptions({}, { getMarkdownOverride: () => 'new' });
+      mockReadTextFile.mockImplementation(async path => path.endsWith('.tmp') ? 'new' : '# hello');
+      mockWriteTextFile.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+      const operations = useFileOperations(options);
+      const pending = operations.saveExistingTab(tabs.value[0], { markdown: 'new', html: '' });
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      expect(await operations.saveFile()).toBe(false);
+      expect(mockWriteTextFile).toHaveBeenCalledOnce();
+      finish();
+      expect(await pending).toBe(true);
+    });
+
     it('writes to .tmp file first, then renames to final path', async () => {
       // readTextFile is called twice: once for .tmp verification, once for pre-save conflict check
       mockReadTextFile.mockImplementation(async (path: string) => {

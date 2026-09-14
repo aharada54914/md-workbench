@@ -4,10 +4,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { copyFile, writeTextFile, exists, remove } from '@tauri-apps/plugin-fs';
+import { copyFile, exists, remove } from '@tauri-apps/plugin-fs';
 import { readTextFile } from './services/documentText';
 import { open } from '@tauri-apps/plugin-dialog';
-import { htmlToMarkdown, detectLineEnding, applyLineEnding, markdownToHtml } from './utils/markdown-converter';
+import { htmlToMarkdown, markdownToHtml } from './utils/markdown-converter';
 import { inlineMarkdownImages, getDirectoryFromFilePath } from './utils/image-resolver';
 import type { Editor as TiptapEditor } from '@tiptap/vue-3';
 
@@ -473,12 +473,22 @@ const handleTabCloseCancel = () => {
 };
 
 // ============ File Operations ============
+const getMarkdownForSave = () => {
+  if (splitEditorActive.value) {
+    return splitSourceTabId.value === activeTabId.value ? splitMarkdownSource.value : null;
+  }
+  if (codeView.value) return codeContent.value;
+  return largeFileVisualMode.value
+    ? lazyMarkdownEditorRef.value?.getMarkdown() ?? activeTab.value?.pendingMarkdown ?? null
+    : null;
+};
 const {
   isLoadingFile,
   showExternalLinkDialog,
   pendingExternalUrl,
   openFileFromPath,
   saveFile,
+  saveExistingTab,
   saveFileAs,
   handleLinkClick,
   confirmExternalLink,
@@ -491,19 +501,7 @@ const {
   createNewTab,
   switchToTab,
   getEditorHtml: getEditorContent,
-  // eslint-disable-next-line @typescript-eslint/no-use-before-define
-  getMarkdownOverride: () => {
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    if (splitEditorActive.value) {
-      // eslint-disable-next-line @typescript-eslint/no-use-before-define
-      return splitSourceTabId.value === activeTabId.value ? splitMarkdownSource.value : null;
-    }
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    if (codeView.value) return codeContent.value;
-    return largeFileVisualMode.value
-      ? lazyMarkdownEditorRef.value?.getMarkdown() ?? activeTab.value?.pendingMarkdown ?? null
-      : null;
-  },
+  getMarkdownOverride: getMarkdownForSave,
   setEditorContent,
   markSaveStart: (filePath: string) => markSaveStart(filePath),
   markSaveEnd: (filePath: string, content: string) => markSaveEnd(filePath, content),
@@ -1565,23 +1563,9 @@ const saveTabFromPane = async (paneId: string, tabId: string) => {
     // For active tab in active pane, get fresh content from editor; for others, use stored content
     const isActiveTab = tabId === activeTabId.value && paneId === activePaneId.value;
     const html = isActiveTab ? getEditorContent() : tab.content;
-    let markdown = htmlToMarkdown(html).trimEnd();
-
-    // Preserve original line endings
-    if (tab.originalMarkdown) {
-      const originalLineEnding = detectLineEnding(tab.originalMarkdown);
-      markdown = applyLineEnding(markdown, originalLineEnding);
-      markdown = markdown.trimEnd();
-    }
-
-    markSaveStart(tab.filePath);
-    await writeTextFile(tab.filePath, markdown);
-    markSaveEnd(tab.filePath, markdown);
-
-    // Update tab state
-    tab.hasChanges = false;
-    tab.content = html;
-    tab.originalMarkdown = markdown;
+    const markdown = isActiveTab ? getMarkdownForSave() : tab.pendingMarkdown ?? null;
+    const saved = await saveExistingTab(tab, { html, markdown });
+    if (!saved) showToastNotification(t.value.autoSavePaused, 'warning');
   } catch (error) {
     console.error('Błąd automatycznego zapisywania:', error);
   }
@@ -1621,6 +1605,9 @@ const triggerAutoSave = () => {
 };
 
 // Handle changes updated from SplitContainer
+// Source and split editors do not emit SplitContainer's visual dirty event.
+watch([codeContent, splitMarkdownSource, () => activeTab.value.pendingMarkdown], () => triggerAutoSave());
+
 const handleChangesUpdated = (_paneId: string, _tabId: string, hasChanges: boolean) => {
   if (hasChanges) {
     triggerAutoSave();

@@ -73,6 +73,11 @@ describe('useWindowManager', () => {
       window.location = originalLocation;
     });
 
+    it.each(['/docs/100%.md', '/docs/literal%20name.md', 'C:/docs/日本語%2F.md'])('preserves literal percent sequences in %s', (path) => {
+      (window as any).location = { search: '?file=' + encodeURIComponent(path) };
+      expect(windowManager.getFilePathFromUrl()).toBe(path);
+    });
+
     it('should return null when no file param exists', () => {
       (window as any).location = { search: '' };
 

@@ -18,7 +18,9 @@ export function useWindowManager() {
   const getFilePathFromUrl = (): string | null => {
     const urlParams = new URLSearchParams(window.location.search);
     const filePath = urlParams.get('file');
-    return filePath ? decodeURIComponent(filePath) : null;
+    // URLSearchParams has already decoded the query once. Decoding again
+    // changes literal %xx filenames (and throws for a literal percent sign).
+    return filePath || null;
   };
 
   const getAllWindows = async (): Promise<string[]> => {

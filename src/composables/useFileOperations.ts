@@ -47,6 +47,7 @@ export interface UseFileOperationsReturn {
   openFile: () => Promise<void>;
   openFileFromPath: (filePath: string) => Promise<void>;
   saveFile: () => Promise<boolean>;
+  saveExistingTab: (tab: Tab, snapshot: { markdown: string | null; html: string }) => Promise<boolean>;
   saveFileAs: () => Promise<void>;
   handleLinkClick: (href: string) => void;
   confirmExternalLink: () => Promise<void>;
@@ -162,8 +163,8 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
   };
 
   // Returns disk content if a conflict is detected, null otherwise.
-  const checkPreSaveConflict = async (filePath: string, originalMarkdown: string | null): Promise<string | null> => {
-    if (originalMarkdown === null || !onPreSaveConflict) return null;
+  const checkPreSaveConflict = async (filePath: string, originalMarkdown: string | null, openedPath = currentFile.value, required = false): Promise<string | null> => {
+    if (originalMarkdown === null || (!required && !onPreSaveConflict)) return null;
     try {
       const currentDiskContent = await readTextFile(filePath);
       // Empty originals and newline-only changes are real revisions too.
@@ -171,7 +172,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     } catch (error) {
       // Never interpret a failed read of the open document as permission to
       // overwrite it. Only a genuinely absent, different Save As target is new.
-      if (filePath !== currentFile.value && !await exists(filePath)) return null;
+      if (filePath !== openedPath && !await exists(filePath)) return null;
       throw error;
     }
   };
@@ -195,29 +196,34 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     }
   };
 
-  const writeAndUpdateTab = async (filePath: string): Promise<boolean> => {
+  type BackgroundSnapshot = { tab: Tab; markdown: string | null; html: string };
+  const performWriteAndUpdateTab = async (filePath: string, background?: BackgroundSnapshot): Promise<boolean> => {
     const tabIndex = findActiveTabIndex();
-    const tab = tabIndex === -1 ? undefined : tabs.value[tabIndex];
+    const tab = background?.tab ?? (tabIndex === -1 ? undefined : tabs.value[tabIndex]);
+    const initialContent = tab?.content;
+    const initialPending = tab?.pendingMarkdown;
     // Save As of an untouched document is a byte-preserving copy, including
     // empty source, BOM, mixed newlines, unknown syntax and trailing whitespace.
     const unchangedSource = tab && !tab.hasChanges ? tab.originalMarkdown : null;
     // When in code view, getMarkdownOverride() returns the raw markdown directly —
     // avoids the empty-content bug caused by SplitContainer being unmounted.
-    const markdownOverride = unchangedSource ?? getMarkdownOverride?.() ?? null;
-    const html = markdownOverride === null ? getEditorHtml() : null;
+    const markdownOverride = unchangedSource ?? (background ? background.markdown : getMarkdownOverride?.()) ?? null;
+    const html = markdownOverride === null ? (background ? background.html : getEditorHtml()) : null;
     let markdown = markdownOverride ?? htmlToMarkdown(html!);
 
     // Preserve original line endings if we have the original content
-    if (markdownOverride === null && tabIndex !== -1 && tabs.value[tabIndex].originalMarkdown) {
-      const originalLineEnding = detectLineEnding(tabs.value[tabIndex].originalMarkdown!);
+    if (markdownOverride === null && tab?.originalMarkdown) {
+      const originalLineEnding = detectLineEnding(tab.originalMarkdown);
       markdown = applyLineEnding(markdown, originalLineEnding);
     }
 
     // Pre-save conflict check
     let mergedContentApplied = false;
-    if (tabIndex !== -1 && onPreSaveConflict) {
-      const diskContent = await checkPreSaveConflict(filePath, tabs.value[tabIndex].originalMarkdown);
+    if (tab && (background || onPreSaveConflict)) {
+      const diskContent = await checkPreSaveConflict(filePath, tab.originalMarkdown, tab.filePath, !!background);
       if (diskContent !== null) {
+        // Background saving never resolves a conflict on the user's behalf.
+        if (background || !onPreSaveConflict) return false;
         const decision = await onPreSaveConflict(filePath, diskContent, markdown);
         if (decision === 'cancel') return false;
         // If user applied a manual merge, use the merged content instead.
@@ -232,23 +238,50 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
 
     await atomicWriteFile(filePath, markdown);
 
-    if (tabIndex !== -1) {
-      tabs.value[tabIndex].filePath = filePath;
-      tabs.value[tabIndex].fileName = extractFileName(filePath);
-      tabs.value[tabIndex].hasChanges = false;
+    if (tab) {
+      const liveRaw = tab.id === activeTabId.value ? getMarkdownOverride?.() ?? null : markdownOverride;
+      const unchangedDuringSave = tab.content === initialContent && tab.pendingMarkdown === initialPending
+        && (markdownOverride === null || liveRaw === markdownOverride);
+      tab.filePath = filePath;
+      tab.fileName = extractFileName(filePath);
+      if (unchangedDuringSave || mergedContentApplied) tab.hasChanges = false;
       // Only update cached HTML when saving from visual mode — in code view the HTML
       // will be regenerated from the saved markdown when switching back to visual mode.
       // Skip when merged content was applied: the conflict handler already set tab.content
       // via reloadTabContent; overwriting it here with pre-dialog html would revert the editor.
-      if (html !== null && !mergedContentApplied) {
-        tabs.value[tabIndex].content = html;
+      if (html !== null && !mergedContentApplied && unchangedDuringSave) {
+        tab.content = html;
       }
-      tabs.value[tabIndex].originalMarkdown = markdown;
+      tab.originalMarkdown = markdown;
     }
 
     // Tell host to start watching this path (no-op if already watched).
     onAfterSave?.(filePath, markdown);
     return true;
+  };
+
+  const savingPaths = new Set<string>();
+  const writeAndUpdateTab = async (filePath: string, background?: BackgroundSnapshot): Promise<boolean> => {
+    // Autosave, explicit Save and close Save share this instance and temp path.
+    // Refuse overlapping writes instead of racing the verification/rename.
+    if (savingPaths.has(filePath)) return false;
+    savingPaths.add(filePath);
+    try {
+      return await performWriteAndUpdateTab(filePath, background);
+    } finally {
+      savingPaths.delete(filePath);
+    }
+  };
+
+  const saveExistingTab = async (tab: Tab, snapshot: { markdown: string | null; html: string }): Promise<boolean> => {
+    if (!tab.filePath || tab.originalMarkdown === null) return false;
+    if (!tab.hasChanges) return true;
+    try {
+      return await writeAndUpdateTab(tab.filePath, { tab, ...snapshot });
+    } catch (error) {
+      console.error('Background save stopped:', error);
+      return false;
+    }
   };
 
   const saveFile = async (): Promise<boolean> => {
@@ -488,6 +521,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     openFile,
     openFileFromPath,
     saveFile,
+    saveExistingTab,
     saveFileAs,
     handleLinkClick,
     confirmExternalLink,

@@ -133,6 +133,8 @@ const pl: Translations = {
 
   // Dialogs
   unsavedChanges: 'Niezapisane zmiany',
+  autoSavePaused: 'Automatyczny zapis wstrzymany. Użyj Zapisz, aby sprawdzić i zapisać zmiany.',
+  saveBeforeWindowTransfer: 'Zapisz zmiany przed przeniesieniem tej karty do innego okna.',
   unsavedChangesMessage: 'Ten dokument ma niezapisane zmiany. Czy chcesz zapisać przed zamknięciem?',
   dontSave: 'Nie zapisuj',
   cancel: 'Anuluj',

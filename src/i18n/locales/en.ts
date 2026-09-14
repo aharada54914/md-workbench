@@ -133,6 +133,8 @@ const en: Translations = {
 
   // Dialogs
   unsavedChanges: 'Unsaved Changes',
+  autoSavePaused: 'Auto-save paused. Use Save to review and save your changes.',
+  saveBeforeWindowTransfer: 'Save your changes before moving this tab to another window.',
   unsavedChangesMessage: 'This document has unsaved changes. Do you want to save before closing?',
   dontSave: "Don't Save",
   cancel: 'Cancel',
