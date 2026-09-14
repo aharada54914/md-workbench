@@ -41,9 +41,13 @@ function Wait-Name($root, [string]$name) {
 }
 function Assert-Foreground([IntPtr]$handle) {
   [void][OwnedWindowInput]::ShowWindow($handle, 9)
+  $shell = New-Object -ComObject WScript.Shell
+  [void]$shell.AppActivate([int]$child.Id)
+  [System.Windows.Automation.AutomationElement]::FromHandle($handle).SetFocus()
   [void][OwnedWindowInput]::SetForegroundWindow($handle)
-  Start-Sleep -Milliseconds 200
-  if ([OwnedWindowInput]::GetForegroundWindow() -ne $handle) { throw 'Owned test window did not receive foreground; refusing keyboard input' }
+  $until = [DateTime]::UtcNow.AddSeconds(5)
+  while ([OwnedWindowInput]::GetForegroundWindow() -ne $handle -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 100 }
+  if ([OwnedWindowInput]::GetForegroundWindow() -ne $handle) { throw "Owned test window did not receive foreground; refusing keyboard input (target=$handle foreground=$([OwnedWindowInput]::GetForegroundWindow()) title=$($child.MainWindowTitle))" }
 }
 function Invoke-Button($root, [string]$name) {
   $button = Wait-Name $root $name
@@ -70,10 +74,11 @@ foreach ($format in @('lf','crlf','bom-crlf')) {
     do { $child.Refresh(); if ($child.HasExited) { throw "App exited: $($child.ExitCode)" }; if ($child.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 } while ([DateTime]::UtcNow -lt $until)
     if ($child.MainWindowHandle -eq 0) { throw 'No native window' }
     $handle = $child.MainWindowHandle
-    Assert-Foreground $handle
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    Write-Output "Owned app pid=$($child.Id) title=$($child.MainWindowTitle) handle=$handle"
     $heading = Wait-Name $root $marker
     [void](Wait-Name $root 'MDW-END')
+    Assert-Foreground $handle
     $box = $heading.Current.BoundingRectangle
     if ($box.Width -lt 2 -or $box.Height -lt 2) { throw 'Empty heading geometry' }
     $bitmap = New-Object Drawing.Bitmap([int][Math]::Ceiling($box.Width), [int][Math]::Ceiling($box.Height))
