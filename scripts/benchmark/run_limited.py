@@ -71,8 +71,11 @@ original, limited = w.HANDLE(), w.HANDLE()
 admin, medium = c.c_void_p(), c.c_void_p()
 child = ProcessInfo()
 try:
-    checked(open_token(current(), 0x000B | 0x0080, c.byref(original)))  # query/duplicate/assign/adjust-default
-    if sys.argv[1:] == ['--verify']:
+    verify_only = sys.argv[1:] == ['--verify']
+    # The child only reads its state; it must not request token modification.
+    access = 0x0008 if verify_only else 0x000B | 0x0080
+    checked(open_token(current(), access, c.byref(original)))
+    if verify_only:
         assert_limited(original)
         sys.exit(0)
     if len(sys.argv) < 2:
