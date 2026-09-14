@@ -1,49 +1,38 @@
 name: MDW Windows 11 runtime diagnosis
 on:
   pull_request:
-    paths: ['.github/workflows/mdw-windows11-diagnostic.yml']
+    paths: ['.github/workflows/mdw-windows11-diagnostic.yml', 'scripts/benchmark/run_limited.py']
 permissions:
   contents: read
   actions: read
 jobs:
   inspect-owned-release:
     runs-on: windows-11-arm
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+          architecture: x64
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           github-token: ${{ github.token }}
           run-id: 34793053160
           name: mdw-native-x64-release-b3ea081dcbedd39b66b976d1366faf37a3d29945
           path: native-binary
-      - name: Read-only runtime and owned-process diagnosis
-        shell: pwsh
-        run: |
-          "OS=$([Environment]::OSVersion) interactive=$([Environment]::UserInteractive) session=$((Get-Process -Id $PID).SessionId)"
-          foreach ($root in @('HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients', 'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients')) {
-            Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
-              if ($_.GetValue('name') -match 'WebView') { "Runtime $root name=$($_.GetValue('name')) version=$($_.GetValue('pv'))" }
-            }
-          }
-          foreach ($root in @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge', 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2')) {
-            if (Test-Path $root) { Get-ItemProperty $root | Select-Object PSPath, RemoteDebuggingAllowed, DeveloperToolsAvailability | ConvertTo-Json }
-          }
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1'
-          $started = Get-Date
-          $binary = (Resolve-Path 'native-binary/md-workbench.exe').Path
-          $child = Start-Process $binary -PassThru
-          try {
-            for ($trial = 0; $trial -lt 6; $trial++) {
-              Start-Sleep -Seconds 5
-              $child.Refresh()
-              "Owned process pid=$($child.Id) exited=$($child.HasExited)"
-              if ($child.HasExited) { "ExitCode=$($child.ExitCode)"; break }
-              Get-Process -Id $child.Id | Select-Object Id, ProcessName, MainWindowTitle, MainWindowHandle, SessionId, Responding | ConvertTo-Json
-              Get-CimInstance Win32_Process -Filter "ParentProcessId = $($child.Id)" | Select-Object ProcessId, ParentProcessId, Name | ConvertTo-Json
-              try { Invoke-RestMethod 'http://127.0.0.1:9222/json/version' -TimeoutSec 2 | ConvertTo-Json; break } catch { "CDP unavailable: $($_.Exception.Message)" }
-            }
-            Get-WinEvent -FilterHashtable @{ LogName='Application'; StartTime=$started } -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -in @('Application Error', 'Windows Error Reporting') -and $_.Message -match 'md-workbench|msedgewebview' } | Select-Object -First 5 TimeCreated, ProviderName, Message | ConvertTo-Json -Depth 3
-          } finally {
-            $child.Refresh()
-            if (-not $child.HasExited) { taskkill.exe /PID $child.Id /T /F }
-          }
+      - run: npm install --global pnpm@11.3.0 --ignore-scripts
+      - run: pnpm install --frozen-lockfile
+      - run: python -m pip install -r scripts/benchmark/requirements.txt
+      - name: Verify non-elevated medium-integrity child
+        run: python scripts/benchmark/run_limited.py python scripts/benchmark/run_limited.py --verify
+      - name: Same release and current WebView with lowered test privileges
+        run: python scripts/benchmark/run_limited.py node scripts/benchmark/windows_native.mjs native-binary/md-workbench.exe native-limited MD-Workbench
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mdw-win11-limited-diagnostic-${{ github.sha }}
+          path: native-limited/**
+          retention-days: 3
