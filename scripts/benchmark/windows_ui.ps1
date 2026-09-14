@@ -13,6 +13,7 @@ public static class OwnedWindowInput {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int size);
   public static string Title(IntPtr window) { var text=new StringBuilder(1024); GetWindowText(window,text,text.Capacity); return text.ToString(); }
+  public static uint Owner(IntPtr window) { uint owner; GetWindowThreadProcessId(window,out owner); return owner; }
   public static IntPtr DocumentWindow(uint process) {
     IntPtr found=IntPtr.Zero;
     EnumWindows((window, argument) => { uint owner; GetWindowThreadProcessId(window,out owner); string title=Title(window);
@@ -58,9 +59,22 @@ function Assert-Foreground([IntPtr]$handle) {
   $shell = New-Object -ComObject WScript.Shell
   [void]$shell.AppActivate([int]$child.Id)
   [void][OwnedWindowInput]::SetForegroundWindow($handle)
+  if ([OwnedWindowInput]::GetForegroundWindow() -ne $handle) {
+    # UIA focuses only a focusable element within this owned application.
+    # The top-level Tauri container itself does not support SetFocus.
+    $ownedRoot = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    $focusCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::IsKeyboardFocusableProperty, $true)
+    $focusTargets = $ownedRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, $focusCondition)
+    foreach ($focusTarget in $focusTargets) {
+      if (-not $focusTarget.Current.IsOffscreen) { $focusTarget.SetFocus(); break }
+    }
+  }
   $until = [DateTime]::UtcNow.AddSeconds(5)
   while ([OwnedWindowInput]::GetForegroundWindow() -ne $handle -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 100 }
-  if ([OwnedWindowInput]::GetForegroundWindow() -ne $handle) { throw "Owned test window did not receive foreground; refusing keyboard input (target=$handle foreground=$([OwnedWindowInput]::GetForegroundWindow()) title=$($child.MainWindowTitle))" }
+  if ([OwnedWindowInput]::GetForegroundWindow() -ne $handle) {
+    $foreground = [OwnedWindowInput]::GetForegroundWindow()
+    throw "Owned test window did not receive foreground; refusing keyboard input (target=$handle foreground=$foreground owner=$([OwnedWindowInput]::Owner($foreground)) title=$([OwnedWindowInput]::Title($foreground)))"
+  }
 }
 function Invoke-Button($root, [string]$name) {
   $button = Wait-Name $root $name
@@ -124,6 +138,8 @@ foreach ($format in @('lf','crlf','bom-crlf')) {
       do { $actual=[Convert]::ToBase64String([IO.File]::ReadAllBytes($document)); if ($actual -eq $expected) { break }; Start-Sleep -Milliseconds 100 } while ([DateTime]::UtcNow -lt $until)
       if ($actual -ne $expected) { throw 'Native Source save did not preserve exact source bytes and suffix' }
       $result.source_save_sha256 = (Get-FileHash $document -Algorithm SHA256).Hash
+      Invoke-Button $root 'Visual'
+      [void](Wait-Name $root $marker)
     }
     if ((Get-FileHash $original -Algorithm SHA256).Hash -ne $originalHash) { throw 'Original fixture was changed' }
     $result.status = 'passed'
