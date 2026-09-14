@@ -49,6 +49,13 @@ vi.mock('../../utils/markdown-converter', () => ({
 }));
 
 describe('useCodeView', () => {
+  it('enters Source with original BOM/newlines/unknown syntax when Visual is unchanged', async () => {
+    const source = '\uFEFF# 原文\r\n\r\n:::unknown  \r\n';
+    const view = useCodeView({ getUnchangedMarkdown: () => source, getActiveContent: () => '<p>lossy</p>', setActiveContent: vi.fn(), markAsChanged: vi.fn() });
+    await view.toggleCodeView(null);
+    expect(view.codeContent.value).toBe(source);
+  });
+
   let mockTextarea: HTMLTextAreaElement;
 
   beforeEach(() => {

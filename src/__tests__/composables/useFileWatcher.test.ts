@@ -12,13 +12,16 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
     mockWatchCallback();
     return mockUnwatch;
   }),
+}));
+
+vi.mock('../../services/documentText', () => ({
   readTextFile: vi.fn(async (path: string) => {
     return `content of ${path}`;
   }),
 }));
 
 import { useFileWatcher } from '../../composables/useFileWatcher';
-import { readTextFile } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '../../services/documentText';
 
 describe('useFileWatcher', () => {
   let onExternalChange: UseFileWatcherOptions['onExternalChange'];

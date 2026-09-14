@@ -1,6 +1,7 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { readTextFile, writeTextFile, rename, remove } from '@tauri-apps/plugin-fs';
+import { writeTextFile, rename, remove, exists } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '../services/documentText';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { htmlToMarkdown, markdownToHtml, detectLineEnding, applyLineEnding, generateSlug } from '../utils/markdown-converter';
 import { aiCommands } from '../services/aiCommands';
@@ -162,15 +163,16 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
 
   // Returns disk content if a conflict is detected, null otherwise.
   const checkPreSaveConflict = async (filePath: string, originalMarkdown: string | null): Promise<string | null> => {
-    if (!originalMarkdown || !onPreSaveConflict) return null;
+    if (originalMarkdown === null || !onPreSaveConflict) return null;
     try {
       const currentDiskContent = await readTextFile(filePath);
-      // Normalize line endings for comparison
-      const normalizedDisk = currentDiskContent.replace(/\r\n/g, '\n');
-      const normalizedOriginal = originalMarkdown.replace(/\r\n/g, '\n');
-      return normalizedDisk !== normalizedOriginal ? currentDiskContent : null;
-    } catch {
-      return null; // File might not exist yet (new file)
+      // Empty originals and newline-only changes are real revisions too.
+      return currentDiskContent !== originalMarkdown ? currentDiskContent : null;
+    } catch (error) {
+      // Never interpret a failed read of the open document as permission to
+      // overwrite it. Only a genuinely absent, different Save As target is new.
+      if (filePath !== currentFile.value && !await exists(filePath)) return null;
+      throw error;
     }
   };
 
@@ -193,22 +195,23 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     }
   };
 
-  const writeAndUpdateTab = async (filePath: string): Promise<void> => {
+  const writeAndUpdateTab = async (filePath: string): Promise<boolean> => {
+    const tabIndex = findActiveTabIndex();
+    const tab = tabIndex === -1 ? undefined : tabs.value[tabIndex];
+    // Save As of an untouched document is a byte-preserving copy, including
+    // empty source, BOM, mixed newlines, unknown syntax and trailing whitespace.
+    const unchangedSource = tab && !tab.hasChanges ? tab.originalMarkdown : null;
     // When in code view, getMarkdownOverride() returns the raw markdown directly —
     // avoids the empty-content bug caused by SplitContainer being unmounted.
-    const markdownOverride = getMarkdownOverride?.() ?? null;
+    const markdownOverride = unchangedSource ?? getMarkdownOverride?.() ?? null;
     const html = markdownOverride === null ? getEditorHtml() : null;
-    let markdown = (markdownOverride ?? htmlToMarkdown(html!)).trimEnd();
-
-    const tabIndex = findActiveTabIndex();
+    let markdown = markdownOverride ?? htmlToMarkdown(html!);
 
     // Preserve original line endings if we have the original content
-    if (tabIndex !== -1 && tabs.value[tabIndex].originalMarkdown) {
+    if (markdownOverride === null && tabIndex !== -1 && tabs.value[tabIndex].originalMarkdown) {
       const originalLineEnding = detectLineEnding(tabs.value[tabIndex].originalMarkdown!);
       markdown = applyLineEnding(markdown, originalLineEnding);
     }
-
-    markdown = markdown.trimEnd();
 
     // Pre-save conflict check
     let mergedContentApplied = false;
@@ -216,7 +219,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       const diskContent = await checkPreSaveConflict(filePath, tabs.value[tabIndex].originalMarkdown);
       if (diskContent !== null) {
         const decision = await onPreSaveConflict(filePath, diskContent, markdown);
-        if (decision === 'cancel') return;
+        if (decision === 'cancel') return false;
         // If user applied a manual merge, use the merged content instead.
         // The conflict handler already called reloadTabContent to update the editor —
         // skip the tab.content = html overwrite below so the merged view isn't reverted.
@@ -245,6 +248,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
 
     // Tell host to start watching this path (no-op if already watched).
     onAfterSave?.(filePath, markdown);
+    return true;
   };
 
   const saveFile = async (): Promise<void> => {
@@ -281,7 +285,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       });
 
       if (filePath) {
-        await writeAndUpdateTab(filePath);
+        if (!await writeAndUpdateTab(filePath)) return;
         // Migrate AI metadata (sessions, access map, snapshots) to the new path.
         if (oldPath && oldPath !== filePath) {
           await Promise.all([

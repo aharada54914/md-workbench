@@ -10,9 +10,13 @@ const mockReadTextFile = vi.fn();
 const mockWriteTextFile = vi.fn();
 const mockRename = vi.fn();
 const mockRemove = vi.fn();
+const mockExists = vi.fn();
 const mockOpenDialog = vi.fn();
 const mockSaveDialog = vi.fn();
 const mockOpenShell = vi.fn();
+vi.mock('../../services/documentText', () => ({
+  readTextFile: (...args: unknown[]) => mockReadTextFile(...args),
+}));
 const mockGetCurrentWindow = vi.fn(() => ({
   isMaximized: vi.fn(async () => false),
   maximize: vi.fn(async () => {}),
@@ -24,6 +28,11 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   writeTextFile: (...args: unknown[]) => mockWriteTextFile(...args),
   rename: (...args: unknown[]) => mockRename(...args),
   remove: (...args: unknown[]) => mockRemove(...args),
+  exists: (...args: unknown[]) => mockExists(...args),
+}));
+
+vi.mock('../../services/aiCommands', () => ({
+  aiCommands: { sessionMigrate: vi.fn(), accessMigrate: vi.fn(), snapshotMigrate: vi.fn() },
 }));
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
@@ -63,6 +72,7 @@ vi.mock('../../constants', () => ({
 
 import { useFileOperations } from '../../composables/useFileOperations';
 import { htmlToMarkdown, markdownToHtml } from '../../utils/markdown-converter';
+import { aiCommands } from '../../services/aiCommands';
 
 // ============================================================
 // Helpers
@@ -123,6 +133,7 @@ describe('useFileOperations', () => {
     mockRename.mockResolvedValue(undefined);
     mockRemove.mockResolvedValue(undefined);
     mockReadTextFile.mockResolvedValue('# hello');
+    mockExists.mockResolvedValue(true);
   });
 
   // ----------------------------------------------------------
@@ -298,6 +309,56 @@ describe('useFileOperations', () => {
   // ----------------------------------------------------------
 
   describe('checkPreSaveConflict', () => {
+    it.each([['', 'external text'], ['# original\r\n', '# original\n']])('detects exact external revision from %j', async (originalMarkdown, disk) => {
+      mockReadTextFile.mockResolvedValue(disk);
+      const onPreSaveConflict = vi.fn(async () => 'cancel' as const);
+      const { options, tabs } = makeOptions({ originalMarkdown });
+      await useFileOperations({ ...options, onPreSaveConflict }).saveFile();
+      expect(onPreSaveConflict).toHaveBeenCalledWith('/test/file.md', disk, 'md:<p>hello</p>');
+      expect(mockWriteTextFile).not.toHaveBeenCalled();
+      expect(tabs.value[0].hasChanges).toBe(true);
+    });
+
+    it('does not overwrite an open document when its current bytes cannot be read', async () => {
+      mockReadTextFile.mockRejectedValue(new Error('permission denied or invalid UTF-8'));
+      const onPreSaveConflict = vi.fn(async () => 'save' as const);
+      const { options, tabs } = makeOptions();
+      await useFileOperations({ ...options, onPreSaveConflict }).saveFile();
+      expect(mockWriteTextFile).not.toHaveBeenCalled();
+      expect(mockRename).not.toHaveBeenCalled();
+      expect(onPreSaveConflict).not.toHaveBeenCalled();
+      expect(tabs.value[0].hasChanges).toBe(true);
+    });
+
+    it('does not migrate metadata, watch or change tabs after cancelled Save As', async () => {
+      mockSaveDialog.mockResolvedValue('/new/existing.md');
+      mockReadTextFile.mockResolvedValue('external target');
+      const onPreSaveConflict = vi.fn(async () => 'cancel' as const), onAfterSave = vi.fn();
+      const { options, tabs } = makeOptions();
+      await useFileOperations({ ...options, onPreSaveConflict, onAfterSave }).saveFileAs();
+      expect(mockWriteTextFile).not.toHaveBeenCalled();
+      expect(aiCommands.sessionMigrate).not.toHaveBeenCalled();
+      expect(aiCommands.accessMigrate).not.toHaveBeenCalled();
+      expect(aiCommands.snapshotMigrate).not.toHaveBeenCalled();
+      expect(onAfterSave).not.toHaveBeenCalled();
+      expect(tabs.value[0].filePath).toBe('/test/file.md');
+      expect(tabs.value[0].hasChanges).toBe(true);
+    });
+
+    it.each([true, false])('only treats an absent different Save As target as new (exists=%j)', async targetExists => {
+      mockSaveDialog.mockResolvedValue('/new/target.md');
+      mockExists.mockResolvedValue(targetExists);
+      mockReadTextFile.mockImplementation(async (path: string) => {
+        if (path.endsWith('.tmp')) return 'md:<p>hello</p>';
+        throw new Error('read failed');
+      });
+      const onPreSaveConflict = vi.fn(async () => 'save' as const);
+      const { options } = makeOptions();
+      await useFileOperations({ ...options, onPreSaveConflict }).saveFileAs();
+      expect(mockWriteTextFile).toHaveBeenCalledTimes(targetExists ? 0 : 1);
+      expect(aiCommands.sessionMigrate).toHaveBeenCalledTimes(targetExists ? 0 : 1);
+    });
+
     it('skips save when conflict detected and user cancels', async () => {
       // Disk content differs from originalMarkdown → conflict
       mockReadTextFile.mockImplementation(async (path: string) => {
@@ -371,6 +432,28 @@ describe('useFileOperations', () => {
   // ----------------------------------------------------------
 
   describe('saveFile', () => {
+    it.each(['', '\uFEFF# 日本語\r\n\r\n:::unknown untouched\r\n$$a+b$$  \r\n\t\r\n', '# mixed\r\nUnknown  \nlast\r'])('Save As preserves unchanged source bytes: %j', source => {
+      mockSaveDialog.mockResolvedValue('/new/copy.md');
+      mockReadTextFile.mockImplementation(async (path: string) => path.endsWith('.tmp') ? source : '');
+      const { options, tabs, getEditorHtml } = makeOptions({ hasChanges: false, originalMarkdown: source });
+      const { saveFileAs } = useFileOperations(options);
+      return saveFileAs().then(() => {
+        expect(mockWriteTextFile).toHaveBeenCalledWith('/new/copy.md.tmp', source);
+        expect(getEditorHtml).not.toHaveBeenCalled();
+        expect(htmlToMarkdown).not.toHaveBeenCalled();
+        expect(tabs.value[0].originalMarkdown).toBe(source);
+      });
+    });
+
+    it('preserves authoritative Source edits including BOM, mixed newlines and trailing whitespace', async () => {
+      const source = '\uFEFF# changed\r\n:::unknown\n$$x$$  \r\n\t';
+      mockReadTextFile.mockImplementation(async (path: string) => path.endsWith('.tmp') ? source : '# hello');
+      const { options } = makeOptions({}, { getMarkdownOverride: () => source });
+      await useFileOperations(options).saveFile();
+      expect(mockWriteTextFile).toHaveBeenCalledWith('/test/file.md.tmp', source);
+      expect(htmlToMarkdown).not.toHaveBeenCalled();
+    });
+
     it('skips save when file exists and has no changes', async () => {
       const { options } = makeOptions({ hasChanges: false });
       const { saveFile } = useFileOperations(options);
