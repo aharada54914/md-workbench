@@ -1,3 +1,4 @@
+// Quick diagnosis only: 3 cold + 3 warm, NOT the 30/50 acceptance run.
 // Disposable Windows native release exercise. No browser/Tauri API mocks.
 // CDP is enabled ONLY in the launched test process environment, never app config.
 import { chromium } from '@playwright/test';
@@ -30,7 +31,7 @@ const report = {
   environment: { os_release: os.release(), os_version: os.version(), arch: os.arch(), runner_arch: process.env.RUNNER_ARCH,
     processor_architecture: process.env.PROCESSOR_ARCHITECTURE, processor_architew6432: process.env.PROCESSOR_ARCHITEW6432,
     binary_arch: 'x64', launch_security: process.env.MDW_NATIVE_SECURITY ?? 'runner default', cpu: os.cpus()[0]?.model, ram_bytes: os.totalmem(),
-    power: execFileSync('powercfg.exe', ['/getactivescheme'], { encoding: 'utf8' }).trim(),
+    power: execFileSync('powercfg.exe', ['/getactivescheme'], { encoding: 'utf8', timeout: 5000 }).trim(),
     antivirus: 'GitHub-hosted runner default; no exclusions or protection changes requested',
     ai_state: 'not invoked', diagram_editor_state: 'not invoked' },
   status: 'running', trials,
@@ -129,7 +130,7 @@ async function observeInternal(browser, fixture, imagePath) {
         // The mixed ASCII/Japanese heading must use a CJK-capable platform font,
         // not merely contain Japanese DOM text rendered as missing-glyph boxes.
         const japaneseText = [...fixture.marker].filter(char => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(char)).join('');
-        const coverage = JSON.parse(execFileSync('python', ['scripts/benchmark/windows_glyphs.py', japaneseText, ...fonts.map(font => font.familyName)], { encoding: 'utf8' }));
+        const coverage = JSON.parse(execFileSync('python', ['scripts/benchmark/windows_glyphs.py', japaneseText, ...fonts.map(font => font.familyName)], { encoding: 'utf8', timeout: 10000 }));
         fonts = fonts.map((font, index) => ({ ...font, coverage: coverage[index] }));
         const renderedJapaneseGlyphs = fonts.filter(font => font.coverage.supported).reduce((sum, font) => sum + font.glyphCount, 0);
         if (renderedJapaneseGlyphs < japaneseText.length) {
@@ -153,7 +154,7 @@ async function killOwned(pid) {
   const child = owned.get(pid);
   if (!child) throw new Error('Unowned process termination refused');
   // Exact PID tree on a disposable runner. Never kill by process name.
-  execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { stdio: 'pipe' });
+  execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { stdio: 'pipe', timeout: 10000 });
   const deadline = Date.now() + 10000;
   while (child.exitCode === null && child.signalCode === null && Date.now() < deadline) await delay(20);
   if (child.exitCode === null && child.signalCode === null) throw new Error('Native process did not exit; next cold trial refused');
@@ -229,7 +230,7 @@ async function verifyNativeEditor(browser) {
 }
 try {
   let child, browser;
-  for (let index = 0; index < 30; index++) {
+  for (let index = 0; index < 3; index++) {
     const fixture = fixtures[index % fixtures.length];
     currentTrial = { mode: 'cold-process', index, fixture: fixture.sha256 };
     const begin = process.hrtime.bigint();
@@ -249,7 +250,7 @@ try {
   child = launch(fixtures[0]);
   browser = await connect();
   await observe(browser, fixtures[0], join(out, 'latest-frame.png'));
-  for (let index = 0; index < 50; index++) {
+  for (let index = 0; index < 3; index++) {
     // Alternate distinct documents so an already-visible frame cannot pass.
     const fixture = fixtures[(index + 1) % fixtures.length];
     currentTrial = { mode: 'warm', index, fixture: fixture.sha256 };
