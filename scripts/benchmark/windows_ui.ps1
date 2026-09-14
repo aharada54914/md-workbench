@@ -5,7 +5,21 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class OwnedWindowInput {
+  delegate bool EnumCallback(IntPtr window, IntPtr argument);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumCallback callback, IntPtr argument);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int size);
+  public static string Title(IntPtr window) { var text=new StringBuilder(1024); GetWindowText(window,text,text.Capacity); return text.ToString(); }
+  public static IntPtr DocumentWindow(uint process) {
+    IntPtr found=IntPtr.Zero;
+    EnumWindows((window, argument) => { uint owner; GetWindowThreadProcessId(window,out owner); string title=Title(window);
+      if(owner==process && IsWindowVisible(window) && title.Length>0 && !title.EndsWith("-siw",StringComparison.OrdinalIgnoreCase)) { found=window; return false; } return true;
+    },IntPtr.Zero);
+    return found;
+  }
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
@@ -71,11 +85,10 @@ foreach ($format in @('lf','crlf','bom-crlf')) {
     $originalHash = (Get-FileHash $original -Algorithm SHA256).Hash
     $child = Start-Process $binaryPath -ArgumentList @('"'+$document+'"') -PassThru
     $until = [DateTime]::UtcNow.AddSeconds(20)
-    do { $child.Refresh(); if ($child.HasExited) { throw "App exited: $($child.ExitCode)" }; if ($child.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 } while ([DateTime]::UtcNow -lt $until)
-    if ($child.MainWindowHandle -eq 0) { throw 'No native window' }
-    $handle = $child.MainWindowHandle
+    do { $child.Refresh(); if ($child.HasExited) { throw "App exited: $($child.ExitCode)" }; $handle=[OwnedWindowInput]::DocumentWindow([uint32]$child.Id); if ($handle -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 100 } while ([DateTime]::UtcNow -lt $until)
+    if ($handle -eq [IntPtr]::Zero) { throw 'No visible native document window (hidden single-instance window excluded)' }
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
-    Write-Output "Owned app pid=$($child.Id) title=$($child.MainWindowTitle) handle=$handle"
+    Write-Output "Owned app pid=$($child.Id) title=$([OwnedWindowInput]::Title($handle)) handle=$handle"
     $heading = Wait-Name $root $marker
     [void](Wait-Name $root 'MDW-END')
     Assert-Foreground $handle
