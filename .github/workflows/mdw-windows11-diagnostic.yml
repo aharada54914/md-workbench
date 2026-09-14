@@ -29,7 +29,7 @@ jobs:
       - name: Verify non-elevated medium-integrity child
         run: python scripts/benchmark/run_limited.py python scripts/benchmark/run_limited.py --verify
       - name: Same release and current WebView with lowered test privileges
-        run: python scripts/benchmark/run_limited.py node scripts/benchmark/windows_native.mjs native-binary/md-workbench.exe native-limited MD-Workbench
+        run: python scripts/benchmark/run_limited.py node scripts/benchmark/runtime_diagnostic.mjs native-binary/md-workbench.exe native-limited MD-Workbench --verify-editor
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
