@@ -21,9 +21,24 @@ pub enum Operation {
     FlushChildDirectory,
     FlushParentDirectory,
     Cleanup,
+    QueryProcessIdentity,
+    CreatePrivateDirectory,
+    InspectPrivateDirectory,
+    CreatePrivateFile,
+    InspectPrivateFile,
+    CreateBroadAclFile,
+    RejectBroadAclFile,
+    CreateNullAclFile,
+    RejectNullAclFile,
+    CreateUnprotectedAclFile,
+    RejectUnprotectedAclFile,
+    CreateJunction,
+    RejectJunction,
+    VerifyAclSentinel,
+    CleanupAcl,
 }
 
-pub const OPERATIONS: [Operation; 13] = [
+pub const OPERATIONS: [Operation; 28] = [
     Operation::OpenTempParent,
     Operation::CreateFixture,
     Operation::OpenReadonlyDirectory,
@@ -37,6 +52,21 @@ pub const OPERATIONS: [Operation; 13] = [
     Operation::FlushChildDirectory,
     Operation::FlushParentDirectory,
     Operation::Cleanup,
+    Operation::QueryProcessIdentity,
+    Operation::CreatePrivateDirectory,
+    Operation::InspectPrivateDirectory,
+    Operation::CreatePrivateFile,
+    Operation::InspectPrivateFile,
+    Operation::CreateBroadAclFile,
+    Operation::RejectBroadAclFile,
+    Operation::CreateNullAclFile,
+    Operation::RejectNullAclFile,
+    Operation::CreateUnprotectedAclFile,
+    Operation::RejectUnprotectedAclFile,
+    Operation::CreateJunction,
+    Operation::RejectJunction,
+    Operation::VerifyAclSentinel,
+    Operation::CleanupAcl,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -48,6 +78,17 @@ pub enum Reason {
     UnexpectedFileType,
     InvalidFilesystemName,
     IoWithoutWin32Code,
+    InvalidSecurityDescriptor,
+    ForeignOwner,
+    NullOrMissingDacl,
+    UnprotectedDacl,
+    UnexpectedAcl,
+    UnexpectedAcceptance,
+    PrivilegedToken,
+    UnsupportedTokenIdentity,
+    BoundedBufferExceeded,
+    SentinelChanged,
+    MissingPersistentAcls,
 }
 
 impl std::fmt::Display for Reason {
@@ -62,6 +103,7 @@ impl std::error::Error for Reason {}
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Outcome {
     Success,
+    Rejected { reason: Reason },
     Win32Error { code: u32 },
     ProbeError { reason: Reason },
     Skipped { reason: Reason },
@@ -86,6 +128,7 @@ pub struct Report {
     scope: &'static str,
     platform: &'static str,
     pub filesystem: Option<Filesystem>,
+    pub token_elevated: Option<bool>,
     // These describe the explicit directory open, not the cap-std baseline.
     directory_access: u32,
     directory_share: u32,
@@ -108,6 +151,7 @@ impl Report {
             scope: "api_support_only",
             platform,
             filesystem: None,
+            token_elevated: None,
             directory_access: 0xc0000000, // GENERIC_READ | GENERIC_WRITE
             directory_share: 3,           // FILE_SHARE_READ | FILE_SHARE_WRITE, no DELETE
             directory_flags: 0x02200000,  // BACKUP_SEMANTICS | OPEN_REPARSE_POINT

@@ -66,6 +66,8 @@ fn exercise(parent: &Dir, name: &str, root: &Dir, created: &mut Created, report:
         return;
     }
 
+    crate::windows_acl_fixtures::run(root, report);
+
     // This read-only cap-std handle is the baseline even when its flush fails.
     observe(report, Operation::FlushReadonlyDirectory, flush(root));
     let writable_root = observe(
@@ -196,7 +198,11 @@ fn query_filesystem(dir: &Dir) -> io::Result<Filesystem> {
     })
 }
 
-fn observe<T>(report: &mut Report, operation: Operation, result: io::Result<T>) -> Option<T> {
+pub(crate) fn observe<T>(
+    report: &mut Report,
+    operation: Operation,
+    result: io::Result<T>,
+) -> Option<T> {
     match result {
         Ok(value) => {
             report.set(operation, Outcome::Success);

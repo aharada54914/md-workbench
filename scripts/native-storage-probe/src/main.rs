@@ -1,6 +1,10 @@
 mod report;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_acl;
+#[cfg(windows)]
+mod windows_acl_fixtures;
 
 use std::io::Write;
 

@@ -84,3 +84,50 @@ fn non_ntfs_skips_do_not_overwrite_observed_results() {
         }
     );
 }
+
+#[test]
+fn acl_results_distinguish_verified_rejection_from_failure() {
+    let mut report = Report::windows();
+    report.token_elevated = Some(true);
+    report.set(
+        Operation::RejectBroadAclFile,
+        Outcome::Rejected {
+            reason: Reason::UnexpectedAcl,
+        },
+    );
+    report.set(
+        Operation::RejectNullAclFile,
+        Outcome::Win32Error { code: 5 },
+    );
+    report.set(
+        Operation::RejectJunction,
+        Outcome::ProbeError {
+            reason: Reason::UnexpectedAcceptance,
+        },
+    );
+    let bytes = report.to_json().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let operation = |name: &str| {
+        json["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["operation"] == name)
+            .unwrap()
+    };
+    assert_eq!(
+        operation("reject_broad_acl_file")["outcome"]["status"],
+        "rejected"
+    );
+    assert_eq!(
+        operation("reject_null_acl_file")["outcome"]["status"],
+        "win32_error"
+    );
+    assert_eq!(
+        operation("reject_junction")["outcome"]["reason"],
+        "unexpected_acceptance"
+    );
+    assert_eq!(json["token_elevated"], true);
+    assert!(bytes.len() + 1 <= MAX_JSON_BYTES);
+    assert!(!String::from_utf8(bytes).unwrap().contains("S-1-"));
+}
