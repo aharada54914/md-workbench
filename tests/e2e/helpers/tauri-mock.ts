@@ -5,6 +5,10 @@ import type { Page } from '@playwright/test';
  * We use page.exposeFunction so the browser-side script can call back into
  * Node.js to read/write the shared mock state.
  */
+export interface MockTabTransfer {
+  id: string; file_path: string; source_window: string; target_window: string;
+}
+
 export interface MockFs {
   [path: string]: string;
 }
@@ -27,6 +31,8 @@ export async function setupTauriMocks(
     /** Simulated native window and live registry for queue-owner tests. */
     windowLabel?: string;
     windowLabels?: string[];
+    /** Native transfer requests created before the target has a listener. */
+    pendingTransfers?: MockTabTransfer[];
     /** App version string */
     version?: string;
   } = {},
@@ -44,6 +50,7 @@ export async function setupTauriMocks(
   triggerWindowClose: () => Promise<void>;
   /** Queue native open requests and notify the frontend to drain them. */
   triggerOpenFiles: (paths: string[]) => Promise<void>;
+  triggerTabTransfers: (transfers: MockTabTransfer[]) => Promise<void>;
   /** Remove a native window and notify the new queue owner, if any. */
   destroyNativeWindow: (label: string) => Promise<void>;
 }> {
@@ -89,12 +96,13 @@ export async function setupTauriMocks(
 
   const openFilePaths = opts.openFilePaths ?? (opts.openFilePath ? [opts.openFilePath] : []);
   const version = opts.version ?? '0.0.0-test';
+  const pendingTransfers = opts.pendingTransfers ?? [];
   const windowLabel = opts.windowLabel ?? 'main';
   const windowLabels = opts.windowLabels ?? [windowLabel];
 
   // Inject mock __TAURI_INTERNALS__ before the app JS runs
   await page.addInitScript(
-    ({ openFilePaths, version, windowLabel, windowLabels }: { openFilePaths: string[]; version: string; windowLabel: string; windowLabels: string[] }) => {
+    ({ openFilePaths, version, windowLabel, windowLabels, pendingTransfers }: { openFilePaths: string[]; version: string; windowLabel: string; windowLabels: string[]; pendingTransfers: MockTabTransfer[] }) => {
       // Keep the first-run AI popover from covering toolbar controls in tests.
       // Tests that provide their own settings before this mock keep them.
       if (!localStorage.getItem('mermark-settings')) {
@@ -111,6 +119,19 @@ export async function setupTauriMocks(
       const listeners = new Map<number, { event: string; handler: number }>();
       let nextListener = 1;
       const pendingOpenPaths = [...openFilePaths];
+      const transferQueue = [...pendingTransfers];
+      (window as any).__mockTransferAcks = [];
+      (window as any).__mockTransferAckError = null;
+      (window as any).__triggerTabTransfers = async (transfers: MockTabTransfer[]) => {
+        transferQueue.push(...transfers);
+        for (const [id, listener] of listeners) {
+          if (listener.event === 'tab-transfer') {
+            await (window as any)['_cb_' + listener.handler]({ event: listener.event, id, payload: {
+              file_path: '/untrusted/event-only.md', source_window: 'spoofed', target_window: 'spoofed',
+            } });
+          }
+        }
+      };
       (window as any).__nativeOpenDrainCalls = 0;
       let liveWindowLabels = [...windowLabels];
       const nativeOwner = () => liveWindowLabels.includes('main') ? 'main'
@@ -263,6 +284,16 @@ export async function setupTauriMocks(
           if (cmd.startsWith('plugin:deep-link') || cmd.startsWith('plugin:process')) return null;
 
           // ── custom Rust commands ───────────────────────────────────
+          if (cmd === 'native_get_pending_transfers') return transferQueue.filter(item => item.target_window === windowLabel);
+          if (cmd === 'native_ack_tab_transfer') {
+            const request = args as { id: string; success: boolean };
+            (window as any).__mockTransferAcks.push({ ...request });
+            if ((window as any).__mockTransferAckError) throw new Error((window as any).__mockTransferAckError);
+            const index = transferQueue.findIndex(item => item.id === request.id && item.target_window === windowLabel);
+            if (index < 0) throw new Error('transfer_not_found');
+            transferQueue.splice(index, 1);
+            return null;
+          }
           if (cmd === 'get_open_file_paths') {
             (window as any).__nativeOpenDrainCalls++;
             return nativeOwner() === windowLabel ? pendingOpenPaths.splice(0) : [];
@@ -286,7 +317,7 @@ export async function setupTauriMocks(
         },
       };
     },
-    { openFilePaths, version, windowLabel, windowLabels },
+    { openFilePaths, version, windowLabel, windowLabels, pendingTransfers },
   );
 
   const triggerExternalChange = async (filePath: string, newContent: string): Promise<void> => {
@@ -306,6 +337,7 @@ export async function setupTauriMocks(
     getFs: () => ({ ...fs }),
     getCalls: () => [...calls],
     triggerExternalChange,
+    triggerTabTransfers: transfers => page.evaluate(async items => { await (window as any).__triggerTabTransfers(items); }, transfers),
     triggerOpenFiles: paths => page.evaluate(async paths => { await (window as any).__triggerOpenFiles(paths); }, paths),
     triggerWindowClose: () => page.evaluate(async () => { await (window as any).__triggerWindowClose(); }),
   };

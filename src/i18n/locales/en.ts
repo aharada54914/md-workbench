@@ -134,6 +134,9 @@ const en: Translations = {
   // Dialogs
   unsavedChanges: 'Unsaved Changes',
   autoSavePaused: 'Auto-save paused. Use Save to review and save your changes.',
+  windowTransferTitle: 'Tab transfer',
+  windowTransferFailed: 'The tab could not be moved. Your source tab remains open.',
+  windowTransferReceiveFailed: 'Could not receive the transferred file. The source tab remains open.',
   saveBeforeWindowTransfer: 'Save your changes before moving this tab to another window.',
   unsavedChangesMessage: 'This document has unsaved changes. Do you want to save before closing?',
   dontSave: "Don't Save",

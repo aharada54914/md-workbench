@@ -30,6 +30,7 @@ const {
   createNewWindow,
   closeCurrentWindow,
   unregisterOpenFile,
+  registerOpenFile,
   getAllWindows,
   getCurrentWindowLabel,
   transferTabToWindow,
@@ -51,6 +52,7 @@ const leftPaneRef = ref<InstanceType<typeof EditorPane> | null>(null);
 const rightPaneRef = ref<InstanceType<typeof EditorPane> | null>(null);
 const isDragging = ref(false);
 const containerRef = ref<HTMLDivElement | null>(null);
+const pendingTransfers = new Set<string>();
 
 onMounted(() => {
   setOnDrop((tabId, sourcePaneId, targetPaneId, targetIndex) => {
@@ -72,6 +74,9 @@ onMounted(() => {
       return;
     }
 
+    if (pendingTransfers.has(tabId)) return;
+    pendingTransfers.add(tabId);
+    let sourceRemoved = false;
     try {
       const pane = splitState.value.panes.find(p => p.id === paneId);
       const tab = pane?.tabs.find(t => t.id === tabId);
@@ -85,8 +90,10 @@ onMounted(() => {
       }
       const initialContent = tab.content;
       const initialSource = tab.originalMarkdown;
+      const initialPending = tab.pendingMarkdown;
       const isUnchanged = () => pane?.tabs.includes(tab) && tab.filePath === filePath
-        && !tab.hasChanges && tab.content === initialContent && tab.originalMarkdown === initialSource;
+        && !tab.hasChanges && tab.content === initialContent && tab.originalMarkdown === initialSource
+        && tab.pendingMarkdown === initialPending;
 
       // Get current window label and all windows
       const currentWindow = await getCurrentWindowLabel();
@@ -98,9 +105,6 @@ onMounted(() => {
 
       console.log('[SplitContainer] Current window:', currentWindow);
       console.log('[SplitContainer] Other windows:', otherWindows);
-
-      // Unregister the file from this window before transfer
-      await unregisterOpenFile(filePath);
 
       if (otherWindows.length > 0) {
         // Transfer to an existing window (prefer 'main' if available, otherwise first other window)
@@ -116,7 +120,17 @@ onMounted(() => {
       // Input can arrive while the native transfer request is pending.
       // Keep those edits in the source window instead of silently discarding.
       if (!isUnchanged()) return;
+      await unregisterOpenFile(filePath);
+      // Registration is asynchronous too. Restore it if input arrived during
+      // that final await; native file authority is retained throughout.
+      if (!isUnchanged()) {
+        if (splitState.value.panes.some(p => p.tabs.some(t => t.filePath === filePath))) {
+          await registerOpenFile(filePath, currentWindow);
+        }
+        return;
+      }
       removeTabWithoutCreate(paneId, tabId);
+      sourceRemoved = true;
 
       if (isWindowEmpty()) {
         await closeCurrentWindow();
@@ -131,6 +145,11 @@ onMounted(() => {
       }
     } catch (error) {
       console.error('[SplitContainer] Error transferring tab:', error);
+      if (!sourceRemoved) {
+        await message(t.value.windowTransferFailed, { title: t.value.windowTransferTitle, kind: 'error' });
+      }
+    } finally {
+      pendingTransfers.delete(tabId);
     }
   });
 });

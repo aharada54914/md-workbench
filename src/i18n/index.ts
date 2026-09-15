@@ -140,6 +140,9 @@ export interface Translations {
   // Dialogs
   unsavedChanges: string;
   autoSavePaused: string;
+  windowTransferTitle: string;
+  windowTransferFailed: string;
+  windowTransferReceiveFailed: string;
   saveBeforeWindowTransfer: string;
   unsavedChangesMessage: string;
   dontSave: string;

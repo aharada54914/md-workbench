@@ -40,7 +40,8 @@ Guaranteeing replay across those failures requires an acknowledgement protocol.
 
 Native warm-open delivery now emits `open-files-pending`, replacing the previous
 `open-file` payload event. It must be integrated with the frontend in the same
-release. Tab-transfer and focus-file events keep their existing contracts.
+release. Focus-file events keep their existing contract. Tab transfer uses the separate
+[delivery acknowledgement protocol](FILESYSTEM_BROKER_API.md#window-registry-and-transfer-boundary).
 
 ## Path treatment
 
@@ -85,3 +86,26 @@ bytes. Native filesystem grant boundaries and read-only/conflict handling remain
 separate acceptance work.
 
 Rollback must restore the host and frontend event/getter pair together.
+
+
+## Frontend tab-transfer acceptance (2026-09-16)
+
+The target registers its `tab-transfer` notification listener before its initial
+pending-transfer lookup. Native file opens and transfer receives share a serial
+queue. Notifications supply no trusted file paths. The receiver checks that a
+real, clean tab exists after the read before acknowledging success; a failed read
+or existing dirty tab returns a negative acknowledgement without overwriting it.
+A target edit during final registration also prevents a successful acknowledgement.
+
+The source keeps its tab and registration while the native command awaits ACK.
+After success it removes the tab only if its content, original Markdown, pending
+Markdown and clean state still match the transfer snapshot. Edits during final
+unregistration restore the source registration. Failure or timeout shows an error
+and retains the source. This transfer does not save or serialize editor HTML.
+
+`SplitContainer.transfer.test.ts` and `useWindowManager.test.ts` cover pending ACK,
+failed completion, duplicate drags and late edits. `tab-transfer-ack.test.ts` covers
+cold delivery, ignored event paths, ordered runtime delivery, failed reads,
+existing clean/dirty targets, ACK races and deferred read/registration. These are
+frontend tests with mocked IPC; packaged multi-window delivery remains a native
+acceptance requirement.

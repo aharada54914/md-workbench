@@ -134,6 +134,9 @@ const pl: Translations = {
   // Dialogs
   unsavedChanges: 'Niezapisane zmiany',
   autoSavePaused: 'Automatyczny zapis wstrzymany. Użyj Zapisz, aby sprawdzić i zapisać zmiany.',
+  windowTransferTitle: 'Przenoszenie karty',
+  windowTransferFailed: 'Nie udało się przenieść karty. Karta źródłowa pozostaje otwarta.',
+  windowTransferReceiveFailed: 'Nie udało się odebrać pliku. Karta źródłowa pozostaje otwarta.',
   saveBeforeWindowTransfer: 'Zapisz zmiany przed przeniesieniem tej karty do innego okna.',
   unsavedChangesMessage: 'Ten dokument ma niezapisane zmiany. Czy chcesz zapisać przed zamknięciem?',
   dontSave: 'Nie zapisuj',

@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export interface TabTransferPayload {
+  id: string;
   file_path: string;
   source_window: string;
   target_window: string;
@@ -43,13 +44,16 @@ export function useWindowManager() {
     });
   };
 
-  const onTabTransfer = async (
-    callback: (payload: TabTransferPayload) => void
-  ): Promise<UnlistenFn> => {
-    return listen<TabTransferPayload>('tab-transfer', (event) => {
-      callback(event.payload);
-    });
-  };
+  // Notifications carry no authority or paths. Read pending transfers from the
+  // host, which scopes them to the caller's current window generation.
+  const getPendingTransfers = (): Promise<TabTransferPayload[]> =>
+    invoke('native_get_pending_transfers');
+
+  const acknowledgeTabTransfer = (id: string, success: boolean): Promise<void> =>
+    invoke('native_ack_tab_transfer', { id, success });
+
+  const onTabTransfer = async (callback: () => void): Promise<UnlistenFn> =>
+    listen('tab-transfer', () => callback());
 
   const closeCurrentWindow = async (): Promise<void> => {
     const window = getCurrentWindow();
@@ -92,6 +96,8 @@ export function useWindowManager() {
     getCurrentWindowLabel,
     transferTabToWindow,
     onTabTransfer,
+    getPendingTransfers,
+    acknowledgeTabTransfer,
     closeCurrentWindow,
     // File registry
     registerOpenFile,

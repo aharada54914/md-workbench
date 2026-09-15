@@ -50,7 +50,6 @@ import { useSplitView } from './composables/useSplitView';
 import { useFileOperations } from './composables/useFileOperations';
 import { useCloseConfirmation } from './composables/useCloseConfirmation';
 import { useWindowManager } from './composables/useWindowManager';
-import { useTabDrag } from './composables/useTabDrag';
 import { useEditorZoom } from './composables/useEditorZoom';
 import { useFileReload } from './composables/useFileReload';
 import { useLayoutConfig } from './composables/useLayoutConfig';
@@ -1907,8 +1906,8 @@ onMounted(async () => {
     console.error('[App] Błąd konfiguracji obsługi zamknięcia:', error);
   }
 
-  // Check for file path from URL query parameters (for new windows created via drag)
-  const { getFilePathFromUrl } = useWindowManager();
+  // Retain explicit URL opens; transferred windows receive host-owned pending work.
+  const { getFilePathFromUrl, getPendingTransfers, acknowledgeTabTransfer, onTabTransfer } = useWindowManager();
   const urlFilePath = getFilePathFromUrl();
   let hasExplicitFile = false;
 
@@ -1930,6 +1929,56 @@ onMounted(async () => {
     }).catch(error => console.error('[App] Could not drain native open queue:', error));
     return pendingOpens;
   };
+  const drainTabTransfers = (): Promise<void> => {
+    pendingOpens = pendingOpens.then(async () => {
+      const transfers = await getPendingTransfers();
+      if (transfers.length > 0) hasExplicitFile = true;
+      for (const transfer of transfers) {
+        let success = false;
+        try {
+          // The source remains registered until ACK. The normal cross-window
+          // opener would therefore focus the source instead of receiving it.
+          let result = findTabByFilePathSplit(transfer.file_path);
+          if (!result) {
+            await openFileFromPath(transfer.file_path);
+            result = findTabByFilePathSplit(transfer.file_path);
+          }
+          // openFileFromPath reports read failures itself and can resolve with
+          // no tab. Confirm a real, clean document before acknowledging it.
+          if (result && !result.tab.hasChanges && typeof result.tab.originalMarkdown === 'string') {
+            splitState.value.activePaneId = result.pane.id;
+            switchTab(result.pane.id, result.tab.id);
+            const received = result.tab;
+            const content = received.content;
+            const source = received.originalMarkdown;
+            const pending = received.pendingMarkdown;
+            await registerOpenFile(transfer.file_path, currentWindowLabel);
+            success = findTabByFilePathSplit(transfer.file_path)?.tab === received
+              && !received.hasChanges && received.content === content
+              && received.originalMarkdown === source && received.pendingMarkdown === pending;
+          }
+        } catch (error) {
+          console.error('[App] Could not receive transferred file:', error);
+        }
+        try {
+          await acknowledgeTabTransfer(transfer.id, success);
+        } catch (error) {
+          success = false;
+          console.error('[App] Could not acknowledge tab transfer:', error);
+        }
+        if (!success) showToastNotification(t.value.windowTransferReceiveFailed, 'warning');
+      }
+    }).catch(error => {
+      console.error('[App] Could not drain tab transfers:', error);
+      showToastNotification(t.value.windowTransferReceiveFailed, 'warning');
+    });
+    return pendingOpens;
+  };
+  try {
+    unlistenTabTransfer = await onTabTransfer(() => { void drainTabTransfers(); });
+  } catch (error) {
+    console.error('[App] Could not listen for tab transfers:', error);
+  }
   try {
     unlistenOpenFile = await listen('open-files-pending', () => { void drainNativeOpens(); });
   } catch (error) {
@@ -1937,6 +1986,7 @@ onMounted(async () => {
   }
 
   try {
+    await drainTabTransfers();
     if (urlFilePath) {
       hasExplicitFile = true;
       await nextTick();
@@ -1969,27 +2019,6 @@ onMounted(async () => {
 
   // Start persisting session state
   startSessionWatching();
-
-  // Listen for tab transfer events (from other windows)
-  try {
-    const { onTabTransfer } = useWindowManager();
-    const { isRecentlyTransferred, markAsTransferred } = useTabDrag();
-    unlistenTabTransfer = await onTabTransfer((payload) => {
-      console.log('[App] Received tab transfer:', payload);
-
-      // Check debounce to prevent transfer loops
-      if (isRecentlyTransferred(payload.file_path)) {
-        console.log('[App] Skipping transfer - file was recently transferred:', payload.file_path);
-        return;
-      }
-
-      // Mark as transferred to prevent loops
-      markAsTransferred(payload.file_path);
-      openFileWithCrossWindowCheck(payload.file_path);
-    });
-  } catch (error) {
-    console.error('Błąd nasłuchiwania transferu kart:', error);
-  }
 
   // Listen for focus-file events (when another window asks us to focus a file)
   try {
