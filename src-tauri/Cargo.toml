@@ -5,6 +5,10 @@ description = "Markdown editor with Mermaid support"
 authors = ["you"]
 edition = "2021"
 
+[features]
+default = []
+diagram-isolation-spike = []
+
 [lib]
 name = "mdreader_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

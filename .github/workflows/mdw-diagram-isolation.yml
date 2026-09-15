@@ -1,0 +1,56 @@
+name: MDW synthetic diagram isolation
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src-tauri/src/diagram_spike*'
+      - 'src-tauri/src/diagram_spike/**'
+      - 'src-tauri/src/lib.rs'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/capabilities/**'
+      - 'src-tauri/tauri.conf.json'
+      - 'scripts/diagram-isolation/**'
+      - '.github/workflows/mdw-diagram-isolation.yml'
+permissions:
+  contents: read
+jobs:
+  synthetic-webview2:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: '1.93.0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - run: npm install --global pnpm@11.3.0 --ignore-scripts
+      - run: pnpm install --frozen-lockfile
+      - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
+      - run: node --test scripts/diagram-isolation/protocol.test.mjs
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --features diagram-isolation-spike diagram_spike
+      - name: Default binary has no fixture despite launch flag
+        run: |
+          pnpm tauri build --no-bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe diagram-default --expect-disabled
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build and observe opt-in synthetic fixture
+        run: |
+          pnpm tauri build --no-bundle --features diagram-isolation-spike
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe diagram-spike
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mdw-diagram-isolation-${{ github.sha }}
+          path: |
+            diagram-default/**
+            diagram-spike/**
+          retention-days: 14
+          if-no-files-found: error
