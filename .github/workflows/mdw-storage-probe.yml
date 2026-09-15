@@ -24,7 +24,7 @@ jobs:
       - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
       - name: Validate the bounded observation schema
         run: cargo test --locked --manifest-path scripts/native-storage-probe/Cargo.toml
-      - name: Observe real Windows file and directory flush APIs
+      - name: Observe real Windows flush and private ACL APIs
         shell: pwsh
         run: |
           $report = & cargo run --quiet --locked --manifest-path scripts/native-storage-probe/Cargo.toml
@@ -35,7 +35,30 @@ jobs:
             throw 'Unexpected storage probe report contract'
           }
           [System.IO.File]::WriteAllText((Join-Path $PWD 'storage-api-probe.json'), $json, [System.Text.UTF8Encoding]::new($false))
-          'This report measures API support. Successful workflow execution does not establish ACL isolation or power-loss durability.' | Add-Content $env:GITHUB_STEP_SUMMARY
+          'This report measures flush API support and disposable owner/DACL controls. It does not establish renderer isolation, production private-root authority, or power-loss durability.' | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Verify ACL positive and negative controls
+        shell: pwsh
+        run: |
+          $decoded = Get-Content storage-api-probe.json -Raw | ConvertFrom-Json
+          $positive = @('query_process_identity', 'create_private_directory', 'inspect_private_directory', 'create_private_file', 'inspect_private_file', 'create_broad_acl_file', 'create_null_acl_file', 'create_unprotected_acl_file', 'create_junction', 'verify_acl_sentinel', 'cleanup_acl')
+          foreach ($name in $positive) {
+            $result = @($decoded.operations | Where-Object operation -eq $name)
+            if ($result.Count -ne 1 -or $result[0].outcome.status -ne 'success') {
+              throw "ACL positive control did not succeed: $name"
+            }
+          }
+          $negative = @{
+            reject_broad_acl_file = 'unexpected_acl'
+            reject_null_acl_file = 'null_or_missing_dacl'
+            reject_unprotected_acl_file = 'unprotected_dacl'
+            reject_junction = 'unexpected_file_type'
+          }
+          foreach ($name in $negative.Keys) {
+            $result = @($decoded.operations | Where-Object operation -eq $name)
+            if ($result.Count -ne 1 -or $result[0].outcome.status -ne 'rejected' -or $result[0].outcome.reason -ne $negative[$name]) {
+              throw "ACL negative control did not produce the expected rejection: $name"
+            }
+          }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
