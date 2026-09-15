@@ -289,6 +289,9 @@ const zhCN: Translations = {
   preSaveConflict: '文件已修改',
   preSaveConflictMessage: '自上次加载或保存以来，文件已被外部修改。',
   saveAnyway: '仍然保存',
+  fileSavedMonitoringPermission: (path: string) => `已保存，但 ${path} 的外部更改监视已暂停。请通过“打开文件”重新选择。`,
+  fileMonitoringPermission: (path: string) => `外部更改监控已暂停： ${path}. 请使用“打开文件”重新选择。`,
+  fileMonitoringError: (path: string) => `无法读取外部更改： ${path}.`,
   fileDeletedExternally: (fileName: string) => `"${fileName}" 已被外部删除。`,
   anchorNotFound: (anchor: string) => `没有标题与 "#${anchor}" 匹配。`,
 

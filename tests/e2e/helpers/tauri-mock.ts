@@ -48,8 +48,7 @@ export async function setupTauriMocks(
   /** Inspect IPC calls log from a test */
   getCalls: () => Array<{ cmd: string; args: unknown }>;
   /**
-   * Simulate an external file change: updates the Node-side FS and fires a
-   * synthetic watcher event so the app sees the file as changed externally.
+   * Simulate an external file change: updates the Node-side FS; the native polling subscription observes it.
    * The file must already be watched by the app (i.e. opened in a tab).
    */
   triggerExternalChange: (filePath: string, newContent: string) => Promise<void>;
@@ -66,8 +65,8 @@ export async function setupTauriMocks(
   const calls: Array<{ cmd: string; args: unknown }> = [];
 
   // Expose Node-side functions so the browser script can call them
-  await page.exposeFunction('__mockFsRead', (path: string): string => {
-    calls.push({ cmd: 'read', args: path });
+  await page.exposeFunction('__mockFsRead', (path: string, cmd = 'read'): string => {
+    calls.push({ cmd, args: path });
     if (!(path in fs)) throw new Error(`ENOENT: ${path}`);
     return fs[path];
   });
@@ -98,10 +97,6 @@ export async function setupTauriMocks(
 
   await page.exposeFunction('__mockFsExists', (path: string): boolean => {
     return path in fs;
-  });
-
-  await page.exposeFunction('__mockFsWatch', (): void => {
-    // no-op — watcher registration is tracked browser-side via __watchCallbacks
   });
 
   // NOTE: dialogSavePath is intentionally NOT exposed via page.exposeFunction
@@ -140,17 +135,24 @@ export async function setupTauriMocks(
       const documentGrants = new Set<string>();
       const workspaceGrants = new Set<string>();
       (window as any).__mockWorkspaceSelection = null;
-      const insideWorkspace = (path: string) => {
+      const resolveReadGrant = (path: string): string => {
+        if (documentGrants.has(path)) return dropGrantIds.get(path)!;
         const normalized = path.replace(/\\/g, '/');
-        if (normalized.split('/').some(part => part === '.' || part === '..')) return false;
-        return [...workspaceGrants].some(root => normalized.startsWith(root.replace(/\\/g, '/').replace(/\/+$/, '') + '/'));
+        if (!normalized.split('/').some(part => part === '.' || part === '..')) {
+          const root = [...workspaceGrants].filter(root => normalized.startsWith(root.replace(/\\/g, '/').replace(/\/+$/, '') + '/'))
+            .sort((a, b) => b.length - a.length)[0];
+          if (root) return dropGrantIds.get(root)!;
+        }
+        throw { code: 'permission_required', message: 'Select this document again' };
       };
       (window as any).__mockDocumentSelection = [];
       (window as any).__mockNativeFsCalls = [];
+      let nextGrant = 1;
       const grantDocument = (path: string) => {
         documentGrants.add(path);
-        dropGrantIds.set(path, `document:${path}`);
-        return { id: `document:${path}`, path, kind: 'document', read: true, write: true };
+        const id = `document:${nextGrant++}:${path}`;
+        dropGrantIds.set(path, id);
+        return { id, path, kind: 'document', read: true, write: true };
       };
       const dropQueue: NativeDrop[] = [];
       const dropGrantIds = new Map<string, string>();
@@ -176,6 +178,7 @@ export async function setupTauriMocks(
         await (window as any).__triggerRendererEvent('native-drops-pending', { paths: ['/forged.md'] });
       };
       const transferQueue = [...pendingTransfers];
+      const grantedTransfers = new Set<string>();
       (window as any).__mockTransferAcks = [];
       (window as any).__mockTransferAckError = null;
       (window as any).__triggerTabTransfers = async (transfers: MockTabTransfer[]) => {
@@ -219,26 +222,10 @@ export async function setupTauriMocks(
         }
       };
 
-      // Watcher callback registry: path -> Tauri callback id
-      // Filled when plugin:fs|watch is invoked (see invoke handler below).
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let nextWatchResource = 1;
-      const watchResources = new Map<number, string[]>();
-      (window as any).__watchCallbacks = {} as Record<string, { id: number; index: number }>;
-
-      // Trigger a synthetic watcher event for a path (called from test via page.evaluate).
-      // The Node side must have already updated the FS content before calling this.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).__triggerWatchEvent = (path: string) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const channel = (window as any).__watchCallbacks[path] as { id: number; index: number } | undefined;
-        if (channel) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const cb = (window as any)[`_cb_${channel.id}`];
-          if (cb) cb({ index: channel.index++, message: { type: 'modify', paths: [path], attrs: null } });
-        }
-      };
-
+      let nextWatch = 1;
+      const nativeWatches: Record<string, { id: string; path: string; grantId: string }> = {};
+      (window as any).__nativeWatchSubscriptions = nativeWatches;
+      (window as any).__revokeDocumentGrant = (path: string) => { documentGrants.delete(path); dropGrantIds.delete(path); };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__TAURI_INTERNALS__ = {
         metadata: {
@@ -269,8 +256,9 @@ export async function setupTauriMocks(
             (window as any).__mockWorkspaceSelection = null;
             if (path === null) return null;
             workspaceGrants.add(path);
-            dropGrantIds.set(path, `workspace:${path}`);
-            return { id: `workspace:${path}`, path, kind: 'workspace', read: true, write: false };
+            const id = `workspace:${nextGrant++}:${path}`;
+            dropGrantIds.set(path, id);
+            return { id, path, kind: 'workspace', read: true, write: false };
           }
           if (cmd === 'read_workspace_tree') {
             const root = (args as Record<string, unknown>).root as string;
@@ -280,14 +268,38 @@ export async function setupTauriMocks(
             if (!workspaceGrants.has(root)) throw { code: 'permission_required', message: 'Select this folder again' };
             return call('__mockWorkspaceTree', root);
           }
-          if (cmd === 'native_read_path') {
-            const path = (args as Record<string, unknown>).path as string;
-            (window as any).__mockNativeFsCalls.push({ cmd, path });
-            const expected = (args as Record<string, unknown>).expectedGrantId;
-            if (expected !== undefined && dropGrantIds.get(path) !== expected) throw { code: 'permission_required' };
-            if (!documentGrants.has(path) && !insideWorkspace(path)) throw { code: 'permission_required', message: 'Select this document again' };
-            const content = await call('__mockFsRead', path) as string;
-            return Array.from(new TextEncoder().encode(content));
+          if (cmd === 'native_resolve_image_document') {
+            const path = (args as any).documentPath;
+            return { grantId: resolveReadGrant(path) };
+          }
+          if (cmd === 'native_watch_subscribe') {
+            const { path, expectedGrantId } = args as any;
+            const grantId = resolveReadGrant(path);
+            if (expectedGrantId !== grantId) throw { code: 'permission_required' };
+            if (!await call('__mockFsExists', path)) throw { code: 'file_not_found' };
+            const id = `watch:${nextWatch++}`;
+            nativeWatches[id] = { id, path, grantId };
+            return { id, grantId };
+          }
+          if (cmd === 'native_watch_unsubscribe') { delete nativeWatches[(args as any).id]; return; }
+          if (cmd === 'native_watch_read' || cmd === 'native_read_path') {
+            const request = args as any;
+            const token = cmd === 'native_watch_read' ? nativeWatches[request.id] : undefined;
+            if (cmd === 'native_watch_read' && !token) throw { code: 'permission_required' };
+            const path = token?.path ?? request.path;
+            (window as any).__mockNativeFsCalls.push({ cmd, path, expectedGrantId: token?.grantId ?? request.expectedGrantId });
+            const expected = token?.grantId ?? request.expectedGrantId;
+            if (expected !== undefined && resolveReadGrant(path) !== expected) throw { code: 'permission_required' };
+            resolveReadGrant(path);
+            const exists = await call('__mockFsExists', path);
+            try {
+              // Keep polling distinguishable from explicit document/save reads.
+              const content = await call('__mockFsRead', path, token ? 'watch_read' : 'read') as string;
+              return Array.from(new TextEncoder().encode(content));
+            } catch (error) {
+              if (!exists) throw { code: 'file_not_found' };
+              throw error;
+            }
           }
           // ── fs plugin ──────────────────────────────────────────────
           if (cmd === 'plugin:fs|read_text_file') {
@@ -314,28 +326,7 @@ export async function setupTauriMocks(
           if (cmd === 'plugin:fs|exists') {
             return call('__mockFsExists', (args as Record<string, unknown>).path);
           }
-          if (cmd === 'plugin:fs|watch') {
-            // Capture the Tauri callback id so tests can fire synthetic events.
-            // plugin-fs v2 sends the callback through a Channel in `onEvent`.
-            const watchArgs = args as Record<string, unknown>;
-            const cbId = (watchArgs.onEvent as { id?: number } | undefined)?.id ?? watchArgs.id as number;
-            const paths = (watchArgs.paths as string[]) ?? [];
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            for (const p of paths) (window as any).__watchCallbacks[p] = { id: cbId, index: 0 };
-            await call('__mockFsWatch');
-            const resource = nextWatchResource++;
-            watchResources.set(resource, paths);
-            return resource;
-          }
-          if (cmd === 'plugin:resources|close') {
-            const resource = (args as { rid: number }).rid;
-            for (const path of watchResources.get(resource) ?? []) delete (window as any).__watchCallbacks[path];
-            watchResources.delete(resource);
-            return undefined;
-          }
-          if (cmd === 'plugin:fs|unwatch') {
-            return call('__mockFsWatch');
-          }
+          if (cmd === 'plugin:fs|watch') throw new Error('Ambient watch is prohibited by this fixture');
 
           // ── dialog plugin ──────────────────────────────────────────
           if (cmd === 'plugin:dialog|open') {
@@ -389,7 +380,7 @@ export async function setupTauriMocks(
           // ── custom Rust commands ───────────────────────────────────
           if (cmd === 'native_get_pending_transfers') {
             const pending = transferQueue.filter(item => item.target_window === windowLabel);
-            pending.forEach(item => grantDocument(item.file_path));
+            pending.forEach(item => { if (!grantedTransfers.has(item.id)) { grantDocument(item.file_path); grantedTransfers.add(item.id); } });
             return pending;
           }
           if (cmd === 'native_ack_tab_transfer') {
@@ -431,13 +422,7 @@ export async function setupTauriMocks(
   );
 
   const triggerExternalChange = async (filePath: string, newContent: string): Promise<void> => {
-    // 1. Update the Node-side virtual FS so subsequent readTextFile calls return new content
     fs[filePath] = newContent;
-    // 2. Fire a synthetic watcher event in the browser — the app will read the updated content
-    await page.evaluate((path: string) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).__triggerWatchEvent(path);
-    }, filePath);
   };
 
   return {

@@ -289,6 +289,9 @@ const en: Translations = {
   preSaveConflict: 'File Modified',
   preSaveConflictMessage: 'The file has been modified externally since you last loaded or saved it.',
   saveAnyway: 'Save Anyway',
+  fileSavedMonitoringPermission: (path: string) => `Saved, but external-change monitoring is paused for ${path}. Select it again using Open File.`,
+  fileMonitoringPermission: (path: string) => `External-change monitoring is paused for ${path}. Select it again using Open File.`,
+  fileMonitoringError: (path: string) => `Could not monitor external changes to ${path}.`,
   fileDeletedExternally: (fileName: string) => `"${fileName}" was deleted externally.`,
   anchorNotFound: (anchor: string) => `No heading matches "#${anchor}".`,
 

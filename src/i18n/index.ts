@@ -295,6 +295,9 @@ export interface Translations {
   preSaveConflict: string;
   preSaveConflictMessage: string;
   saveAnyway: string;
+  fileSavedMonitoringPermission: (filePath: string) => string;
+  fileMonitoringPermission: (filePath: string) => string;
+  fileMonitoringError: (filePath: string) => string;
   fileDeletedExternally: (fileName: string) => string;
   anchorNotFound: (anchor: string) => string;
 

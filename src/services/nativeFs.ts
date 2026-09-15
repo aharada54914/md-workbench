@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { decodeDocumentUtf8 } from './documentText';
+import { decodeDocumentUtf8 } from './documentUtf8';
 
 /** Describes authority already issued by the host; paths never grant access. */
 export interface NativeGrant {
@@ -56,6 +56,9 @@ export interface NativeWatch {
 
 /** Native grants are scoped to the invoking editor window. Never fall back to
  * plugin-fs when authority is missing or revoked. Callers handle typed rejects. */
+const resolveDocumentReadGrant = (documentPath: string) =>
+  invoke<NativeImageDocument>('native_resolve_image_document', { documentPath });
+
 export const nativeFs = {
   revealPath: (path: string, expectedGrantId?: string) =>
     invoke<void>('reveal_in_os', {
@@ -63,7 +66,13 @@ export const nativeFs = {
     }),
   takeDrops: () => invoke<NativeDrop[]>('native_take_drops'),
   getGrant: (path: string) => invoke<NativeGrant | null>('native_get_grant', { path }),
-  pickDocuments: () => invoke<NativeGrant[]>('native_pick_documents'),
+  pickDocuments: async (): Promise<NativeGrant[]> => {
+    const selected = await invoke<NativeGrant[]>('native_pick_documents');
+    // Native selection retains the last identity for a repeated exact alias.
+    // Preserve selection/focus order while preventing stale identity reuse.
+    const latest = new Map(selected.map(grant => [grant.path, grant]));
+    return selected.map(grant => latest.get(grant.path)!);
+  },
   pickSaveDestination: () => invoke<NativeGrant | null>('native_pick_save_destination'),
   pickWorkspace: () => invoke<NativeGrant | null>('native_pick_workspace'),
   pickResource: () => invoke<NativeGrant | null>('native_pick_resource'),
@@ -72,8 +81,9 @@ export const nativeFs = {
   listDirectory: (path: string, limit = MAX_NATIVE_DIRECTORY_ENTRIES) =>
     invoke<NativeDirectoryListing>('native_list_directory', { path, limit }),
 
-  resolveImageDocument: (documentPath: string) =>
-    invoke<NativeImageDocument>('native_resolve_image_document', { documentPath }),
+  // Existing host resolver validates a regular Document/Workspace READ identity.
+  resolveDocumentReadGrant,
+  resolveImageDocument: resolveDocumentReadGrant,
 
   subscribeWatch: (path: string, expectedGrantId: string) =>
     invoke<NativeWatch>('native_watch_subscribe', { path, expectedGrantId }),

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { nativeFs, MAX_NATIVE_READ_BYTES } from '../../services/nativeFs';
+import { nativeFs, MAX_NATIVE_READ_BYTES, type NativeGrant } from '../../services/nativeFs';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const invokeMock = vi.mocked(invoke);
@@ -107,4 +107,33 @@ describe('native document image byte foundation', () => {
       ]);
     },
   );
+});
+
+
+describe('native document picker batch identities', () => {
+  beforeEach(() => { invokeMock.mockReset(); });
+  const grant = (path: string, id: string): NativeGrant => ({ path, id, kind: 'document', read: true, write: false });
+
+  it('keeps the full selection sequence using the last returned identity without mutating the host response', async () => {
+    const first = grant('/a.md', 'old-a'); const second = grant('/b.md', 'b'); const last = grant('/a.md', 'new-a');
+    const selected = Object.freeze([first, second, last]);
+    invokeMock.mockResolvedValue(selected);
+    expect(await nativeFs.pickDocuments()).toEqual([last, second, last]);
+    expect(selected).toEqual([first, second, last]);
+    expect(invokeMock.mock.calls).toEqual([['native_pick_documents']]);
+  });
+  it('does not case-fold, decode or otherwise normalize returned paths', async () => {
+    const selected = ['/A.md', '/a.md', '/%61.md'].map((path, index) => grant(path, String(index)));
+    invokeMock.mockResolvedValue(selected);
+    expect(await nativeFs.pickDocuments()).toEqual(selected);
+  });
+  it('does not replace a selected identity if its later read is denied', async () => {
+    const last = grant('/a.md', 'new-a'); const failure = { code: 'permission_required' };
+    invokeMock.mockResolvedValueOnce([grant('/a.md', 'old-a'), last]).mockRejectedValueOnce(failure);
+    const [selected] = await nativeFs.pickDocuments();
+    await expect(nativeFs.readPathText(selected.path, undefined, selected.id)).rejects.toBe(failure);
+    expect(invokeMock.mock.calls).toEqual([
+      ['native_pick_documents'], ['native_read_path', { path: '/a.md', limit: MAX_NATIVE_READ_BYTES, expectedGrantId: 'new-a' }],
+    ]);
+  });
 });

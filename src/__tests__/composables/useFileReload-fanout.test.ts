@@ -4,20 +4,25 @@ import type { Tab } from '../../composables/useTabs';
 import type { UseFileReloadOptions } from '../../composables/useFileReload';
 
 const watcher = vi.hoisted(() => ({
-  notify: (_path: string, _content: string) => {}, updateKnownContent: vi.fn(),
+  notify: (_path: string, _content: string) => {}, updateKnownContent: vi.fn(), restartWatch: vi.fn(),
+  error: (_path: string, _error: unknown) => {}, ready: (_path: string) => {},
 }));
-vi.mock('../../services/documentText', () => ({ readTextFile: vi.fn() }));
+vi.mock('../../services/nativeFs', () => ({ nativeFs: {
+  resolveDocumentReadGrant: vi.fn(async () => ({ grantId: 'current-grant' })), readPathText: vi.fn(),
+} }));
 vi.mock('../../composables/useFileWatcher', () => ({ useFileWatcher: (options: {
   onExternalChange: (path: string, content: string) => void;
+  onWatchError: (path: string, error: unknown) => void; onWatchReady: (path: string) => void;
 }) => {
-  watcher.notify = options.onExternalChange;
-  return { updateKnownContent: watcher.updateKnownContent, watchFile: vi.fn(),
+  watcher.notify = options.onExternalChange; watcher.error = options.onWatchError; watcher.ready = options.onWatchReady;
+  return { updateKnownContent: watcher.updateKnownContent, watchFile: vi.fn(), restartWatch: watcher.restartWatch,
     unwatchFile: vi.fn(), unwatchAll: vi.fn(), markSaveStart: vi.fn(),
     markSaveEnd: vi.fn(), markSaveAbort: vi.fn() };
 } }));
 vi.mock('../../utils/markdown-converter', () => ({ markdownToHtml: (md: string) => `<p>${md}</p>` }));
 import { useFileReload } from '../../composables/useFileReload';
-import { readTextFile } from '../../services/documentText';
+import { nativeFs } from '../../services/nativeFs';
+const readTextFile = nativeFs.readPathText;
 
 function setup(dirty: boolean[]) {
   const tabs: Tab[] = dirty.map((hasChanges, index) => ({
@@ -40,6 +45,15 @@ beforeEach(() => { vi.clearAllMocks(); vi.useFakeTimers(); });
 afterEach(() => { vi.runAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('external change fanout', () => {
+  it('distinguishes successful Save from READ adoption and retains its warning until a current read succeeds', async () => {
+    const { reload, tabs } = setup([true]);
+    await reload.watchFile('/a.md', 'saved', true);
+    watcher.error('/a.md', { code: 'permission_required' });
+    expect(reload.monitoringError.value).toContain('Saved, but');
+    expect(tabs[0].pendingMarkdown).toBe('old');
+    watcher.ready('/a.md');
+    expect(reload.monitoringError.value).toBe('');
+  });
   it('reloads every clean same-path object across panes', () => {
     const { tabs, options } = setup([false, false, false]);
     watcher.notify('/a.md', 'disk');
@@ -167,6 +181,7 @@ describe('queued conflict lifecycle', () => {
     let resolve!: (text: string) => void;
     vi.mocked(readTextFile).mockReturnValueOnce(new Promise<string>(yes => { resolve = yes; }));
     const pending = reload.manualReload();
+    await Promise.resolve();
     watcher.notify('/a.md', 'new disk');
     resolve('older disk');
     await pending;
@@ -234,6 +249,7 @@ describe('pending manual read shared path generation', () => {
     let resolve!: (text: string) => void;
     vi.mocked(readTextFile).mockReturnValueOnce(new Promise<string>(yes => { resolve = yes; }));
     const pending = reload.manualReload();
+    await Promise.resolve();
     if (action === 'unwatchFile') reload.unwatchFile('/a.md');
     else reload.unwatchAll();
     resolve('old session disk');
@@ -252,6 +268,7 @@ describe('pending manual read shared path generation', () => {
     vi.mocked(readTextFile).mockReturnValueOnce(new Promise<string>((yes, no) => { resolve = yes; reject = no; }));
     const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
     const pending = reload.manualReload();
+    await Promise.resolve();
     if (action === 'save') reload.markSaveEnd('/a.md', 'newer disk');
     if (action === 'direct-reload') reload.reloadTabContent('/a.md', 'newer disk', tabs[1]);
     if (action === 'manual-reload') {
@@ -277,10 +294,51 @@ describe('pending manual read shared path generation', () => {
     let resolve!: (text: string) => void;
     vi.mocked(readTextFile).mockReturnValueOnce(new Promise<string>(yes => { resolve = yes; }));
     const pending = reload.manualReload();
+    await Promise.resolve();
     reload.markSaveEnd('/other.md', 'unrelated');
     resolve('current disk');
     await pending;
     expect(tabs[0].pendingMarkdown).toBe('current disk');
     expect(watcher.updateKnownContent).toHaveBeenCalledWith('/a.md', 'current disk');
+  });
+});
+
+
+describe('monitor permission and explicit rebind', () => {
+  it('keeps the warning after toast dismissal until a current successful read', () => {
+    const { reload } = setup([true]);
+    watcher.error('/a.md', { code: 'permission_required' });
+    expect(reload.monitoringError.value).toContain('Open File');
+    reload.dismissToast(); expect(reload.showToast.value).toBe(false);
+    expect(reload.monitoringError.value).not.toBe('');
+    watcher.ready('/other.md'); expect(reload.monitoringError.value).not.toBe('');
+    watcher.ready('/a.md'); expect(reload.monitoringError.value).toBe('');
+  });
+  it.each(['success', 'failure'])('rebind invalidates a pending manual %s without replacing dirty buffers', async finish => {
+    const { tabs, reload } = setup([true]);
+    let resolve!: (value: string) => void; let reject!: (error: unknown) => void;
+    vi.mocked(readTextFile).mockReturnValueOnce(new Promise((yes, no) => { resolve = yes; reject = no; }));
+    const pending = reload.manualReload(); await Promise.resolve();
+    watcher.notify('/a.md', 'old grant candidate');
+    expect(reload.showConflictModal.value).toBe(true);
+    await reload.restartWatch('/a.md', 'old', 'new-grant');
+    expect(watcher.restartWatch).toHaveBeenCalledWith('/a.md', 'old', 'new-grant');
+    expect(reload.showConflictModal.value).toBe(false);
+    reload.handleConflictLoadExternal();
+    if (finish === 'success') resolve('old delayed bytes'); else reject({ code: 'permission_required' });
+    await pending;
+    expect(tabs[0].pendingMarkdown).toBe('old'); expect(tabs[0].hasChanges).toBe(true);
+    expect(reload.monitoringError.value).toBe('');
+    watcher.notify('/a.md', 'new grant candidate');
+    expect(reload.showConflictModal.value).toBe(true);
+    reload.handleConflictLoadExternal(); expect(tabs[0].pendingMarkdown).toBe('new grant candidate');
+  });
+  it('manual reload propagates the freshly resolved expected identity and never reads on denial', async () => {
+    const { reload, tabs } = setup([false]);
+    const before = { ...tabs[0] };
+    vi.mocked(nativeFs.resolveDocumentReadGrant).mockRejectedValueOnce({ code: 'permission_required' });
+    await reload.manualReload();
+    expect(readTextFile).not.toHaveBeenCalled(); expect(tabs[0]).toEqual(before);
+    expect(reload.monitoringError.value).not.toBe('');
   });
 });

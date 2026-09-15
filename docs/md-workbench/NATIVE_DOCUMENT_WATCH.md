@@ -1,8 +1,8 @@
 # Native document polling subscriptions
 
-This substrate supplies authorized reads for a future bounded polling scheduler.
-It installs no OS watcher, timer, native polling loop, or filesystem event queue.
-The existing frontend watcher and manual reload are not migrated by this slice.
+The native substrate supplies authorized reads for the frontend polling scheduler.
+Native code installs no OS watcher, timer, polling loop, or filesystem event queue.
+`useFileWatcher` and manual reload use native READ authority without plugin-fs fallback.
 
 ## Contract
 
@@ -31,9 +31,9 @@ binding, READ ownership and regular document type and uses existing retained
 handles with nofollow checks under the registry lock. No historical grant or
 renderer path can create or restore permission.
 
-The subscription result contains no initial content. The future scheduler must
-request an **immediate first read** and compare it with the document's open-time
-source, then schedule further bounded reads. This catches an edit between open
+The subscription result contains no initial content. The frontend requests an
+**immediate first read**, subject to the shared start limiter, and compares it
+with the document's open-time source, then schedules further bounded reads. This catches an edit between open
 and subscription installation. No renderer baseline is treated as filesystem
 truth. The service wrappers provide no implicit scheduling or decoding.
 
@@ -49,9 +49,14 @@ truth. The service wrappers provide no implicit scheduling or decoding.
 - Subscription quota failures return `watch_limit_exceeded`; they add no partial
   subscription. A successful unsubscribe releases its quota.
 
-The future frontend scheduler must also bound global in-flight requests and
-poll frequency; these host quotas do not establish polling latency or workload
-performance acceptance. There is no backlogged sequence of change observations:
+The frontend scheduler permits one native watch read in flight per renderer,
+with at least 250 ms between read starts and a normal next poll due 1 second
+after the prior read settles. These are provisional engineering values, not
+measured performance or latency guarantees. Ready jobs run in insertion order;
+reads coalesce per session. Closing or rebinding a session does not free an active
+read slot until its promise settles, and an empty queue preserves the last start
+spacing. User-initiated manual reloads are separate explicit operations, not
+scheduler jobs. These host quotas do not establish workload performance acceptance. There is no backlogged sequence of change observations:
 each authorized read returns the content seen during that read.
 
 Missing authorized leaves return `file_not_found` and retain their subscription,
@@ -75,26 +80,39 @@ whether a foreign/forged token's path exists. Work already dispatched continues
 to its state check even if its caller stops awaiting; a poisoned native registry
 fails closed with `native_state_unavailable`.
 
-## Required follow-up and limitations
+## Frontend lifecycle and remaining limits
+
+The watcher resolves current Document/Workspace READ metadata before subscribing.
+Manual reload resolves the same identity and passes it to `native_read_path`;
+there is no unbound retry. Both decode exact UTF-8 with the pure document decoder,
+which preserves BOM and newline bytes and rejects invalid UTF-8. Session/revision
+and tab/path observation guards suppress late successes and failures. Save start
+suppresses reads; successful End and Abort request a catch-up through the shared
+limiter, without a post-save grace period. Only typed `file_not_found` reports
+removal. Permission, invalid kind, decoding, size and generic failures do not.
+
+A permission failure pauses monitoring and retains the buffer. The active tab
+shows a persistent warning and an Open File action. Explicit native selection of
+the same path rebinds the watcher using that selection's grant ID; it preserves
+local dirty text and invalidates old manual reads and conflict answers. Ordinary
+`watchFile` calls remain idempotent and cannot silently revive a denied session.
+A successful current read clears the warning. Cancel changes nothing; choosing
+another file leaves the original tab and its warning intact. The last tab owner
+closing or changing its path releases the subscription.
 
 Save As has no automatic READ adoption yet. Export WRITE or a renderer-provided
-successful Save callback cannot authorize subscription. Until native Save
-completion establishes current READ, an ungranted destination receives
-`permission_required`. Frontend migration must make that failure visible and
-must not retry through plugin-fs. The old subscription cannot be moved by path
-alone, and shared tabs need coordinated release after their last owner closes.
-
-The future UI scheduler must preserve existing session/revision guards, compare
-original bytes using the pure document decoder, perform first-read and own-save
-End/Abort catch-up reads, and suppress stale results after close/rebind. Backend
-subscription IDs supplement those guards; they do not replace them.
+successful Save callback cannot authorize subscription. An ungranted destination
+shows a saved-but-monitoring-paused warning until explicit native reselection.
+Saving bytes and reacquiring READ are distinct operations; no fake grant adoption
+or plugin fallback occurs. This preserves Save As while honestly exposing the
+remaining native Save integration gap.
 
 Retained parent/name authority is not an inode snapshot or content transaction.
 An atomic replacement or in-place edit may be observed. A replaced parent must
 not redirect access outside the retained root; Windows retained handles may
 prevent a parent rename. No parent-path OS watch, permission fallback, changed
 Save/Undo contract, or broad plugin-permission removal occurs in this slice.
-Actual packaged OS behavior and future scheduler performance remain unverified.
+Actual packaged OS behavior and scheduler performance under load remain unverified.
 
 Native tests cover ownership, stale generation/selection, core revoke, queued
 read cancellation, busy and quota bounds, byte/type errors, replacement and

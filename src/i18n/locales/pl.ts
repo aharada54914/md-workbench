@@ -289,6 +289,9 @@ const pl: Translations = {
   preSaveConflict: 'Plik zmodyfikowany',
   preSaveConflictMessage: 'Plik został zmodyfikowany zewnętrznie od ostatniego wczytania lub zapisania.',
   saveAnyway: 'Zapisz mimo to',
+  fileSavedMonitoringPermission: (path: string) => `Zapisano, ale monitorowanie zmian zewnętrznych dla ${path} jest wstrzymane. Wybierz plik ponownie przez Otwórz plik.`,
+  fileMonitoringPermission: (path: string) => `Monitorowanie zmian zewnętrznych wstrzymane: ${path}. Wybierz plik ponownie przez Otwórz plik.`,
+  fileMonitoringError: (path: string) => `Nie można odczytać zmian zewnętrznych: ${path}.`,
   fileDeletedExternally: (fileName: string) => `"${fileName}" został usunięty zewnętrznie.`,
   anchorNotFound: (anchor: string) => `Żaden nagłówek nie pasuje do "#${anchor}".`,
 

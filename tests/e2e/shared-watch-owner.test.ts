@@ -6,8 +6,8 @@ const a = '/test/a.md';
 const b = '/test/b.md';
 const source = '# Shared original\n';
 const watchedPaths = (page: Page) => page.evaluate(() => {
-  const state = window as unknown as { __watchCallbacks: Record<string, unknown> };
-  return Object.keys(state.__watchCallbacks).sort();
+  const state = window as unknown as { __nativeWatchSubscriptions: Record<string, { path: string }> };
+  return Object.values(state.__nativeWatchSubscriptions).map(item => item.path).sort();
 });
 
 test('closing one same-path tab retains the remaining tab watcher until its final owner closes', async ({ page }) => {

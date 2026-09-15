@@ -16,6 +16,7 @@ test('native picker opens multiple files in order and preserves BOM CRLF bytes o
   await page.goto('/');
   await expect(page.getByRole('button', { name: 'Code', exact: true })).toBeVisible();
   await selectDocuments(page, [paths[0], paths[1], paths[0]]);
+  // Repeated aliases retain final focus using their latest host identity.
   await expect(preview(page)).toContainText('First');
   await expect(page.locator('.tab-bar .tab')).toHaveCount(2);
   expect(await page.locator('.tab-bar .tab').allTextContents()).toEqual([expect.stringContaining('first.md'), expect.stringContaining('日本語 second.md')]);

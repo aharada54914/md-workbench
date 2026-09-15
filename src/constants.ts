@@ -51,3 +51,6 @@ export const SCROLL_OFFSET = 80;
 
 /** Padding around highlight box */
 export const HIGHLIGHT_PADDING = 4;
+
+/** Provisional polling engineering values, not measured latency guarantees. */
+export const FILE_WATCH_POLL = { MIN_START_INTERVAL: 250, INTERVAL: 1_000 } as const;

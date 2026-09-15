@@ -43,6 +43,7 @@ export interface UseFileOperationsOptions {
   /** Reports native permission/read failures without mutating tabs or falling back. */
   onOpenError?: (error: unknown, filePath: string | null) => void;
   onFileOpened?: (filePath: string, content: string) => void;
+  onFileReselected?: (tab: Tab, expectedGrantId: string) => Promise<void>;
   /** Notifies hosts of a large raw document. Opening does not activate an editor;
    *  the host can page its source until the user chooses an editing mode. */
   onLargeFileOpened?: (filePath: string, markdown: string) => void;
@@ -88,6 +89,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     markSaveEnd,
     markSaveAbort,
     onAfterSave,
+    onFileReselected,
     onFileOpened,
     onOpenError,
     onLargeFileOpened,
@@ -117,7 +119,8 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     const existingTab = findTabByFilePath(filePath);
     if (existingTab) {
       if (selection?.isCurrent?.() === false) return;
-      await switchToTab(existingTab.id);
+      if (selection?.expectedGrantId) await onFileReselected?.(existingTab, selection.expectedGrantId);
+      if (selection?.isCurrent?.() !== false && isTabOpen(existingTab) && existingTab.filePath === filePath) await switchToTab(existingTab.id);
       return;
     }
 
@@ -129,7 +132,8 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     const openedDuringRead = findTabByFilePath(filePath);
     if (openedDuringRead) {
       if (selection?.isCurrent?.() === false) return;
-      await switchToTab(openedDuringRead.id);
+      if (selection?.expectedGrantId) await onFileReselected?.(openedDuringRead, selection.expectedGrantId);
+      if (selection?.isCurrent?.() !== false && isTabOpen(openedDuringRead) && openedDuringRead.filePath === filePath) await switchToTab(openedDuringRead.id);
       return;
     }
     const isLarge = fileContent.length > LARGE_FILE_CHAR_THRESHOLD;
@@ -185,7 +189,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     try {
       const selected = await nativeFs.pickDocuments();
       // A failed selection must not prevent the remaining selected files opening.
-      for (const grant of selected) await openFileFromPath(grant.path);
+      for (const grant of selected) await openFileFromPath(grant.path, { expectedGrantId: grant.id });
     } catch (error) {
       reportOpenError(error, null);
     }

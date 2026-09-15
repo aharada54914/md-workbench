@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { decodeDocumentUtf8, readTextFile } from '../../services/documentText';
+import { readTextFile } from '../../services/documentText';
+import { decodeDocumentUtf8 } from '../../services/documentUtf8';
 import { invoke } from '@tauri-apps/api/core';
 import { markdownToHtml } from '../../utils/markdown-converter';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));

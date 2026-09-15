@@ -1,15 +1,19 @@
-import { watch as watchFs, type UnwatchFn } from '@tauri-apps/plugin-fs';
-import { readTextFile } from '../services/documentText';
-import { TIMING } from '../constants';
+import { nativeFs, MAX_NATIVE_READ_BYTES, type NativeWatch } from '../services/nativeFs';
+import { decodeDocumentUtf8 } from '../services/documentUtf8';
+import { FILE_WATCH_POLL } from '../constants';
+import { scheduleWatchRead, cancelWatchRead } from './watchReadScheduler';
 
 export interface UseFileWatcherOptions {
   onExternalChange: (filePath: string, newDiskContent: string) => void;
   onFileDeleted?: (filePath: string) => void;
   onWatchError?: (filePath: string, error: unknown) => void;
+  /** Only a current successful read establishes that monitoring works. */
+  onWatchReady?: (filePath: string) => void;
 }
 
 export interface UseFileWatcherReturn {
   watchFile: (filePath: string, initialContent: string) => Promise<void>;
+  restartWatch: (filePath: string, initialContent: string, expectedGrantId: string) => Promise<void>;
   unwatchFile: (filePath: string) => void;
   unwatchAll: () => void;
   markSaveStart: (filePath: string) => void;
@@ -18,145 +22,134 @@ export interface UseFileWatcherReturn {
   updateKnownContent: (filePath: string, content: string) => void;
 }
 
-export function useFileWatcher(options: UseFileWatcherOptions): UseFileWatcherReturn {
-  const { onExternalChange, onFileDeleted, onWatchError } = options;
+const errorCode = (error: unknown): string =>
+  typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
 
-  // Object identity separates close/reopen sessions, including pending installs.
-  type WatchSession = { revision: number; unwatch?: UnwatchFn };
+export function useFileWatcher(options: UseFileWatcherOptions): UseFileWatcherReturn {
+  type WatchSession = { revision: number; token?: NativeWatch; installing: boolean; paused: boolean; error?: string };
   const watchers = new Map<string, WatchSession>();
-  // Files currently being saved by us
   const ownSavesInProgress = new Set<string>();
-  // Last known disk content per file (to detect actual content changes)
   const lastKnownDiskContent = new Map<string, string>();
 
-  const isOwnSave = (filePath: string): boolean => {
-    // Only skip events while OUR save is literally in progress (markSaveStart → markSaveEnd).
-    // The time-based grace period was removed because it caused a false-positive:
-    // an external save within 2s of our own save was silently ignored.
-    // Post-save spurious events are already filtered by the lastKnownDiskContent
-    // comparison below — after markSaveEnd the known content is updated to what
-    // we just wrote, so a watcher event for our own rename reads identical content
-    // and returns early without calling onExternalChange.
-    return ownSavesInProgress.has(filePath);
+  const report = (path: string, session: WatchSession, error: unknown): void => {
+    const key = errorCode(error) || String(error);
+    if (session.error === key) return;
+    session.error = key;
+    try {
+      if (errorCode(error) === 'file_not_found' && options.onFileDeleted) options.onFileDeleted(path);
+      else options.onWatchError?.(path, error);
+    } catch (callbackError) { console.error('[FileWatcher] Error callback failed:', callbackError); }
   };
-
-  const invalidateReads = (filePath: string): void => {
-    const session = watchers.get(filePath);
-    if (session) session.revision++;
+  const release = (session: WatchSession): void => {
+    cancelWatchRead(session);
+    const token = session.token;
+    session.token = undefined;
+    if (token) void nativeFs.unsubscribeWatch(token.id).catch(error => {
+      console.error('[FileWatcher] Failed to release native subscription:', error);
+    });
   };
+  const isCurrent = (path: string, session: WatchSession) => watchers.get(path) === session;
 
-  const handleWatchEvent = async (filePath: string, session: WatchSession) => {
-    if (watchers.get(filePath) !== session || isOwnSave(filePath)) return;
-    // A newer event or an accepted/save revision makes this result obsolete.
+  const queue = (path: string, session: WatchSession, due = Date.now()): void => {
+    if (!isCurrent(path, session) || !session.token || session.paused || ownSavesInProgress.has(path)) return;
+    scheduleWatchRead(session, due, () => read(path, session));
+  };
+  const read = async (path: string, session: WatchSession): Promise<void> => {
+    if (!isCurrent(path, session) || !session.token || session.paused || ownSavesInProgress.has(path)) return;
     const revision = ++session.revision;
-    const isCurrent = () => watchers.get(filePath) === session && session.revision === revision;
-    let newContent: string;
+    const current = () => isCurrent(path, session) && revision === session.revision;
     try {
-      newContent = await readTextFile(filePath);
-    } catch (error) {
-      if (!isCurrent()) return;
-      // Keep the legacy reader's error handling until typed native reads land.
-      if (onFileDeleted) {
-        onFileDeleted(filePath);
-      } else {
-        onWatchError?.(filePath, error);
-      }
-      return;
-    }
-    if (!isCurrent()) return;
-    const knownContent = lastKnownDiskContent.get(filePath);
-    if (knownContent !== undefined && newContent === knownContent) return;
-
-    lastKnownDiskContent.set(filePath, newContent);
-    try {
-      onExternalChange(filePath, newContent);
-    } catch (error) {
-      // Rendering/conflict callbacks cannot establish that the file was deleted.
-      onWatchError?.(filePath, error);
-    }
-  };
-
-  const watchFile = async (filePath: string, initialContent: string): Promise<void> => {
-    // Already watching this file
-    if (watchers.has(filePath)) return;
-
-    const session: WatchSession = { revision: 0 };
-    watchers.set(filePath, session);
-    lastKnownDiskContent.set(filePath, initialContent);
-
-    try {
-      const unwatch = await watchFs(filePath, (event) => {
-        console.debug('[FileWatcher] Event received:', filePath, JSON.stringify(event.type));
-
-        // Skip access-only events (file reads, not writes)
-        const t = event.type;
-        if (t && typeof t === 'object' && 'access' in t) return;
-
-        // For all other events (modify, create, any, other, etc.)
-        // delegate to handleWatchEvent which reads and compares content.
-        // This is safe because content comparison filters spurious events.
-        void handleWatchEvent(filePath, session);
-      }, { delayMs: TIMING.FILE_WATCH_DEBOUNCE });
-
-      if (watchers.get(filePath) !== session) {
-        unwatch();
+      let content: string;
+      try {
+        content = decodeDocumentUtf8(await nativeFs.readWatchBytes(session.token.id, MAX_NATIVE_READ_BYTES));
+      } catch (error) {
+        if (!current()) return;
+        if (['permission_required', 'invalid_grant_kind'].includes(errorCode(error))) {
+          session.paused = true;
+          release(session);
+        }
+        report(path, session, error);
         return;
       }
-      session.unwatch = unwatch;
-      console.debug('[FileWatcher] Now watching:', filePath);
-    } catch (error) {
-      if (watchers.get(filePath) !== session) return;
-      watchers.delete(filePath);
-      lastKnownDiskContent.delete(filePath);
-      console.error('[FileWatcher] Failed to watch:', filePath, error);
-      onWatchError?.(filePath, error);
+      if (!current()) return;
+      session.error = undefined;
+      try {
+        options.onWatchReady?.(path);
+        if (!current() || lastKnownDiskContent.get(path) === content) return;
+        lastKnownDiskContent.set(path, content);
+        options.onExternalChange(path, content);
+      } catch (error) {
+        // Callback exceptions do not establish that a file is missing.
+        try { options.onWatchError?.(path, error); }
+        catch (callbackError) { console.error('[FileWatcher] Error callback failed:', callbackError); }
+      }
+    } finally {
+      // An already-queued End/Abort catch-up keeps its earlier due time.
+      queue(path, session, Date.now() + FILE_WATCH_POLL.INTERVAL);
     }
   };
 
-  const unwatchFile = (filePath: string): void => {
-    const session = watchers.get(filePath);
-    watchers.delete(filePath);
-    lastKnownDiskContent.delete(filePath);
-    ownSavesInProgress.delete(filePath);
-    session?.unwatch?.();
+  const install = async (path: string, initialContent: string, expectedGrantId?: string): Promise<void> => {
+    const session: WatchSession = { revision: 0, installing: true, paused: false };
+    watchers.set(path, session);
+    if (!lastKnownDiskContent.has(path)) lastKnownDiskContent.set(path, initialContent);
+    try {
+      const grantId = expectedGrantId ?? (await nativeFs.resolveDocumentReadGrant(path)).grantId;
+      if (!isCurrent(path, session)) return;
+      const token = await nativeFs.subscribeWatch(path, grantId);
+      session.token = token;
+      if (!isCurrent(path, session)) { release(session); return; }
+      session.installing = false;
+      queue(path, session); // Compare the open-time baseline immediately after installation.
+    } catch (error) {
+      if (!isCurrent(path, session)) return;
+      session.installing = false;
+      session.paused = true;
+      report(path, session, error);
+    }
   };
-
+  const watchFile = async (path: string, initialContent: string): Promise<void> => {
+    const old = watchers.get(path);
+    if (old && (old.installing || !old.paused || ['permission_required', 'invalid_grant_kind'].includes(old.error ?? ''))) return;
+    if (old) release(old);
+    await install(path, initialContent);
+  };
+  const restartWatch = async (path: string, initialContent: string, expectedGrantId: string): Promise<void> => {
+    const old = watchers.get(path);
+    if (old) release(old);
+    await install(path, initialContent, expectedGrantId);
+  };
+  const unwatchFile = (path: string): void => {
+    const session = watchers.get(path);
+    watchers.delete(path);
+    lastKnownDiskContent.delete(path);
+    ownSavesInProgress.delete(path);
+    if (session) release(session);
+  };
   const unwatchAll = (): void => {
-    const sessions = [...watchers.values()];
-    watchers.clear();
+    for (const path of [...watchers.keys()]) unwatchFile(path);
     lastKnownDiskContent.clear();
     ownSavesInProgress.clear();
-    for (const session of sessions) session.unwatch?.();
   };
-
-  const markSaveStart = (filePath: string): void => {
-    invalidateReads(filePath);
-    ownSavesInProgress.add(filePath);
+  const invalidate = (path: string): WatchSession | undefined => {
+    const session = watchers.get(path);
+    if (session) session.revision++;
+    return session;
   };
-
-  const markSaveEnd = (filePath: string, newContent: string): void => {
-    invalidateReads(filePath);
-    ownSavesInProgress.delete(filePath);
-    lastKnownDiskContent.set(filePath, newContent);
+  const catchUp = (path: string): void => {
+    const session = invalidate(path);
+    ownSavesInProgress.delete(path);
+    if (session) queue(path, session);
   };
-
-  const markSaveAbort = (filePath: string): void => {
-    invalidateReads(filePath);
-    ownSavesInProgress.delete(filePath);
-  };
-
-  const updateKnownContent = (filePath: string, content: string): void => {
-    invalidateReads(filePath);
-    lastKnownDiskContent.set(filePath, content);
-  };
-
   return {
-    watchFile,
-    unwatchFile,
-    unwatchAll,
-    markSaveStart,
-    markSaveEnd,
-    markSaveAbort,
-    updateKnownContent,
+    watchFile, restartWatch, unwatchFile, unwatchAll,
+    markSaveStart: path => {
+      const session = invalidate(path);
+      ownSavesInProgress.add(path);
+      if (session) cancelWatchRead(session);
+    },
+    markSaveEnd: (path, content) => { lastKnownDiskContent.set(path, content); catchUp(path); },
+    markSaveAbort: catchUp,
+    updateKnownContent: (path, content) => { invalidate(path); lastKnownDiskContent.set(path, content); },
   };
 }

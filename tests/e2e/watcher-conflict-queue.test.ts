@@ -29,10 +29,10 @@ async function dirtyDocuments(page: Page) {
   return fs;
 }
 
-// The mock forwards the real watch Channel callback. Wait for its read and a
+// The real native polling scheduler reads the mock disk. Wait for its read and a
 // browser render turn while the displayed dialog deliberately remains stable.
 async function observeExternal(page: Page, fs: Awaited<ReturnType<typeof setupTauriMocks>>, path: string, content: string) {
-  const reads = () => fs.getCalls().filter(call => call.cmd === 'read' && call.args === path).length;
+  const reads = () => fs.getCalls().filter(call => call.cmd === 'watch_read' && call.args === path).length;
   const previous = reads();
   await fs.triggerExternalChange(path, content);
   await expect.poll(reads).toBeGreaterThan(previous);

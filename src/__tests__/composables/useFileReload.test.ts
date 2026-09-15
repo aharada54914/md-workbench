@@ -4,11 +4,15 @@ import type { Tab } from '../../composables/useTabs';
 import type { UseFileReloadOptions } from '../../composables/useFileReload';
 
 // Mock dependencies
-vi.mock('@tauri-apps/plugin-fs', () => ({
-  watch: vi.fn(async () => vi.fn()),
-}));
-vi.mock('../../services/documentText', () => ({
-  readTextFile: vi.fn(async () => 'disk content'),
+vi.mock('../../services/nativeFs', () => ({
+  MAX_NATIVE_READ_BYTES: 64 * 1024 * 1024,
+  nativeFs: {
+    resolveDocumentReadGrant: vi.fn(async () => ({ grantId: 'current-grant' })),
+    readPathText: vi.fn(async () => 'disk content'),
+    subscribeWatch: vi.fn(async () => ({ id: 'watch', grantId: 'current-grant' })),
+    unsubscribeWatch: vi.fn(async () => {}),
+    readWatchBytes: vi.fn(async () => new TextEncoder().encode('old content')),
+  },
 }));
 
 vi.mock('../../utils/markdown-converter', async (importOriginal) => ({
@@ -34,6 +38,8 @@ vi.mock('../../i18n', () => ({
       fileReloadedExternally: (name: string) => `${name} reloaded externally`,
       fileReloaded: 'File reloaded',
       fileReloadError: 'Error reloading file',
+      fileMonitoringError: () => 'Error reloading file',
+      fileMonitoringPermission: () => 'Select this file again',
       fileDeletedExternally: (name: string) => `${name} was deleted`,
       fileChangedExternally: 'File changed externally',
       fileConflictMessage: 'The file has been modified externally.',
@@ -45,7 +51,8 @@ vi.mock('../../i18n', () => ({
 }));
 
 import { useFileReload } from '../../composables/useFileReload';
-import { readTextFile } from '../../services/documentText';
+import { nativeFs } from '../../services/nativeFs';
+const readTextFile = nativeFs.readPathText;
 import { markdownToHtml } from '../../utils/markdown-converter';
 import { generateDiff } from '../../composables/useDiffPreview';
 
@@ -102,21 +109,16 @@ describe('useFileReload', () => {
     });
 
   it('forwards save abort without accepting a new baseline or suppressing later changes', async () => {
-    const { watch: watchFs } = await import('@tauri-apps/plugin-fs');
     const reload = createReload();
     await reload.watchFile('/test/file.md', 'old content');
-    const notify = vi.mocked(watchFs).mock.calls[0][1];
     reload.markSaveStart('/test/file.md');
     reload.markSaveAbort('/test/file.md');
-    vi.mocked(readTextFile).mockResolvedValueOnce('old content');
-    notify({ type: 'any', paths: ['/test/file.md'], attrs: {} });
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(0);
     expect(reload.showToast.value).toBe(false);
     expect(mockTab.originalMarkdown).toBe('old content');
-
-    vi.mocked(readTextFile).mockResolvedValueOnce('external content');
-    notify({ type: 'any', paths: ['/test/file.md'], attrs: {} });
-    await vi.runAllTimersAsync();
+    vi.mocked(nativeFs.readWatchBytes).mockResolvedValueOnce(new TextEncoder().encode('external content'));
+    await vi.advanceTimersByTimeAsync(1_000);
+    reload.unwatchAll();
     expect(mockTab.originalMarkdown).toBe('external content');
     expect(mockTab.pendingMarkdown).toBe('external content');
   });
@@ -166,7 +168,7 @@ describe('useFileReload', () => {
       const { manualReload, showToast, toastMessage, toastType } = createReload();
       await manualReload();
 
-      expect(readTextFile).toHaveBeenCalledWith('/test/file.md');
+      expect(readTextFile).toHaveBeenCalledWith('/test/file.md', undefined, 'current-grant');
       expect(mockTab.originalMarkdown).toBe('new disk content');
       expect(mockTab.hasChanges).toBe(false);
       expect(showToast.value).toBe(true);

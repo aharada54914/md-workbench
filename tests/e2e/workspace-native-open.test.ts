@@ -22,7 +22,7 @@ for (const kind of ['file', 'folder'] as const) {
     const preview = page.frameLocator('iframe[title="Isolated document preview"]').locator('body');
     await expect(preview).toContainText('Keep current');
     const before = await workspaceState(page);
-    const calls = fs.getCalls().slice();
+    const calls = fs.getCalls().filter(call => call.cmd !== 'watch_read');
     await page.evaluate(kind => {
       const internals = (window as unknown as {
         __TAURI_INTERNALS__: { invoke: (command: string, ...args: unknown[]) => Promise<unknown> };
@@ -51,7 +51,7 @@ for (const kind of ['file', 'folder'] as const) {
     await expect(preview).toContainText('Keep current');
     await expect(page.locator('.tree-label')).toHaveText('note.md');
     expect(await workspaceState(page)).toEqual(before);
-    expect(fs.getCalls()).toEqual(calls);
+    expect(fs.getCalls().filter(call => call.cmd !== 'watch_read')).toEqual(calls);
   });
 }
 
@@ -117,11 +117,11 @@ test('workspace picker cancellation preserves the open tree, current document an
   await page.locator('.tree-row', { hasText: 'note.md' }).dblclick();
   await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toContainText('Keep current');
   const before = await workspaceState(page);
-  const calls = fs.getCalls().slice();
+  const calls = fs.getCalls().filter(call => call.cmd !== 'watch_read');
   await openFolder(page, null);
   await expect.poll(() => page.evaluate(() => (window as any).__mockNativeFsCalls.filter((call: any) => call.cmd === 'native_pick_workspace').length)).toBe(2);
   expect(await workspaceState(page)).toEqual(before);
-  expect(fs.getCalls()).toEqual(calls);
+  expect(fs.getCalls().filter(call => call.cmd !== 'watch_read')).toEqual(calls);
   await expect(page.locator('.ws-section-name')).toHaveText('project');
   await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toContainText('Keep current');
   await expect(page.locator('.workspace-sidebar [role="alert"]')).toHaveCount(0);
@@ -206,7 +206,7 @@ for (const entry of ['tab', 'tree', 'root'] as const) {
     const preview = page.frameLocator('iframe[title="Isolated document preview"]').locator('body');
     await expect(preview).toContainText('Keep current');
     const before = await workspaceState(page);
-    const calls = fs.getCalls().slice();
+    const calls = fs.getCalls().filter(call => call.cmd !== 'watch_read');
     await page.evaluate(() => {
       const host = window as unknown as {
         __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -237,6 +237,6 @@ for (const entry of ['tab', 'tree', 'root'] as const) {
     expect(reveals).toEqual([{ path: entry === 'root' ? root : file }]);
     await expect(preview).toContainText('Keep current');
     expect(await workspaceState(page)).toEqual(before);
-    expect(fs.getCalls()).toEqual(calls);
+    expect(fs.getCalls().filter(call => call.cmd !== 'watch_read')).toEqual(calls);
   });
 }

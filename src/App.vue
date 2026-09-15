@@ -267,7 +267,7 @@ const {
   handleConflictKeepLocal, handleConflictLoadExternal, handleConflictMerge,
   manualReload,
   reloadTabContent,
-  watchFile, unwatchFile, unwatchAll, markSaveStart, markSaveEnd, markSaveAbort,
+  watchFile, restartWatch, monitoringError, unwatchFile, unwatchAll, markSaveStart, markSaveEnd, markSaveAbort,
 } = useFileReload({
   activePaneId,
   currentFile,
@@ -534,6 +534,9 @@ const {
   markSaveEnd: (filePath: string, content: string) => markSaveEnd(filePath, content),
   markSaveAbort: (filePath: string) => markSaveAbort(filePath),
   onOpenError: reportDocumentOpenError,
+  onFileReselected: async (tab, grantId) => {
+    if (isTabOpen(tab) && tab.filePath) await restartWatch(tab.filePath, tab.originalMarkdown ?? '', grantId);
+  },
   onFileOpened: (filePath: string, content: string) => {
     watchFile(filePath, content);
     const fileName = filePath.split(/[/\\]/).pop() ?? filePath;
@@ -549,7 +552,7 @@ const {
   onAfterSave: ({ tab, oldPath, filePath, content }) => {
     if (!isTabOpen(tab) || tab.filePath !== filePath) return;
     if (oldPath && oldPath !== filePath && !findTabByFilePathSplit(oldPath)) unwatchFile(oldPath);
-    watchFile(filePath, content);
+    watchFile(filePath, content, true);
   },
   onAnchorNotFound: (anchor: string) => {
     showToastNotification(t.value.anchorNotFound(anchor), 'warning');
@@ -1917,8 +1920,15 @@ const openFileWithCrossWindowCheck = async (filePath: string, selection?: OpenDo
     const localResult = findTabByFilePathSplit(filePath);
     if (localResult) {
       console.log(`[App] File already open locally, switching to tab:`, filePath);
-      splitState.value.activePaneId = localResult.pane.id;
-      switchTab(localResult.pane.id, localResult.tab.id);
+      if (selection?.expectedGrantId) {
+        await restartWatch(filePath, localResult.tab.originalMarkdown ?? '', selection.expectedGrantId);
+        if (selection.isCurrent?.() === false || !isTabOpen(localResult.tab) || localResult.tab.filePath !== filePath) return;
+      }
+      const currentPane = splitState.value.panes.find(pane => pane.tabs.some(tab => tab === localResult.tab && tab.filePath === filePath));
+      const currentLocation = currentPane ? { pane: currentPane, tab: localResult.tab } : undefined;
+      if (!currentLocation) return;
+      splitState.value.activePaneId = currentLocation.pane.id;
+      switchTab(currentLocation.pane.id, currentLocation.tab.id);
       return;
     }
 
@@ -1951,7 +1961,7 @@ const openFileWithCrossWindowCheck = async (filePath: string, selection?: OpenDo
 const openFileWithCrossWindowDialog = async (): Promise<void> => {
   try {
     const selected = await nativeFs.pickDocuments();
-    for (const grant of selected) await openFileWithCrossWindowCheck(grant.path);
+    for (const grant of selected) await openFileWithCrossWindowCheck(grant.path, { expectedGrantId: grant.id });
   } catch (error) {
     console.error('[App] Error opening file dialog:', error);
     reportDocumentOpenError(error);
@@ -2006,9 +2016,11 @@ onMounted(async () => {
       if (paths.length > 0) hasExplicitFile = true;
       for (const path of paths) {
         try {
-          await openFileWithCrossWindowCheck(path);
+          const { grantId } = await nativeFs.resolveDocumentReadGrant(path);
+          await openFileWithCrossWindowCheck(path, { expectedGrantId: grantId });
         } catch (error) {
           console.error('[App] Could not open native file:', path, error);
+          reportDocumentOpenError(error);
         }
       }
     }).catch(error => console.error('[App] Could not drain native open queue:', error));
@@ -2051,7 +2063,17 @@ onMounted(async () => {
           success = false;
           console.error('[App] Could not acknowledge tab transfer:', error);
         }
-        if (!success) showToastNotification(t.value.windowTransferReceiveFailed, 'warning');
+        if (success) {
+          // Only a completed host transfer may rebind a previously open tab.
+          const received = findTabByFilePathSplit(transfer.file_path)?.tab;
+          if (received) {
+            try {
+              const { grantId } = await nativeFs.resolveDocumentReadGrant(transfer.file_path);
+              if (isTabOpen(received) && received.filePath === transfer.file_path)
+                await restartWatch(transfer.file_path, received.originalMarkdown ?? '', grantId);
+            } catch (error) { reportDocumentOpenError(error); }
+          }
+        } else showToastNotification(t.value.windowTransferReceiveFailed, 'warning');
       }
     }).catch(error => {
       console.error('[App] Could not drain tab transfers:', error);
@@ -2235,6 +2257,11 @@ onUnmounted(async () => {
     <button v-if="initialFilesReady" type="button" class="isolated-preview-toggle" :aria-pressed="isolatedReadMode" @click="toggleIsolatedPreview">
       {{ isolatedReadMode ? (activeTab.editorMode ? 'Return to editor' : 'Edit') : 'Isolated read-only preview' }}
     </button>
+
+    <div v-if="monitoringError" class="monitoring-warning" role="status" data-testid="monitoring-warning">
+      <span>{{ monitoringError }}</span>
+      <button type="button" @click="openFileWithCrossWindowDialog">{{ t.openFile }}</button>
+    </div>
 
     <!-- Main content area with optional left bar -->
     <div
@@ -2694,6 +2721,8 @@ onUnmounted(async () => {
 .main-area--reserve-ai-left {
   padding-left: var(--ai-panel-width);
 }
+
+.monitoring-warning { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: #fff4d6; color: #513500; }
 
 .editor-area {
   display: flex;
