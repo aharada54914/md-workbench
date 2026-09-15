@@ -545,7 +545,9 @@ export interface Translations {
   qsSectionFiles: string;
   qsSectionContent: string;
   qsContentSearching: string;
-  qsContentTruncated: string;
+  qsContentPermissionRequired: string;
+  qsContentLimitExceeded: string;
+  qsContentFailed: string;
 
   // Mermaid AI assist
   aiAssistMermaidButton: string;

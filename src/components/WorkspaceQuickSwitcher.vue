@@ -34,7 +34,10 @@ const query = ref('');
 const inputRef = ref<HTMLInputElement | null>(null);
 const selectedIndex = ref(0);
 const contentHits = ref<ContentSearchHit[]>([]);
-const contentTruncated = ref(false);
+const contentError = ref<'permission' | 'limit' | 'failed' | null>(null);
+const contentErrorMessage = computed(() => contentError.value === 'permission'
+  ? t.value.qsContentPermissionRequired : contentError.value === 'limit'
+    ? t.value.qsContentLimitExceeded : t.value.qsContentFailed);
 const contentSearching = ref(false);
 
 interface WorkspaceEntry {
@@ -170,44 +173,36 @@ const flatEntries = computed<Entry[]>(() => [
 let contentDebounce: ReturnType<typeof setTimeout> | null = null;
 let lastQueryToken = 0;
 
-async function runContentSearch(q: string) {
-  if (!q) {
-    contentHits.value = [];
-    contentTruncated.value = false;
-    contentSearching.value = false;
-    return;
-  }
-  // Skip very short queries — they'd match too much and the IPC cost isn't
-  // worth it. 2-char minimum gives the user useful feedback after a few keys.
-  if (q.length < 2) {
-    contentHits.value = [];
-    return;
-  }
-  const roots = ws.openWorkspaces.value.map((w) => w.rootPath);
-  if (roots.length === 0) {
-    contentHits.value = [];
-    return;
-  }
-  const token = ++lastQueryToken;
+async function runContentSearch(q: string, roots: string[], token: number) {
+  if (token !== lastQueryToken) return;
   contentSearching.value = true;
   try {
     const hits = await workspaceFs.searchContent(roots, q);
-    if (token !== lastQueryToken) return; // stale
-    contentHits.value = hits;
-    contentTruncated.value = hits.length >= 200;
-  } catch (e) {
     if (token !== lastQueryToken) return;
-    console.error('content search:', e);
+    contentHits.value = hits;
+  } catch (error) {
+    if (token !== lastQueryToken) return;
+    console.error('content search:', error);
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+    contentError.value = code === 'permission_required' ? 'permission'
+      : code === 'file_too_large' ? 'limit' : 'failed';
     contentHits.value = [];
   } finally {
     if (token === lastQueryToken) contentSearching.value = false;
   }
 }
 
-watch(trimmed, (q) => {
+watch([trimmed, () => ws.openWorkspaces.value.map((w) => w.rootPath)], ([q, roots]) => {
+  // Invalidate immediately, including short/empty queries and changed roots.
+  // A prior request must not repopulate results during the debounce interval.
+  const token = ++lastQueryToken;
   if (contentDebounce) clearTimeout(contentDebounce);
-  // 150 ms feels responsive without spamming IPC mid-keystroke.
-  contentDebounce = setTimeout(() => runContentSearch(q), 150);
+  contentHits.value = [];
+  contentError.value = null;
+  contentSearching.value = false;
+  if (q.length < 2 || roots.length === 0) return;
+  contentSearching.value = true;
+  contentDebounce = setTimeout(() => runContentSearch(q, roots, token), 150);
 });
 
 // ===== Selection / commit =====
@@ -276,6 +271,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  ++lastQueryToken;
   document.removeEventListener('keydown', onKeydown);
   if (contentDebounce) clearTimeout(contentDebounce);
 });
@@ -324,11 +320,12 @@ function highlightMatch(text: string): { before: string; match: string; after: s
           <button class="qs-close" @click="emit('close')">Esc</button>
         </div>
 
-        <div v-if="flatEntries.length === 0" class="qs-empty">
+        <div v-if="contentError" class="qs-search-error" role="alert">{{ contentErrorMessage }}</div>
+        <div v-if="flatEntries.length === 0 && !contentError && !contentSearching" class="qs-empty">
           {{ t.workspaceQuickSwitcherNoMatches }}
         </div>
 
-        <ul v-else class="qs-list" role="listbox">
+        <ul v-if="flatEntries.length > 0" class="qs-list" role="listbox">
           <!-- Workspaces -->
           <template v-if="filteredWorkspaces.length > 0">
             <li class="qs-section-label">{{ t.workspaces }}</li>
@@ -392,7 +389,6 @@ function highlightMatch(text: string): { before: string; match: string; after: s
           <template v-if="contentEntries.length > 0">
             <li class="qs-section-label">
               {{ t.qsSectionContent }}
-              <span v-if="contentTruncated" class="qs-truncated">{{ t.qsContentTruncated }}</span>
             </li>
             <li
               v-for="(entry, ci) in contentEntries"
@@ -521,6 +517,12 @@ function highlightMatch(text: string): { before: string; match: string; after: s
   flex: 1;
 }
 
+.qs-search-error {
+  padding: 12px 16px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
 .qs-empty {
   padding: 24px;
   text-align: center;
@@ -540,13 +542,7 @@ function highlightMatch(text: string): { before: string; match: string; after: s
   gap: 8px;
 }
 
-.qs-truncated {
-  font-size: 9px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  color: var(--text-faint);
-  text-transform: none;
-}
+
 
 .qs-item {
   display: flex;

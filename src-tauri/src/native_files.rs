@@ -303,3 +303,7 @@ pub(crate) use path::*;
 #[path = "native_files_workspace.rs"]
 mod workspace;
 pub(crate) use workspace::*;
+
+#[path = "native_files_search.rs"]
+mod search;
+pub(crate) use search::*;

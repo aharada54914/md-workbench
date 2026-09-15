@@ -63,10 +63,9 @@ export const workspaceFs = {
     invoke<void>('reveal_in_os', { path }),
 
   /**
-   * Substring-search the markdown contents of every file under any of `roots`.
-   * Case-insensitive. Backend caps the work (5k files, 4 s budget) so the
-   * caller only needs to debounce typing — there's no full-disk-walk failure
-   * mode for the UI to defend against.
+   * Search UTF-8 Markdown files up to 512 KiB using existing native workspace
+   * authority. ASCII case-insensitive. Permission, I/O and work-limit failures
+   * reject the whole request with typed errors; no partial success is returned.
    */
   searchContent: (roots: string[], query: string): Promise<ContentSearchHit[]> =>
     invoke<ContentSearchHit[]>('search_workspace_content', { roots, query }),
