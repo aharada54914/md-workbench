@@ -23,3 +23,28 @@ Windows/Linux CI for this slice and packaged native multi-file acceptance must b
 ## Remaining work and rollback
 
 Initial file-open read-only lifecycle, native filesystem broker integration, broad permission removal, Windows 11 x64/IME/performance acceptance, and Resource/AI transactions remain separate work. Current frontend saves still use the existing temporary-file protocol and are not the planned native journal/CAS transaction. Revert native queue host and frontend changes together because their event/getter contract changed.
+
+## Serialization placeholder correction — 2026-09-16
+
+Visual edits next to authored strings such as `__PROTECTED_BLOCK_0__` or
+`__INLINE_CODE_1__` could replace that original text with another block's content.
+Conversion now keeps payloads in a per-conversion context and restores them in a
+single traversal. Authored NULs and NULs produced by entity or URI decoding are
+protected before further conversion; restored payloads are never scanned again.
+Recursive list and inline conversion share that context. Footnote fallback HTML
+uses a separate context, while encoded JSON definitions remain opaque. Math
+source retains literal entities and whitespace. Inline restoration also keeps
+the two spaces required for Markdown hard breaks.
+
+The dedicated placeholder suite has 34 cases covering real TipTap block
+insertion, split-tag/entity marker construction, replacement metacharacters,
+math, lists, footnotes, and hard-break regressions. Two Chromium scenarios use
+the actual application editor to insert block/inline code, save exact source
+bytes through the mocked native boundary, and Undo back to the original source.
+They do not establish native OS or IME acceptance. Final independent review and
+exact-head CI are recorded in the implementation PR; earlier counts above refer
+to their original integration revision.
+
+Rollback this converter context together with its inline/list/footnote consumers;
+there is no stored document migration. Reverting it restores the reproduced
+placeholder collision defect.

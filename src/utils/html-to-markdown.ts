@@ -1,15 +1,13 @@
-import { decodeHtmlEntities } from './html-entities';
+import { createSerializationContext, type SerializationContext } from './serialization-placeholder';
 
-export function convertInlineToMarkdown(html: string): string {
-  let result = html;
+export function convertInlineToMarkdown(html: string, context?: SerializationContext): string {
+  const tokens = context ?? createSerializationContext();
+  let result = context ? html : tokens.protectNuls(html);
 
   // Protect inline code first to preserve content like <T>, <TId>
-  const inlineCodeBlocks: string[] = [];
   result = result.replace(/<code(?:\s[^>]*)?>([\s\S]*?)<\/code>/gi, (_, content) => {
-    const decoded = decodeHtmlEntities(content);
-    const placeholder = `__INLINE_CODE_${inlineCodeBlocks.length}__`;
-    inlineCodeBlocks.push(`\`${decoded}\``);
-    return placeholder;
+    const decoded = tokens.decode(content);
+    return tokens.protect(`\`${tokens.restore(decoded)}\``);
   });
 
   // Convert links
@@ -40,17 +38,12 @@ export function convertInlineToMarkdown(html: string): string {
 
   // Remove remaining HTML tags
   result = result.replace(/<[^>]+>/g, '');
-  result = decodeHtmlEntities(result);
+  result = tokens.decode(result);
 
-  // Restore inline code blocks
-  inlineCodeBlocks.forEach((code, index) => {
-    result = result.replace(`__INLINE_CODE_${index}__`, code);
-  });
-
-  return result.trim();
+  return (context ? result : tokens.restore(result)).trim();
 }
 
-export function extractMermaidCode(match: string): string | null {
+export function extractMermaidCode(match: string, context?: SerializationContext): string | null {
   // Match double-quoted values first (our output format), then single-quoted
   let codeMatch = match.match(/data-code="([^"]*)"/);
   if (!codeMatch) {
@@ -58,14 +51,16 @@ export function extractMermaidCode(match: string): string | null {
   }
 
   if (codeMatch) {
-    let code = decodeURIComponent(codeMatch[1]);
+    let code = context
+      ? context.restore(context.decode(codeMatch[1], decodeURIComponent))
+      : decodeURIComponent(codeMatch[1]);
     code = code.replace(/__BR__/g, '<br/>');
     return code;
   }
   return null;
 }
 
-export function parseHtmlList(html: string, indent = 0, isOrdered = false, startIndex = 1): string {
+export function parseHtmlList(html: string, indent = 0, isOrdered = false, startIndex = 1, context?: SerializationContext): string {
   let result = '';
   const indentStr = '  '.repeat(indent);
   let remaining = html;
@@ -152,7 +147,7 @@ export function parseHtmlList(html: string, indent = 0, isOrdered = false, start
     // Separate protected block placeholders from text content
     const segments: { type: 'text' | 'block'; content: string }[] = [];
     const segmentSource = textContent;
-    const blockRegex = /__PROTECTED_BLOCK_\d+__/g;
+    const blockRegex = context ? new RegExp(`${context.blockPrefix}\\d+TOKEN`, 'g') : /(?!)/g;
     let blockMatch;
     let lastIndex = 0;
 
@@ -171,7 +166,7 @@ export function parseHtmlList(html: string, indent = 0, isOrdered = false, start
 
     // If no segments were found, use the original textContent
     if (segments.length === 0) {
-      const text = convertInlineToMarkdown(textContent);
+      const text = convertInlineToMarkdown(textContent, context);
       if (text.trim()) {
         segments.push({ type: 'text', content: textContent });
       }
@@ -193,7 +188,7 @@ export function parseHtmlList(html: string, indent = 0, isOrdered = false, start
     for (const segment of segments) {
       if (segment.type === 'text') {
         // Paragraphs inside an item must keep their line boundaries.
-        const text = convertInlineToMarkdown(segment.content).replace(/\n/g, `\n${contentIndent}`);
+        const text = convertInlineToMarkdown(segment.content, context).replace(/\n/g, `\n${contentIndent}`);
         if (text.trim()) {
           if (isFirstText) {
             result += `${indentStr}${marker} ${text}\n`;
@@ -217,7 +212,7 @@ export function parseHtmlList(html: string, indent = 0, isOrdered = false, start
     if (nestedListHtml) {
       const isNestedOrdered = nestedListHtml.startsWith('<ol');
       const nestedContent = nestedListHtml.replace(/^<[uo]l[^>]*>([\s\S]*)<\/[uo]l>$/i, '$1');
-      result += parseHtmlList(nestedContent, indent + 1, isNestedOrdered);
+      result += parseHtmlList(nestedContent, indent + 1, isNestedOrdered, 1, context);
     }
   }
 
@@ -247,7 +242,7 @@ function findMatchingCloseTag(html: string, openTag: string, closeTag: string, s
   return -1;
 }
 
-export function processHtmlLists(html: string): string {
+export function processHtmlLists(html: string, context?: SerializationContext): string {
   let result = html;
 
   // Process unordered lists with proper nesting support. Task lists are
@@ -264,7 +259,7 @@ export function processHtmlLists(html: string): string {
 
     if (closePos !== -1) {
       const content = result.slice(contentStart, closePos);
-      const replacement = '\n' + parseHtmlList(content, 0, false);
+      const replacement = '\n' + parseHtmlList(content, 0, false, 1, context);
       result = result.slice(0, startPos) + replacement + result.slice(closePos + 5);
       ulRegex.lastIndex = 0;
     }
@@ -281,7 +276,7 @@ export function processHtmlLists(html: string): string {
 
     if (closePos !== -1) {
       const content = result.slice(contentStart, closePos);
-      const replacement = '\n' + parseHtmlList(content, 0, true);
+      const replacement = '\n' + parseHtmlList(content, 0, true, 1, context);
       result = result.slice(0, startPos) + replacement + result.slice(closePos + 5);
       olRegex.lastIndex = 0;
     }

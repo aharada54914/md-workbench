@@ -22,7 +22,8 @@ export {
   extractHtmlFootnoteSection,
 } from './footnote-utils';
 
-import { decodeHtmlEntities, escapeHtml } from './html-entities';
+import { escapeHtml } from './html-entities';
+import { createSerializationContext } from './serialization-placeholder';
 import { protectMath, protectMathHtml } from './math';
 import { convertInlineToMarkdown, extractMermaidCode, processHtmlLists } from './html-to-markdown';
 import {
@@ -103,42 +104,44 @@ export function htmlToMarkdown(
 ): string {
   let md = html.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-  const protectedBlocks: string[] = [];
-  const mathSources: string[] = [];
-  let mathPrefix = 'MERMATHSAVE';
-  while (html.includes(mathPrefix)) mathPrefix += 'X';
-  md = protectMathHtml(md, source => {
-    const token = `${mathPrefix}${mathSources.length}TOKEN`;
-    mathSources.push(source);
-    return token;
-  });
+  // Footnotes serialize with their own context and are appended as opaque
+  // source after the main document's restoration boundary.
+  const footnoteMatch = md.match(/<section[^>]*\sdata-footnotes[^>]*>[\s\S]*?<\/section>/i);
+  const footnoteSection = footnoteMatch
+    ? extractHtmlFootnoteSection(footnoteMatch[0])
+    : { definitions: '' };
+  if (footnoteMatch) md = md.replace(footnoteMatch[0], '');
+
+  const tokens = createSerializationContext();
+  const hasMath = /data-type=["']katex-(?:block|inline)/.test(md);
+  // With math, the existing DOM parser normalizes authored NUL before its
+  // callback introduces tokens. Otherwise preserve raw NUL explicitly.
+  md = protectMathHtml(md, source => tokens.protect(source, false, true));
+  if (!hasMath) md = tokens.protectNuls(md);
+  const opaqueEntities = (source: string) => tokens.restore(tokens.decode(source));
+  const opaqueUri = (source: string, decoder: (value: string) => string = decodeURIComponent) =>
+    tokens.restore(tokens.decode(source, decoder));
 
   // Front matter badge -> restore raw `---\n…\n---` at the very top before the
   // generic <div> strip below would otherwise delete it.
   md = md.replace(/<div[^>]*data-marp-frontmatter=["']([^"']*)["'][^>]*>[\s\S]*?<\/div>/gi, (_, enc) => {
     let raw = '';
-    try { raw = decodeURIComponent(enc); } catch { raw = enc; }
-    const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
-    protectedBlocks.push(`---\n${raw}\n---\n\n`);
-    return placeholder;
+    try { raw = opaqueUri(enc); } catch { raw = tokens.restore(enc); }
+    return tokens.protect(`---\n${raw}\n---\n\n`, true);
   });
 
   // Directive chip -> restore `<!-- … -->` comment before the generic div strip.
   md = md.replace(/<div[^>]*data-marp-directive=["']([^"']*)["'][^>]*>[\s\S]*?<\/div>/gi, (_, enc) => {
     let raw = '';
-    try { raw = decodeURIComponent(enc); } catch { raw = enc; }
-    const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
-    protectedBlocks.push(`\n<!-- ${raw} -->\n`);
-    return placeholder;
+    try { raw = opaqueUri(enc); } catch { raw = tokens.restore(enc); }
+    return tokens.protect(`\n<!-- ${raw} -->\n`, true);
   });
 
   // Safe raw HTML nodes keep their exact source while visual mode renders only
   // an allowlisted representation. Restore them before generic div stripping.
   md = md.replace(/<div[^>]*data-safe-html-block=(["'])(.*?)\1[^>]*>\s*<\/div>/gi, (_, _quote, encoded) => {
-    const raw = decodeSafeHtmlSource(encoded);
-    const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
-    protectedBlocks.push(`\n${raw}\n`);
-    return placeholder;
+    const raw = opaqueUri(encoded, decodeSafeHtmlSource);
+    return tokens.protect(`\n${raw}\n`, true);
   });
 
   // Mermaid blocks - extract first.
@@ -148,9 +151,8 @@ export function htmlToMarkdown(
   // `markdownToHtml` parser reads it back into `data-*` attributes so node
   // attrs survive a save/reload round trip.
   md = md.replace(/<div[^>]*data-type=["']mermaid["'][^>]*>[\s\S]*?<\/div>/gi, (match) => {
-    const code = extractMermaidCode(match);
+    const code = extractMermaidCode(match, tokens);
     if (code) {
-      const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
       const attrPairs: string[] = [];
       const userWidthMatch = match.match(/data-user-width=["']?(\d+)["']?/i);
       if (userWidthMatch) attrPairs.push(`userWidth=${userWidthMatch[1]}`);
@@ -165,8 +167,7 @@ export function htmlToMarkdown(
         attrPairs.push(`splitRatio=${splitRatioMatch[1]}`);
       }
       const attrComment = attrPairs.length ? `<!--mermaid-attrs:${attrPairs.join(',')}-->\n` : '';
-      protectedBlocks.push(`\n${attrComment}${buildMermaidBlockFor(code, writeFormat)}\n`);
-      return placeholder;
+      return tokens.protect(`\n${attrComment}${buildMermaidBlockFor(code, writeFormat)}\n`, true);
     }
     return '';
   });
@@ -176,35 +177,27 @@ export function htmlToMarkdown(
   // run before the generic pre/code handlers below, which would otherwise
   // consume the same markup.
   md = md.replace(/<pre[^>]*data-indented=["']true["'][^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi, (_, code) => {
-    const decodedCode = decodeHtmlEntities(code).replace(/\n+$/, '');
-    const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
+    const decodedCode = opaqueEntities(code).replace(/\n+$/, '');
     const indented = decodedCode
       .split('\n')
       .map(line => (line.length > 0 ? `    ${line}` : ''))
       .join('\n');
-    protectedBlocks.push(`\n${indented}\n`);
-    return placeholder;
+    return tokens.protect(`\n${indented}\n`, true);
   });
 
   // Code blocks - extract language from class attribute
   md = md.replace(/<pre[^>]*>\s*<code[^>]*class=["']language-(\w+)["'][^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi, (_, lang, code) => {
-    const decodedCode = decodeHtmlEntities(code);
-    const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
-    protectedBlocks.push(`\n\`\`\`${lang}\n${decodedCode}${decodedCode.endsWith('\n') ? '' : '\n'}\`\`\`\n`);
-    return placeholder;
+    const decodedCode = opaqueEntities(code);
+    return tokens.protect(`\n\`\`\`${lang}\n${decodedCode}${decodedCode.endsWith('\n') ? '' : '\n'}\`\`\`\n`, true);
   });
 
   // Code blocks without language
   md = md.replace(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi, (_, code) => {
-    const decodedCode = decodeHtmlEntities(code);
-    const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
-    protectedBlocks.push(`\n\`\`\`\n${decodedCode}${decodedCode.endsWith('\n') ? '' : '\n'}\`\`\`\n`);
-    return placeholder;
+    const decodedCode = opaqueEntities(code);
+    return tokens.protect(`\n\`\`\`\n${decodedCode}${decodedCode.endsWith('\n') ? '' : '\n'}\`\`\`\n`, true);
   });
 
   // Footnotes — extract section and convert refs before other processing
-  const footnoteSection = extractHtmlFootnoteSection(md);
-  md = footnoteSection.html;
   md = convertHtmlFootnoteRefsToMd(md);
 
   // Tables - convert links inside cells before stripping other tags
@@ -243,20 +236,20 @@ export function htmlToMarkdown(
   // balanced open/close matching, so nested task lists serialize correctly.
   // (A previous separate task-list pass used a non-greedy `</ul>` regex that
   // stopped at the first nested close tag — issue #95.)
-  md = processHtmlLists(md);
+  md = processHtmlLists(md, tokens);
 
   // Headers
-  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>\n?/gi, (_, content) => `\n# ${convertInlineToMarkdown(content)}\n\n`);
-  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>\n?/gi, (_, content) => `\n## ${convertInlineToMarkdown(content)}\n\n`);
-  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>\n?/gi, (_, content) => `\n### ${convertInlineToMarkdown(content)}\n\n`);
-  md = md.replace(/<h4[^>]*>([\s\S]*?)<\/h4>\n?/gi, (_, content) => `\n#### ${convertInlineToMarkdown(content)}\n\n`);
-  md = md.replace(/<h5[^>]*>([\s\S]*?)<\/h5>\n?/gi, (_, content) => `\n##### ${convertInlineToMarkdown(content)}\n\n`);
-  md = md.replace(/<h6[^>]*>([\s\S]*?)<\/h6>\n?/gi, (_, content) => `\n###### ${convertInlineToMarkdown(content)}\n\n`);
+  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>\n?/gi, (_, content) => `\n# ${convertInlineToMarkdown(content, tokens)}\n\n`);
+  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>\n?/gi, (_, content) => `\n## ${convertInlineToMarkdown(content, tokens)}\n\n`);
+  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>\n?/gi, (_, content) => `\n### ${convertInlineToMarkdown(content, tokens)}\n\n`);
+  md = md.replace(/<h4[^>]*>([\s\S]*?)<\/h4>\n?/gi, (_, content) => `\n#### ${convertInlineToMarkdown(content, tokens)}\n\n`);
+  md = md.replace(/<h5[^>]*>([\s\S]*?)<\/h5>\n?/gi, (_, content) => `\n##### ${convertInlineToMarkdown(content, tokens)}\n\n`);
+  md = md.replace(/<h6[^>]*>([\s\S]*?)<\/h6>\n?/gi, (_, content) => `\n###### ${convertInlineToMarkdown(content, tokens)}\n\n`);
 
   // Blockquote
   md = md.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
     const innerContent = content.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, '$1');
-    const text = convertInlineToMarkdown(innerContent);
+    const text = convertInlineToMarkdown(innerContent, tokens);
     return `\n> ${text}\n\n`;
   });
 
@@ -264,7 +257,9 @@ export function htmlToMarkdown(
   // "strip remaining <div>" pass below (which would otherwise delete the
   // page-break div and lose it on save/reload). Restored to its persisted
   // HTML form after that strip.
-  md = md.replace(/<div[^>]*class=["']page-break["'][^>]*>\s*<\/div>/gi, '\n__PAGE_BREAK_MARKER__\n');
+  md = md.replace(/<div[^>]*class=["']page-break["'][^>]*>\s*<\/div>/gi, () => {
+    return tokens.protect('\n<div style="page-break-after: always;"></div>\n', true);
+  });
 
   // Horizontal rule
   md = md.replace(/<hr[^>]*\/?>/gi, '\n---\n');
@@ -292,8 +287,7 @@ export function htmlToMarkdown(
 
   // Inline code
   md = md.replace(/<code(?:\s[^>]*)?>([\s\S]*?)<\/code>/gi, (_, content) => {
-    const decoded = decodeHtmlEntities(content);
-    return `\`${decoded}\``;
+    return tokens.protect(`\`${opaqueEntities(content)}\``);
   });
 
   // Images - prefer data-original-src over src, include title if present
@@ -315,41 +309,15 @@ export function htmlToMarkdown(
   md = md.replace(/<span[^>]*>(.*?)<\/span>/gi, '$1');
   md = md.replace(/<\/?div[^>]*>/gi, '\n');
 
-  // Restore page breaks now that the blanket div strip has run.
-  md = md.replace(/__PAGE_BREAK_MARKER__/g, '<div style="page-break-after: always;"></div>');
+  md = tokens.decode(md);
 
-  md = decodeHtmlEntities(md);
-
-  // Restore protected blocks (with indentation support for blocks inside lists)
-  protectedBlocks.forEach((block, index) => {
-    const placeholder = `__PROTECTED_BLOCK_${index}__`;
-    const pos = md.indexOf(placeholder);
-    if (pos === -1) return;
-
-    // Check if the placeholder is on a line with leading whitespace (list context)
-    const lineStart = md.lastIndexOf('\n', pos - 1) + 1;
-    const linePrefix = md.slice(lineStart, pos);
-    const lineEndPos = md.indexOf('\n', pos + placeholder.length);
-    const afterPlaceholder = md.slice(pos + placeholder.length, lineEndPos === -1 ? md.length : lineEndPos);
-
-    if (linePrefix.length > 0 && linePrefix.trim() === '' && afterPlaceholder.trim() === '') {
-      // Placeholder is on its own indented line - indent the code block content
-      const indent = linePrefix;
-      const trimmedBlock = block.replace(/^\n+/, '').replace(/\n+$/, '');
-      const indentedBlock = trimmedBlock.split('\n').map(line =>
-        line.length > 0 ? indent + line : ''
-      ).join('\n');
-      const replaceEnd = lineEndPos === -1 ? md.length : lineEndPos;
-      md = md.slice(0, lineStart) + indentedBlock + md.slice(replaceEnd);
-    } else {
-      md = md.replace(placeholder, () => block);
-    }
-  });
+  // One pass across block, inline, math, and authored-NUL entries. Payloads
+  // produced by URI/JSON/entity decoding are never rescanned for other tokens.
+  md = tokens.restore(md, true);
 
   // Clean up whitespace. Leading blank lines are stripped without trimming
   // the first line's own indentation — a document can start with an indented
   // code block (issue #118).
-  md = md.replace(/\n{3,}/g, '\n\n');
   md = md.replace(/^(?:[ \t]*\n)+/, '').trimEnd();
 
   // Append footnote definitions at end
@@ -357,7 +325,7 @@ export function htmlToMarkdown(
     md += '\n\n' + footnoteSection.definitions;
   }
 
-  return md.replace(new RegExp(`${mathPrefix}(\\d+)TOKEN`, 'g'), (_, index) => mathSources[Number(index)] ?? '').replace(/^(?:[ \t]*\n)+/, '').trimEnd();
+  return md;
 }
 
 export function markdownToHtml(
