@@ -92,3 +92,21 @@ FIFO dialogs for dirty documents, reset merge selections between candidates,
 and stale Load/Merge answers advancing without changing the local buffer.
 These tests use the actual App and modal with mocked native polling reads;
 they also verify saved source and dirty state. They do not exercise OS delivery.
+
+### Save and watcher dialog ordering
+
+A save conflict and a watcher conflict can become pending for the same document
+at the same time. App keeps the first displayed dialog mounted until it closes;
+the other request retains its existing candidate or Promise and mounts afterward.
+Only the displayed dialog receives clicks or Escape. Its in-progress merge
+selection is retained. The existing source/identity guards still validate each
+answer, so a queued Save answer cannot overwrite a buffer whose earlier watcher
+answer adopted a different baseline. This display ordering does not add a disk
+transaction or change conflict decisions.
+
+`save-watch-conflict-order.test.ts` covers both arrival orders, selection
+preservation, Escape affecting only the first dialog, and an obsolete queued
+Save answer. `shared-watch-owner.test.ts` gates mock polling completion explicitly
+for its three manual-target cases: a disk write without an event is still visible
+to real polling and therefore cannot isolate manual reload by itself. The
+separate watcher owner/fanout tests retain the real frontend polling scheduler.

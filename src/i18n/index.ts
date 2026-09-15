@@ -8,6 +8,13 @@ export type Locale = 'en' | 'pl' | 'zh-CN';
 export interface Translations {
   // App
   appName: string;
+  imageWindowTransferBlocked: string;
+  clipboardOperationFailed: string;
+  clipboardCompositionPending: string;
+  imageImportFailed: string;
+  imageTooLarge: string;
+  imageBudgetExceeded: string;
+  imagePathConflict: string;
   mathInline: string;
   mathBlock: string;
   mathEdit: string;

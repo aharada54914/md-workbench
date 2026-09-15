@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { nextTick } from 'vue';
-import { getTabImageOwner, useSplitView } from '../../composables/useSplitView';
+import { nextTick, computed } from 'vue';
+import { getTabImageOwner, getTabImageAuthorityRevision, refreshTabImageAuthority, resetTabImageOwner, useSplitView } from '../../composables/useSplitView';
 import { documentImageBytes } from '../../services/documentImageBytes';
 
 describe('live tab image ownership', () => {
@@ -37,4 +37,28 @@ describe('live tab image ownership', () => {
     expect(documentImageBytes.isCurrent(owner)).toBe(false);
     expect(getTabImageOwner(tab)).toBeUndefined();
   });
+
+  it('refreshes authority without losing imports, but resets an empty-tab document replacement', () => {
+    const split = useSplitView();
+    const id = split.createTab('left');
+    const tab = split.leftPane.value.tabs.find(t => t.id === id)!;
+    const observedOwner = computed(() => getTabImageOwner(tab));
+    const owner = observedOwner.value!;
+    documentImageBytes.reserve(owner, 1).prepare('images/a.png', new Uint8Array([7])).commit();
+    const revision = getTabImageAuthorityRevision(tab);
+    refreshTabImageAuthority(tab);
+    expect(getTabImageAuthorityRevision(tab)).toBe(revision + 1);
+    expect(observedOwner.value).toBe(owner);
+    expect(documentImageBytes.read(owner, 'images/a.png')).toEqual(new Uint8Array([7]));
+    resetTabImageOwner(tab);
+    expect(documentImageBytes.isCurrent(owner)).toBe(false);
+    expect(observedOwner.value).not.toBe(owner);
+    expect(documentImageBytes.read(observedOwner.value!, 'images/a.png')).toBeUndefined();
+    split.closeTab('left', id);
+    const closedRevision = getTabImageAuthorityRevision(tab);
+    refreshTabImageAuthority(tab);
+    expect(getTabImageAuthorityRevision(tab)).toBe(closedRevision);
+    expect(getTabImageOwner(tab)).toBeUndefined();
+  });
+
 });

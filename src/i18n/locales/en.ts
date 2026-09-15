@@ -2,6 +2,13 @@ import type { Translations } from '../index';
 
 const en: Translations = {
   appName: 'MD Workbench',
+  imageWindowTransferBlocked: "This document has imported images that cannot yet move to another window. The document has been kept here.",
+  clipboardOperationFailed: "Could not complete the clipboard operation.",
+  clipboardCompositionPending: "Finish composing your text, then try the clipboard operation again.",
+  imageImportFailed: "Could not add this image.",
+  imageTooLarge: "This image exceeds the 8 MiB limit.",
+  imageBudgetExceeded: "The image memory limit has been reached. Close another document or use a smaller image.",
+  imagePathConflict: "This path already refers to a different imported image. Rename the new image before adding it.",
   mathInline: 'Inline formula',
   mathBlock: 'Block formula',
   mathEdit: 'Edit formula',

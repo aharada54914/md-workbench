@@ -47,7 +47,8 @@ import { useCodeView } from './composables/useCodeView';
 import { useSplitEditor } from './composables/useSplitEditor';
 import { useScrollSync } from './composables/useScrollSync';
 import { useSettings } from './composables/useSettings';
-import { useSplitView } from './composables/useSplitView';
+import { useSplitView, getTabImageOwner, getTabImageAuthorityRevision, refreshTabImageAuthority, resetTabImageOwner } from './composables/useSplitView';
+import { serializeEditorHtml } from './utils/editor-image-dom';
 import { useFileOperations, type OpenDocumentSelection } from './composables/useFileOperations';
 import { useCloseConfirmation } from './composables/useCloseConfirmation';
 import { useWindowManager } from './composables/useWindowManager';
@@ -292,6 +293,14 @@ const {
 // Shown when the user tries to save but the file was modified externally since last load/save.
 // Reuses FileConflictModal with "Save Anyway" as the left-button label.
 const showPreSaveConflictModal = ref(false);
+// Keep the first dialog mounted until its answer; the other request retains its
+// existing state/Promise and cannot intercept clicks or consume Escape.
+const visibleConflictKind = ref<'save' | 'watch' | null>(null);
+watch([showPreSaveConflictModal, showConflictModal], ([save, external]) => {
+  if ((visibleConflictKind.value === 'save' && save)
+    || (visibleConflictKind.value === 'watch' && external)) return;
+  visibleConflictKind.value = save ? 'save' : external ? 'watch' : null;
+}, { flush: 'sync' });
 const preSaveConflictFilePath = ref('');
 const preSaveConflictFileName = ref('');
 const preSaveConflictDiffLines = ref<import('./composables/useDiffPreview').DiffLine[]>([]);
@@ -535,9 +544,14 @@ const {
   markSaveAbort: (filePath: string) => markSaveAbort(filePath),
   onOpenError: reportDocumentOpenError,
   onFileReselected: async (tab, grantId) => {
-    if (isTabOpen(tab) && tab.filePath) await restartWatch(tab.filePath, tab.originalMarkdown ?? '', grantId);
+    if (isTabOpen(tab) && tab.filePath) {
+      refreshTabImageAuthority(tab);
+      await restartWatch(tab.filePath, tab.originalMarkdown ?? '', grantId);
+    }
   },
   onFileOpened: (filePath: string, content: string) => {
+    const opened = findTabByFilePathSplit(filePath)?.tab;
+    if (opened) resetTabImageOwner(opened);
     watchFile(filePath, content);
     const fileName = filePath.split(/[/\\]/).pop() ?? filePath;
     addRecentFile(filePath, fileName);
@@ -996,7 +1010,7 @@ const toggleSplitEditor = async () => {
     }
     // Read the live editor HTML so the latest (still-debounced) edit isn't lost
     // when seeding the markdown source.
-    const html = editorInstance.value?.getHTML() ?? activeTab.value?.content ?? '<p></p>';
+    const html = editorInstance.value ? serializeEditorHtml(editorInstance.value.state.doc) : activeTab.value?.content ?? '<p></p>';
     if (activeTab.value) {
       activeTab.value.content = html;
     }
@@ -1055,6 +1069,7 @@ const { handleDrop: handleImageDrop } = useImageDrop({
   codeView,
   codeEditor: getCodeEditor,
   activeFilePath: () => activeTab.value?.filePath ?? null,
+  activeImageOwner: () => getTabImageOwner(activeTab.value),
   findVisualTargetAt: (x, y) => splitContainerRef.value?.findVisualTargetAt?.(x, y) ?? null,
   onImagesImported: (isCurrent) => { void workspace.refreshAll(isCurrent); },
 });
@@ -1921,6 +1936,7 @@ const openFileWithCrossWindowCheck = async (filePath: string, selection?: OpenDo
     if (localResult) {
       console.log(`[App] File already open locally, switching to tab:`, filePath);
       if (selection?.expectedGrantId) {
+        refreshTabImageAuthority(localResult.tab);
         await restartWatch(filePath, localResult.tab.originalMarkdown ?? '', selection.expectedGrantId);
         if (selection.isCurrent?.() === false || !isTabOpen(localResult.tab) || localResult.tab.filePath !== filePath) return;
       }
@@ -2069,8 +2085,10 @@ onMounted(async () => {
           if (received) {
             try {
               const { grantId } = await nativeFs.resolveDocumentReadGrant(transfer.file_path);
-              if (isTabOpen(received) && received.filePath === transfer.file_path)
+              if (isTabOpen(received) && received.filePath === transfer.file_path) {
+                refreshTabImageAuthority(received);
                 await restartWatch(transfer.file_path, received.originalMarkdown ?? '', grantId);
+              }
             } catch (error) { reportDocumentOpenError(error); }
           }
         } else showToastNotification(t.value.windowTransferReceiveFailed, 'warning');
@@ -2346,6 +2364,8 @@ onUnmounted(async () => {
               :key="activeTab?.id"
               :model-value="splitPreviewHtml"
               :document-id="activeTab?.id"
+              :image-owner="getTabImageOwner(activeTab)"
+              :image-authority-revision="getTabImageAuthorityRevision(activeTab)"
               :source-markdown="splitMarkdownSource"
               :file-path="activeTab?.filePath || null"
               :editable="false"
@@ -2637,7 +2657,7 @@ onUnmounted(async () => {
 
     <!-- Pre-Save Conflict Modal (file changed on disk since last load/save) -->
     <FileConflictModal
-      v-if="showPreSaveConflictModal"
+      v-if="showPreSaveConflictModal && visibleConflictKind === 'save'"
       :file-name="preSaveConflictFileName"
       :file-path="preSaveConflictFilePath"
       :diff-lines="preSaveConflictDiffLines"
@@ -2651,7 +2671,7 @@ onUnmounted(async () => {
 
     <!-- File Conflict Modal (watcher-based external change) -->
     <FileConflictModal
-      v-if="showConflictModal"
+      v-if="showConflictModal && visibleConflictKind === 'watch'"
       :key="conflictKey"
       :file-name="conflictFileName"
       :file-path="conflictFilePath"

@@ -20,7 +20,8 @@ test('inert helpers preserve actual TipTap image models without raw resource fet
     const safePath = '/src/utils/safe-html.ts';
     // Use Vite's exact optimized dependency URLs (including its version query),
     // so the probe and helpers share the same ProseMirror class/plugin instances.
-    const editorModule = await (await fetch('/src/components/Editor.vue')).text();
+    const editorModule = await (await fetch('/src/components/Editor.vue')).text()
+      + await (await fetch('/src/extensions/SafeImage.ts')).text();
     const dependencyUrl = (name: string) => {
       const url = editorModule.match(new RegExp(`"([^"\\n]*@tiptap_${name}\\.js[^"\\n]*)"`))?.[1];
       if (!url) throw new Error(`Missing Vite dependency URL: ${name}`);
@@ -56,8 +57,8 @@ test('inert helpers preserve actual TipTap image models without raw resource fet
     DOMParser.prototype.parseFromString = () => { throw new Error('Browser DOMParser reached'); };
     const host = document.createElement('div');
     document.body.appendChild(host);
-    // This stub isolates helper conversion from the still-unmigrated real
-    // Image NodeView. It renders no src; this is not whole-editor acceptance.
+    // This stub isolates helper conversion from the separately tested real
+    // SafeImage NodeView. It renders no src; this is not whole-editor acceptance.
     const InertImage = Image.extend({
       addNodeView() { return () => ({ dom: document.createElement('img') }); },
     });

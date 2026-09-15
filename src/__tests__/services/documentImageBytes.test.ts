@@ -87,4 +87,17 @@ describe('document image snapshots', () => {
     expect(() => pending.commit()).toThrow('expired');
     expect(store.read(owner, 'x')).toBeUndefined();
   });
+  it('reports pending and committed local images without exposing bytes', () => {
+    const store = createDocumentImageBytes(), owner = store.createOwner();
+    expect(store.hasLocalImages(owner)).toBe(false);
+    const reservation = store.reserve(owner, 0);
+    expect(store.hasLocalImages(owner)).toBe(true);
+    reservation.release();
+    expect(store.hasLocalImages(owner)).toBe(false);
+    store.reserve(owner, 0).prepare('x', new Uint8Array()).commit();
+    expect(store.hasLocalImages(owner)).toBe(true);
+    store.dispose(owner);
+    expect(store.hasLocalImages(owner)).toBe(false);
+  });
+
 });

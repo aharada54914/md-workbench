@@ -7,37 +7,12 @@ import { Link as TiptapLink } from "@tiptap/extension-link";
 const Link = TiptapLink.extend({
   name: 'customLink',
 });
-import { Image as TiptapImage } from "@tiptap/extension-image";
-
-// Extend Image to:
-// 1. Always render with class="editor-image" (for CSS styling and DOM selectors)
-// 2. Preserve data-original-src (relative path) through Tiptap's schema
-const Image = TiptapImage.extend({
-  addOptions() {
-    return {
-      inline: false as boolean,
-      allowBase64: false as boolean,
-      resize: false as const,
-      ...this.parent?.(),
-      HTMLAttributes: {
-        class: 'editor-image',
-      },
-    };
-  },
-  addAttributes() {
-    return {
-      ...this.parent?.(),
-      'data-original-src': {
-        default: null,
-        parseHTML: (element: HTMLElement) => element.getAttribute('data-original-src'),
-        renderHTML: (attributes: Record<string, unknown>) => {
-          if (!attributes['data-original-src']) return {};
-          return { 'data-original-src': attributes['data-original-src'] as string };
-        },
-      },
-    };
-  },
-});
+import { SafeImage } from "../extensions/SafeImage";
+import { createDocumentImageDisplay } from "../services/documentImageDisplay";
+import type { ImageDocumentOwner } from "../services/documentImageBytes";
+import { importPastedEditorImage } from "../utils/editor-image-paste";
+import { createInertClipboardHandlers, consumeEmptyClipboardSlice } from "../utils/inert-clipboard";
+import { parseEditorHtml, serializeEditorHtml } from "../utils/editor-image-dom";
 import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
@@ -72,8 +47,6 @@ import { useEditorZoom } from "../composables/useEditorZoom";
 import { useSettings } from "../composables/useSettings";
 import { useFootnotes } from "../composables/useFootnotes";
 import { useLineNumbers } from "../composables/useLineNumbers";
-import { createEditorImageResolver, getDirectoryFromFilePath } from "../utils/image-resolver";
-import { importImageBytes } from "../services/imageImport";
 import TableContextMenu from "./TableContextMenu.vue";
 import ImagePreview from "./ImagePreview.vue";
 import EditorGutter from "./EditorGutter.vue";
@@ -204,8 +177,7 @@ const previewImageAlt = ref('');
 
 // Floating overlay for the currently-hovered editor image. Positioned with
 // fixed coords against the viewport so it tracks the image during scroll
-// without needing a per-image NodeView (which would conflict with the
-// blob-url image-resolver that mutates img.src directly).
+// alongside the node-owned image display.
 const hoveredImage = ref<HTMLImageElement | null>(null);
 const imageOverlayRect = ref<{ top: number; right: number } | null>(null);
 let hideOverlayTimer: number | null = null;
@@ -291,114 +263,7 @@ const ListKeymap = Extension.create({
 
 const lowlight = createLowlight(common);
 
-// Helper: Parse clipboard HTML table to TipTap table format
-const parseHtmlTable = (html: string): string | null => {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, "text/html");
-  const table = doc.querySelector("table");
-  if (!table) return null;
-
-  const rows = table.querySelectorAll("tr");
-  if (rows.length === 0) return null;
-
-  // Build proper TipTap-compatible table structure
-  let headerRow = "";
-  let bodyRows = "";
-
-  rows.forEach((row, rowIndex) => {
-    const cells = row.querySelectorAll("th, td");
-    if (cells.length === 0) return;
-
-    let rowHtml = "<tr>";
-    cells.forEach((cell) => {
-      const text = cell.textContent?.trim() || "\u00A0"; // non-breaking space for empty cells
-      if (rowIndex === 0) {
-        rowHtml += `<th><p>${text}</p></th>`;
-      } else {
-        rowHtml += `<td><p>${text}</p></td>`;
-      }
-    });
-    rowHtml += "</tr>";
-
-    if (rowIndex === 0) {
-      headerRow = rowHtml;
-    } else {
-      bodyRows += rowHtml;
-    }
-  });
-
-  // TipTap Table requires tbody, thead is optional
-  let result = "<table>";
-  if (headerRow) {
-    result += `<thead>${headerRow}</thead>`;
-  }
-  result += `<tbody>${bodyRows || headerRow}</tbody>`;
-  result += "</table>";
-
-  return result;
-};
-
-// Helper: Parse plain text table (tab/pipe separated)
-const parseTextTable = (text: string): string | null => {
-  const lines = text.trim().split("\n");
-  if (lines.length < 2) return null;
-
-  // Check if it looks like a table (has tabs or pipes)
-  const hasTabsOrPipes = lines.some((line) => line.includes("\t") || line.includes("|"));
-  if (!hasTabsOrPipes) return null;
-
-  // Filter and parse rows
-  const dataRows: string[][] = [];
-
-  lines.forEach((line) => {
-    // Skip Markdown separator line (|---|---|)
-    if (/^\|?[\s\-:|]+\|?$/.test(line)) return;
-
-    let cells: string[];
-    if (line.includes("|")) {
-      cells = line.split("|").map((c) => c.trim()).filter((c) => c);
-    } else {
-      cells = line.split("\t").map((c) => c.trim());
-    }
-
-    if (cells.length > 0) {
-      dataRows.push(cells);
-    }
-  });
-
-  if (dataRows.length === 0) return null;
-
-  // Build TipTap-compatible table
-  let result = "<table>";
-
-  // First row as header
-  result += "<thead><tr>";
-  dataRows[0].forEach((cell) => {
-    result += `<th><p>${cell || "\u00A0"}</p></th>`;
-  });
-  result += "</tr></thead>";
-
-  // Remaining rows as body
-  result += "<tbody>";
-  for (let i = 1; i < dataRows.length; i++) {
-    result += "<tr>";
-    dataRows[i].forEach((cell) => {
-      result += `<td><p>${cell || "\u00A0"}</p></td>`;
-    });
-    result += "</tr>";
-  }
-  // If only header, duplicate as body row (TipTap needs at least one body row)
-  if (dataRows.length === 1) {
-    result += "<tr>";
-    dataRows[0].forEach((cell) => {
-      result += `<td><p>${cell || "\u00A0"}</p></td>`;
-    });
-    result += "</tr>";
-  }
-  result += "</tbody></table>";
-
-  return result;
-};
+import { parseHtmlTable, parseTextTable } from "../utils/editor-table-paste";
 
 const props = withDefaults(defineProps<{
   modelValue?: string;
@@ -406,6 +271,8 @@ const props = withDefaults(defineProps<{
   editable?: boolean;
   sourceMarkdown?: string | null;
   documentId?: string;
+  imageOwner?: ImageDocumentOwner;
+  imageAuthorityRevision?: number;
 }>(), {
   editable: true,
 });
@@ -425,40 +292,34 @@ let sourceGeneration = 0;
 watch([() => props.modelValue, () => props.filePath, () => props.documentId, () => props.sourceMarkdown],
   () => { sourceGeneration++; }, { flush: 'sync' });
 function refreshSourceSafety(ed: TiptapEditor) {
-  sourceSafe.value = canEditVisualSource(ed.getHTML(), props.sourceMarkdown);
+  sourceSafe.value = canEditVisualSource(serializeEditorHtml(ed.state.doc), props.sourceMarkdown);
   ed.setEditable(props.editable && sourceSafe.value, false);
 }
 
-// Keep network/file waits outside ProseMirror's observer suppression window.
-const editorImages = createEditorImageResolver(apply => {
-  const ed = editor.value;
-  const observer = ed && !ed.isDestroyed
-    ? (ed.view as unknown as { domObserver?: { stop(): void; start(): void } }).domObserver
-    : undefined;
-  observer?.stop();
-  try { apply(); } finally { observer?.start(); }
-}, url => {
-  if (previewImageSrc.value === url) showImagePreview.value = false;
+const imageImportError = ref('');
+
+// Each view owns display URLs; the tab owner retains imported bytes across mode changes.
+const editorImages = createDocumentImageDisplay({
+  getContext: () => ({ owner: props.imageOwner, path: props.filePath ?? null, revision: props.imageAuthorityRevision ?? 0 }),
+  beforeRelease: async (url) => {
+    if (previewImageSrc.value === url) {
+      showImagePreview.value = false;
+      previewImageSrc.value = '';
+      await nextTick();
+    }
+  },
 });
-let imageContextGeneration = 0;
-watch([() => props.documentId, () => props.filePath], () => {
-  imageContextGeneration += 1;
-  editorImages.reset();
+watch([() => props.imageOwner, () => props.documentId, () => props.filePath, () => props.imageAuthorityRevision], () => {
+  editorImages.refresh();
+  imageImportError.value = '';
   showImagePreview.value = false;
-  void nextTick(() => { if (editor.value) void resolveImages(editor.value); });
+  hoveredImage.value = null;
+  imageOverlayRect.value = null;
 }, { flush: 'sync' });
-onBeforeUnmount(() => { imageContextGeneration += 1; editorImages.dispose(); });
-
-async function resolveImages(ed: TiptapEditor) {
-  const generation = imageContextGeneration;
-  const isCurrent = () => !ed.isDestroyed && editor.value === ed && generation === imageContextGeneration;
-  if (!isCurrent()) return;
-  const root = editorContainerRef.value?.querySelector('.ProseMirror');
-  if (!root) return;
-  const baseDir = props.filePath ? getDirectoryFromFilePath(props.filePath) : undefined;
-  await editorImages.resolve(root, baseDir || undefined, isCurrent);
-}
-
+onBeforeUnmount(() => {
+  editorImages.dispose();
+  if (hideOverlayTimer !== null) window.clearTimeout(hideOverlayTimer);
+});
 function pickImageFile(data: DataTransfer): File | null {
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i];
@@ -470,46 +331,40 @@ function pickImageFile(data: DataTransfer): File | null {
   return null;
 }
 
-function mimeToExtension(mime: string): string {
-  const m = mime.toLowerCase();
-  if (m === 'image/jpeg' || m === 'image/jpg') return 'jpg';
-  if (m === 'image/svg+xml') return 'svg';
-  const slash = m.indexOf('/');
-  return slash >= 0 ? m.slice(slash + 1) : 'png';
-}
-
 async function handlePastedImage(file: File): Promise<void> {
   const targetEditor = editor.value;
   const targetPath = props.filePath ?? null;
+  const owner = props.imageOwner;
   const generation = sourceGeneration;
-  const isCurrent = () => sourceSafe.value && targetEditor?.isEditable
-    && !targetEditor.isDestroyed && targetEditor === editor.value
+  const isCurrent = () => !!targetEditor && sourceSafe.value && targetEditor.isEditable
+    && !targetEditor.isDestroyed && targetEditor === editor.value && props.imageOwner === owner
     && generation === sourceGeneration && targetPath === (props.filePath ?? null);
   if (!isCurrent()) return;
+  imageImportError.value = '';
   try {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (!isCurrent()) return;
-    const ext = mimeToExtension(file.type);
-    const stemHint = file.name ? file.name.replace(/\.[^.]+$/, '') : 'pasted-image';
-    const result = await importImageBytes(bytes, ext, targetPath, stemHint);
-    if (!isCurrent()) return;
-    await insertImagesByPath([{ path: result.markdownPath, alt: result.altText }]);
-  } catch (e) {
-    console.warn('[Editor] Failed to import pasted image:', e);
+    if (!owner) throw new Error('image_document_unavailable');
+    await importPastedEditorImage(file, {
+      owner, path: targetPath, isCurrent,
+      insert: image => insertImagesByPath([image]),
+    });
+  } catch (error) {
+    if (!isCurrent() || (error instanceof DOMException && error.name === 'AbortError')) return;
+    const code = error instanceof Error ? error.message : '';
+    imageImportError.value = code === 'image_too_large' ? t.value.imageTooLarge
+      : code === 'image_budget_exceeded' ? t.value.imageBudgetExceeded
+      : code === 'image_path_conflict' ? t.value.imagePathConflict
+      : t.value.imageImportFailed;
   }
 }
 
 const editor = useEditor({
   content: props.modelValue || `<p>${t.value.placeholder}</p>`,
   editable: props.editable && sourceSafe.value,
-  // Resolve local image paths to blob URLs when the editor is first created.
-  // This is essential because: (1) the watch on modelValue doesn't fire for the
-  // initial value, and (2) onUpdate doesn't fire during initial content creation.
-  // Without this, images wouldn't display after code→visual switch (Editor recreated).
-  onCreate: ({ editor: ed }) => {
-    refreshSourceSafety(ed);
-    void nextTick(() => resolveImages(ed));
+  onBeforeCreate: ({ editor: ed }) => {
+    const content = ed.options.content;
+    if (typeof content === 'string') ed.options.content = parseEditorHtml(content, ed.schema).toJSON();
   },
+  onCreate: ({ editor: ed }) => { refreshSourceSafety(ed); },
   extensions: [
     sourcePreservationExtension(() => applyingSource || (props.editable && sourceSafe.value)),
     StarterKit.configure({
@@ -527,7 +382,10 @@ const editor = useEditor({
         class: "editor-link",
       },
     }),
-    Image.configure({
+    SafeImage.configure({
+      // Preserve authored data sources in the model; the provider validates display bytes.
+      allowBase64: true,
+      provider: editorImages,
       HTMLAttributes: {
         class: "editor-image",
       },
@@ -561,13 +419,13 @@ const editor = useEditor({
     FootnoteSection,
     DocumentSearchExtension,
     MoveBlockExtension,
-    SafeHtmlBlockExtension,
+    SafeHtmlBlockExtension.configure({ provider: editorImages }),
     CharacterCount.configure({
       limit: null,
     }),
   ],
   onUpdate: ({ editor: ed }) => {
-    const html = ed.getHTML();
+    const html = serializeEditorHtml(ed.state.doc);
     if (!applyingSource && props.sourceMarkdown != null) {
       emit('update:sourceMarkdown', serializeVisualMarkdown(html, props.sourceMarkdown));
     }
@@ -576,10 +434,15 @@ const editor = useEditor({
       emit("update:hasChanges", html !== lastSavedHtml);
     }
     footnotes.consumePendingInsert(ed);
-    // Resolve after ProseMirror finishes this update; individual results own their nodes.
-    requestAnimationFrame(() => { void resolveImages(ed); });
   },
   editorProps: {
+    handleDOMEvents: createInertClipboardHandlers({
+      canEdit: view => sourceSafe.value && view.editable,
+      hasHandledImageFile: data => !!pickImageFile(data),
+      onBlocked: reason => {
+        imageImportError.value = reason === 'composing' ? t.value.clipboardCompositionPending : t.value.clipboardOperationFailed;
+      },
+    }),
     // Disable spell-check, autocomplete, and autocorrect to prevent interference with code blocks
     attributes: {
       spellcheck: "false",
@@ -589,7 +452,7 @@ const editor = useEditor({
       "data-gramm_editor": "false",
       "data-enable-grammarly": "false",
     },
-    handlePaste: (_view, event) => {
+    handlePaste: (_view, event, slice) => {
       if (!sourceSafe.value) return true;
       const clipboardData = event.clipboardData;
       if (!clipboardData) return false;
@@ -606,7 +469,7 @@ const editor = useEditor({
       if (html && /<table/i.test(html)) {
         const tableHtml = parseHtmlTable(html);
         if (tableHtml && editor.value) {
-          editor.value.chain().focus().insertContent(tableHtml).run();
+          editor.value.chain().focus().insertContent(parseEditorHtml(tableHtml, editor.value.schema).toJSON().content).run();
           return true;
         }
       }
@@ -616,12 +479,12 @@ const editor = useEditor({
       if (text) {
         const tableHtml = parseTextTable(text);
         if (tableHtml && editor.value) {
-          editor.value.chain().focus().insertContent(tableHtml).run();
+          editor.value.chain().focus().insertContent(parseEditorHtml(tableHtml, editor.value.schema).toJSON().content).run();
           return true;
         }
       }
 
-      return false; // Let default paste handler work
+      return consumeEmptyClipboardSlice(slice); // Preserve normal ProseMirror rich-paste handling.
     },
   },
 });
@@ -634,19 +497,17 @@ setTimeout(() => {
 
 watch(
   () => props.modelValue,
-  async (newValue) => {
-    if (editor.value && newValue !== editor.value.getHTML()) {
+  (newValue) => {
+    if (editor.value && newValue !== serializeEditorHtml(editor.value.state.doc)) {
       settingContentCount++;
       applyingSource = true;
       try {
-        editor.value.chain().setMeta('addToHistory', false).setContent(newValue || "", { emitUpdate: false }).run();
+        editor.value.chain().setMeta('addToHistory', false).setContent(parseEditorHtml(newValue || "", editor.value.schema).toJSON(), { emitUpdate: false }).run();
         refreshSourceSafety(editor.value);
       } finally {
         applyingSource = false;
       }
-      lastSavedHtml = editor.value.getHTML();
-      await nextTick();
-      if (editor.value) await resolveImages(editor.value);
+      lastSavedHtml = serializeEditorHtml(editor.value.state.doc);
       setTimeout(() => {
         settingContentCount = Math.max(0, settingContentCount - 1);
         emit("update:hasChanges", false);
@@ -816,11 +677,9 @@ const focusSearchMatch = (match: VisualSearchMatch) => {
   });
 };
 
-async function insertImagesByPath(items: { path: string; alt: string }[]) {
+function insertImagesByPath(items: { path: string; alt: string }[]) {
   const ed = editor.value;
   if (!ed || ed.isDestroyed || !sourceSafe.value || items.length === 0) return;
-  const targetPath = props.filePath;
-
   for (const item of items) {
     ed.chain().focus().setImage({
       src: item.path,
@@ -832,13 +691,6 @@ async function insertImagesByPath(items: { path: string; alt: string }[]) {
     // the currently-selected one.
     ed.commands.setTextSelection(ed.state.selection.to);
   }
-
-  const generation = sourceGeneration;
-  await nextTick();
-  if (ed.isDestroyed || ed !== editor.value || targetPath !== props.filePath || generation !== sourceGeneration) return;
-
-  // Absolute paths remain valid for legacy imports into unsaved documents.
-  await resolveImages(ed);
 }
 
 defineExpose({
@@ -860,6 +712,7 @@ defineExpose({
     @mouseover="(e) => { footnotes.handleMouseOver(e); handleEditorMouseOver(e); }"
     @mouseout="(e) => { footnotes.handleMouseOut(e); handleEditorMouseOut(e); }"
   >
+    <div v-if="imageImportError" class="source-preservation-notice" role="alert">{{ imageImportError }}</div>
     <div v-if="!sourceSafe" class="source-preservation-notice" role="status">
       <span>This document contains formatting that Visual editing cannot preserve.</span>
       <button type="button" @click="emit('editSource')">Edit source</button>

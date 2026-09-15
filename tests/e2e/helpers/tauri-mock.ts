@@ -39,6 +39,8 @@ export async function setupTauriMocks(
     pendingTransfers?: MockTabTransfer[];
     /** Completed host selections queued before listener startup. */
     pendingDrops?: NativeDrop[];
+    /** Test-only gate for polling completion; explicit document reads still run. */
+    beforeWatchRead?: (path: string) => Promise<void>;
     /** App version string */
     version?: string;
   } = {},
@@ -65,7 +67,8 @@ export async function setupTauriMocks(
   const calls: Array<{ cmd: string; args: unknown }> = [];
 
   // Expose Node-side functions so the browser script can call them
-  await page.exposeFunction('__mockFsRead', (path: string, cmd = 'read'): string => {
+  await page.exposeFunction('__mockFsRead', async (path: string, cmd = 'read'): Promise<string> => {
+    if (cmd === 'watch_read') await opts.beforeWatchRead?.(path);
     calls.push({ cmd, args: path });
     if (!(path in fs)) throw new Error(`ENOENT: ${path}`);
     return fs[path];

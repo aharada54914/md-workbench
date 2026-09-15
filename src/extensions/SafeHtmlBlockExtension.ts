@@ -1,4 +1,5 @@
 import { Node, mergeAttributes } from '@tiptap/core';
+import type { createDocumentImageDisplay } from '../services/documentImageDisplay';
 import { NodeSelection } from '@tiptap/pm/state';
 import {
   decodeSafeHtmlSource,
@@ -8,7 +9,12 @@ import {
   sanitizeSafeHtml,
 } from '../utils/safe-html';
 
-export const SafeHtmlBlockExtension = Node.create({
+interface SafeHtmlOptions {
+  provider: Pick<ReturnType<typeof createDocumentImageDisplay>, 'attach'> | null;
+}
+
+export const SafeHtmlBlockExtension = Node.create<SafeHtmlOptions>({
+  addOptions() { return { provider: null }; },
   name: 'safeHtmlBlock',
   group: 'block',
   atom: true,
@@ -39,7 +45,16 @@ export const SafeHtmlBlockExtension = Node.create({
       dom.className = 'safe-html-block';
       dom.contentEditable = 'false';
       const raw = String(node.attrs.raw ?? '');
-      dom.innerHTML = sanitizeSafeHtml(raw);
+      const template = document.createElement('template');
+      template.innerHTML = sanitizeSafeHtml(raw);
+      const images = Array.from(template.content.querySelectorAll('img')).map(img => {
+        const src = img.getAttribute('src') ?? '';
+        // Remove resource attributes before any node is adopted by the live DOM.
+        img.removeAttribute('src');
+        img.removeAttribute('srcset');
+        return { img, src };
+      });
+      dom.appendChild(template.content);
       dom.dataset.safeHtmlCursorLine = '0';
       dom.dataset.safeHtmlSourceKey = safeHtmlSourceKey(raw);
 
@@ -49,6 +64,19 @@ export const SafeHtmlBlockExtension = Node.create({
         if (sourceLines[index] !== undefined) {
           (element as HTMLElement).dataset.safeHtmlSourceLine = String(sourceLines[index]);
         }
+      });
+
+      const bindings = images.map(({ img, src }) => {
+        const status = document.createElement('span');
+        status.setAttribute('role', 'status');
+        status.className = 'editor-image-status';
+        img.after(status);
+        const onStatus = (value: 'loading' | 'ready' | 'unavailable') => {
+          status.textContent = value === 'ready' ? '' : value === 'loading' ? 'Loading image…' : 'Image unavailable';
+          status.hidden = value === 'ready';
+        };
+        onStatus('unavailable');
+        return this.options.provider?.attach(img, src, onStatus);
       });
 
       const rememberClickedLine = (event: PointerEvent) => {
@@ -65,7 +93,11 @@ export const SafeHtmlBlockExtension = Node.create({
 
       return {
         dom,
-        destroy: () => dom.removeEventListener('pointerdown', rememberClickedLine),
+        ignoreMutation: () => true,
+        destroy: () => {
+          dom.removeEventListener('pointerdown', rememberClickedLine);
+          bindings.forEach(binding => binding?.dispose());
+        },
       };
     };
   },

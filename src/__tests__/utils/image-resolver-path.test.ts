@@ -1,17 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createEditorImageResolver, getDirectoryFromFilePath, inlineMarkdownImages } from '../../utils/image-resolver';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getDirectoryFromFilePath, inlineMarkdownImages } from '../../utils/image-resolver';
 
 const { readFile } = vi.hoisted(() => ({ readFile: vi.fn() }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readFile }));
-const owners: ReturnType<typeof createEditorImageResolver>[] = [];
-
 beforeEach(() => {
   readFile.mockReset(); readFile.mockResolvedValue(new Uint8Array([1]));
-  vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() });
-});
-afterEach(() => {
-  for (const owner of owners.splice(0)) owner.dispose();
-  document.body.replaceChildren(); vi.unstubAllGlobals();
 });
 
 const cases = [
@@ -30,20 +23,10 @@ const cases = [
   { name: 'absolute drive source', document: '/docs/note.md', source: 'D:\\images\\a.png', expected: 'D:\\images\\a.png' },
 ];
 
-describe.each(['editor', 'Marp'] as const)('%s image path resolution', target => {
+describe('Marp image path resolution', () => {
   it.each(cases)('$name', async ({ document: documentPath, source, expected }) => {
     const baseDir = getDirectoryFromFilePath(documentPath);
-    if (target === 'Marp') {
-      await inlineMarkdownImages(`![image](${source})`, baseDir);
-    } else {
-      const root = document.createElement('div');
-      const img = document.createElement('img');
-      img.className = 'editor-image'; img.setAttribute('src', source);
-      root.append(img); document.body.append(root);
-      const owner = createEditorImageResolver(); owners.push(owner);
-      await owner.resolve(root, baseDir);
-      expect(img.getAttribute('data-original-src')).toBe(source);
-    }
+    await inlineMarkdownImages(`![image](${source})`, baseDir);
     expect(readFile).toHaveBeenCalledExactlyOnceWith(expected);
   });
 });

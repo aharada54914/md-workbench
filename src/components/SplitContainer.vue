@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { message } from '@tauri-apps/plugin-dialog';
-import { useSplitView } from '../composables/useSplitView';
+import { useSplitView, tabHasLocalImages } from '../composables/useSplitView';
 import { useTabDrag } from '../composables/useTabDrag';
 import { useWindowManager } from '../composables/useWindowManager';
 import { t } from '../i18n';
@@ -88,17 +88,22 @@ onMounted(() => {
         await message(t.value.saveBeforeWindowTransfer, { title: t.value.unsavedChanges, kind: 'info' });
         return;
       }
+      const reportLocalImages = async () => {
+        if (tabHasLocalImages(tab)) await message(t.value.imageWindowTransferBlocked, { title: t.value.windowTransferTitle, kind: 'info' });
+      };
+      if (tabHasLocalImages(tab)) { await reportLocalImages(); return; }
       const initialContent = tab.content;
       const initialSource = tab.originalMarkdown;
       const initialPending = tab.pendingMarkdown;
       const isUnchanged = () => pane?.tabs.includes(tab) && tab.filePath === filePath
+        && !tabHasLocalImages(tab)
         && !tab.hasChanges && tab.content === initialContent && tab.originalMarkdown === initialSource
         && tab.pendingMarkdown === initialPending;
 
       // Get current window label and all windows
       const currentWindow = await getCurrentWindowLabel();
       const allWindows = await getAllWindows();
-      if (!isUnchanged()) return;
+      if (!isUnchanged()) { await reportLocalImages(); return; }
 
       // Find other windows (excluding current one)
       const otherWindows = allWindows.filter(w => w !== currentWindow);
@@ -119,7 +124,7 @@ onMounted(() => {
 
       // Input can arrive while the native transfer request is pending.
       // Keep those edits in the source window instead of silently discarding.
-      if (!isUnchanged()) return;
+      if (!isUnchanged()) { await reportLocalImages(); return; }
       await unregisterOpenFile(filePath);
       // Registration is asynchronous too. Restore it if input arrived during
       // that final await; native file authority is retained throughout.
@@ -127,6 +132,7 @@ onMounted(() => {
         if (splitState.value.panes.some(p => p.tabs.some(t => t.filePath === filePath))) {
           await registerOpenFile(filePath, currentWindow);
         }
+        await reportLocalImages();
         return;
       }
       removeTabWithoutCreate(paneId, tabId);

@@ -4,6 +4,7 @@ on:
     paths:
       - 'src/**'
       - 'tests/e2e/**'
+      - 'playwright.config.ts'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/mdw-source-preservation.yml'
@@ -30,3 +31,15 @@ jobs:
       - run: pnpm test:run
       - run: pnpm build
       - run: pnpm exec playwright test
+      # Tests use synthetic fixtures; retain only bounded failure diagnostics.
+      - name: Upload browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdw-source-preservation-browser-failure-${{ matrix.os }}
+          path: |
+            test-results/**/*.zip
+            test-results/**/*.png
+            test-results/**/error-context.md
+          if-no-files-found: ignore
+          retention-days: 7

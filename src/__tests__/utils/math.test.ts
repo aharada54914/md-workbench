@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { KatexBlockExtension, KatexInlineExtension } from '../../extensions/KatexExtension';
@@ -153,4 +153,18 @@ describe('rendering and exports', () => {
     expect(normalizeMathForMarp(source)).toContain('$$\ny\n$$');
     expect(normalizeMathForMarp(source)).toContain('`$z$`');
   });
+});
+
+
+it('keeps authored images inert while converting neighboring math to Markdown', () => {
+  const html = markdownToHtml('$x$') + '<p><img src="images/a.png" alt="A"></p>';
+  const parser = vi.spyOn(DOMParser.prototype, 'parseFromString').mockImplementation(() => { throw new Error('active parser'); });
+  const create = vi.spyOn(document, 'createTextNode');
+  try {
+    const result = htmlToMarkdown(html);
+    expect(result).toContain('$x$');
+    expect(result).toContain('![A](images/a.png)');
+    expect(parser).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  } finally { vi.restoreAllMocks(); }
 });

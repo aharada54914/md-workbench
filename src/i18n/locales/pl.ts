@@ -2,6 +2,13 @@ import type { Translations } from '../index';
 
 const pl: Translations = {
   appName: 'MD Workbench',
+  imageWindowTransferBlocked: "Ten dokument zawiera zaimportowane obrazy, których nie można jeszcze przenieść do innego okna. Dokument pozostał w tym oknie.",
+  clipboardOperationFailed: "Nie udało się wykonać operacji schowka.",
+  clipboardCompositionPending: "Zakończ wprowadzanie tekstu, a następnie ponów operację schowka.",
+  imageImportFailed: "Nie udało się dodać obrazu.",
+  imageTooLarge: "Obraz przekracza limit 8 MiB.",
+  imageBudgetExceeded: "Osiągnięto limit pamięci obrazów. Zamknij inny dokument lub użyj mniejszego obrazu.",
+  imagePathConflict: "Ta ścieżka wskazuje już inny zaimportowany obraz. Zmień nazwę nowego obrazu przed dodaniem.",
   mathInline: 'Wzór w tekście',
   mathBlock: 'Wzór blokowy',
   mathEdit: 'Edytuj wzór',

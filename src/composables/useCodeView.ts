@@ -3,6 +3,7 @@ import type { Editor } from '@tiptap/vue-3';
 import { NodeSelection } from '@tiptap/pm/state';
 import type { CodeEditorHandle } from '../types/code-editor';
 import { markdownToHtml } from '../utils/markdown-converter';
+import { serializeEditorHtml } from '../utils/editor-image-dom';
 import { serializeVisualMarkdown } from '../utils/visual-source';
 import { getCurrentMermaidReadFormats, type MermaidFormat } from '../utils/mermaid-formats';
 import { targetScrollTop } from '../utils/scroll';
@@ -632,7 +633,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
       if (editor) {
         const { from } = editor.state.selection;
 
-        codeContent.value = options.getUnchangedMarkdown?.() ?? serializeVisualMarkdown(editor.getHTML(), options.getMarkdownReference?.());
+        codeContent.value = options.getUnchangedMarkdown?.() ?? serializeVisualMarkdown(serializeEditorHtml(editor.state.doc), options.getMarkdownReference?.());
 
         try {
           const $pos = editor.state.doc.resolve(from);

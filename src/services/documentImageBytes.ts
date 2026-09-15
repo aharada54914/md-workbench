@@ -58,6 +58,11 @@ export function createDocumentImageBytes() {
     disposeAll(): void {
       for (const owner of owners.keys()) this.dispose(owner);
     },
+    /** Metadata only; in-flight imports also prevent dropping the source window. */
+    hasLocalImages(owner: ImageDocumentOwner): boolean {
+      const state = owners.get(owner);
+      return !!state && (state.entries.size > 0 || state.pending.size > 0);
+    },
     /** Reserves capacity before native read/File.arrayBuffer or destination writes. */
     reserve(owner: ImageDocumentOwner, size = IMAGE_BYTE_LIMIT) {
       const state = current(owner);

@@ -1,6 +1,13 @@
 import type { Translations } from '../index';
 
 const zhCN: Translations = {
+  imageWindowTransferBlocked: "此文档含有暂时无法移至其他窗口的导入图片。文档已保留在当前窗口。",
+  clipboardOperationFailed: "无法完成剪贴板操作。",
+  clipboardCompositionPending: "请先完成文字输入，再重试剪贴板操作。",
+  imageImportFailed: "无法添加此图片。",
+  imageTooLarge: "此图片超过 8 MiB 限制。",
+  imageBudgetExceeded: "图片内存已达上限。请关闭其他文档或使用更小的图片。",
+  imagePathConflict: "此路径已对应另一张导入的图片。请先重命名新图片再添加。",
   mathInline: '行内公式',
   mathBlock: '块公式',
   mathEdit: '编辑公式',
