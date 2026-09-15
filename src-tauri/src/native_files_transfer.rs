@@ -24,7 +24,12 @@ impl NativeState {
         }
         self.register(label)
     }
-    fn copy_file(&mut self, source: &str, target: &str, path: &str) -> Result<FileCopy, String> {
+    pub(super) fn copy_file(
+        &mut self,
+        source: &str,
+        target: &str,
+        path: &str,
+    ) -> Result<FileCopy, String> {
         self.generation(source)?;
         let generation = self.generation(target)?;
         if source == target {
@@ -62,7 +67,7 @@ impl NativeState {
             previous,
         })
     }
-    fn rollback_copy(&mut self, copy: FileCopy) {
+    pub(super) fn rollback_copy(&mut self, copy: FileCopy) {
         if self.generation(&copy.target).ok() != Some(copy.generation) {
             return;
         }
@@ -101,24 +106,6 @@ pub(crate) fn cancel_editor_reservation(app: &tauri::AppHandle, label: &str) {
         state.building.remove(label);
     }
 }
-pub(crate) fn copy_owned_file(
-    app: &tauri::AppHandle,
-    source: &str,
-    target: &str,
-    path: &str,
-) -> Result<FileCopy, String> {
-    app.state::<NativeFiles>()
-        .0
-        .lock()
-        .map_err(|_| "native_state_unavailable")?
-        .copy_file(source, target, path)
-}
-pub(crate) fn rollback_file_copy(app: &tauri::AppHandle, copy: FileCopy) {
-    if let Ok(mut state) = app.state::<NativeFiles>().0.lock() {
-        state.rollback_copy(copy);
-    }
-}
-
 #[cfg(test)]
 #[path = "native_files_transfer_tests.rs"]
 mod tests;

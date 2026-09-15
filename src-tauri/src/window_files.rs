@@ -10,38 +10,67 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Default)]
-pub(crate) struct OpenFilesRegistry(Mutex<HashMap<String, BTreeSet<String>>>);
+pub(crate) struct OpenFilesRegistry(Mutex<RegistryEntries>);
+#[derive(Default)]
+struct RegistryEntries {
+    files: HashMap<String, BTreeSet<String>>,
+    // Temporary routing is owned by a host transfer nonce, not a caller's normal
+    // registration. Rollback cannot erase a concurrent successful open.
+    transfers: HashMap<String, (String, String)>,
+}
 impl OpenFilesRegistry {
     fn register(&self, path: &str, owner: &str) -> bool {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .files
             .entry(path.into())
             .or_default()
             .insert(owner.into())
     }
     fn remove_file(&self, path: &str, owner: &str) {
-        let mut files = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(owners) = files.get_mut(path) {
+        let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(owners) = entries.files.get_mut(path) {
             owners.remove(owner);
             if owners.is_empty() {
-                files.remove(path);
+                entries.files.remove(path);
             }
         }
     }
-    pub(crate) fn remove_window(&self, owner: &str) {
+    fn add_transfer(&self, transfer: &native_files::PendingTabTransfer) {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, owners| {
-                owners.remove(owner);
-                !owners.is_empty()
-            });
+            .transfers
+            .insert(
+                transfer.id.clone(),
+                (transfer.file_path.clone(), transfer.target_window.clone()),
+            );
+    }
+    fn remove_transfer(&self, id: &str) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .transfers
+            .remove(id);
+    }
+    pub(crate) fn remove_window(&self, owner: &str) {
+        let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        entries.files.retain(|_, owners| {
+            owners.remove(owner);
+            !owners.is_empty()
+        });
+        entries.transfers.retain(|_, (_, target)| target != owner);
     }
     fn owner(&self, path: &str, caller: &str, live: impl Fn(&str) -> bool) -> Option<String> {
-        let files = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let owners = files.get(path)?.clone();
-        drop(files);
+        let entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut owners = entries.files.get(path).cloned().unwrap_or_default();
+        for (pending_path, target) in entries.transfers.values() {
+            if pending_path == path {
+                owners.insert(target.clone());
+            }
+        }
+        drop(entries);
         if owners.contains(caller) && live(caller) {
             return Some(caller.into());
         }
@@ -54,6 +83,9 @@ impl OpenFilesRegistry {
         .map(str::to_owned)
     }
 }
+#[path = "window_files_ack.rs"]
+mod ack;
+use ack::{CreatedEditor, TransferWait};
 fn require_editor(window: &tauri::Window) -> Result<(), String> {
     if native_files::is_registered(window.app_handle(), window.label()) {
         Ok(())
@@ -127,12 +159,6 @@ pub(crate) async fn focus_window_with_file(
     Ok(false)
 }
 
-#[derive(Clone, serde::Serialize)]
-struct TabTransferPayload {
-    file_path: String,
-    source_window: String,
-    target_window: String,
-}
 #[tauri::command]
 pub(crate) async fn transfer_tab_to_window(
     window: tauri::Window,
@@ -144,26 +170,16 @@ pub(crate) async fn transfer_tab_to_window(
     let target = app
         .get_webview_window(&target_window)
         .ok_or("permission_required")?;
-    // Only the injected caller's existing exact-file grant can be copied.
-    let copy = native_files::copy_owned_file(app, window.label(), &target_window, &file_path)?;
-    let registry = app.state::<OpenFilesRegistry>();
-    let added_registration = registry.register(&file_path, &target_window);
-    let payload = TabTransferPayload {
-        file_path: file_path.clone(),
-        source_window: window.label().into(),
-        target_window: target_window.clone(),
-    };
-    if let Err(error) = target.emit("tab-transfer", payload) {
-        if added_registration {
-            registry.remove_file(&file_path, &target_window);
-        }
-        native_files::rollback_file_copy(app, copy);
-        return Err(error.to_string());
-    }
+    // Pending custody and its routing nonce precede the notification. The target
+    // reads the durable host queue, and only its successful open ACK completes us.
+    let transfer = TransferWait::begin(app, window.label(), &target_window, &file_path)?;
+    target
+        .emit("tab-transfer", &transfer.payload)
+        .map_err(|e| e.to_string())?;
     let _ = target.unminimize();
     let _ = target.show();
     let _ = target.set_focus();
-    Ok(())
+    transfer.wait().await
 }
 
 // Mirrors Tauri 2.11.5's private AppManager::get_app_url for this desktop app.
@@ -172,7 +188,6 @@ fn editor_url(
     config: &tauri::utils::config::Config,
     development: bool,
     windows: bool,
-    path: Option<&str>,
 ) -> Result<tauri::Url, String> {
     let configured = if development {
         config.build.dev_url.clone()
@@ -190,13 +205,7 @@ fn editor_url(
         })
         .map_err(|e| e.to_string())?,
     );
-    if let Some(path) = path {
-        let mut url = base.join("index.html").map_err(|e| e.to_string())?;
-        url.query_pairs_mut().append_pair("file", path);
-        Ok(url)
-    } else {
-        Ok(base)
-    }
+    Ok(base)
 }
 
 #[tauri::command]
@@ -212,12 +221,7 @@ pub(crate) async fn create_new_window(
         })
         .map_err(|_| "window_limit_reached")?;
     let label = format!("window-{id}");
-    let destination = editor_url(
-        app.config(),
-        tauri::is_dev(),
-        cfg!(windows),
-        file_path.as_deref(),
-    )?;
+    let destination = editor_url(app.config(), tauri::is_dev(), cfg!(windows))?;
     native_files::reserve_editor(app, &label)?;
     // No application JS runs until registration and capability copy complete.
     let result = WebviewWindowBuilder::new(
@@ -238,23 +242,30 @@ pub(crate) async fn create_new_window(
             return Err(error.to_string());
         }
     };
+    let mut created = CreatedEditor::new(target.clone());
+    let mut transfer = None;
     let prepare = (|| {
         native_files::activate_editor(app, &label)?;
         if let Some(path) = &file_path {
-            native_files::copy_owned_file(app, window.label(), &label, path)?;
-            app.state::<OpenFilesRegistry>().register(path, &label);
+            transfer = Some(TransferWait::begin(app, window.label(), &label, path)?);
         }
         target.navigate(destination).map_err(|e| e.to_string())?;
-        target.show().map_err(|e| e.to_string())?;
         Ok::<_, String>(())
     })();
-    if let Err(error) = prepare {
-        native_files::revoke_editor(app, &label);
-        app.state::<OpenFilesRegistry>().remove_window(&label);
-        let _ = target.destroy();
-        crate::notify_pending_open_files(app, Some(&label));
-        return Err(error);
-    }
+    // Empty windows do not await an ACK. A file window is opened only from the
+    // durable pending queue; no file URL causes a second startup read.
+    let prepare = match prepare {
+        Ok(()) => match transfer {
+            Some(transfer) => transfer.wait().await,
+            None => Ok(()),
+        },
+        Err(error) => Err(error),
+    };
+    prepare?;
+    // An unacknowledged new target must remain hidden: timeout rollback must
+    // never destroy unrelated edits the user made while waiting for its open.
+    target.show().map_err(|e| e.to_string())?;
+    created.commit();
     let _ = target.set_focus();
     crate::notify_pending_open_files(app, None);
     Ok(label)

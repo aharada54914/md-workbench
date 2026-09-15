@@ -41,6 +41,7 @@ struct NativeState {
     access: FileAccess,
     windows: HashMap<String, Uuid>,
     building: HashSet<String>,
+    transfers: Vec<ack::PendingTransfer>,
     owned: HashMap<(String, String), GrantInfo>,
     // Only OS ingress adds these capabilities; a path lookup cannot populate it.
     pending: HashMap<String, HeldGrant>,
@@ -84,6 +85,7 @@ impl NativeState {
         webview == window && self.windows.contains_key(window)
     }
     fn revoke(&mut self, label: &str) {
+        self.cancel_window_transfers(label);
         self.windows.remove(label);
         self.building.remove(label);
         self.owned.retain(|(owner, _), _| owner != label);
@@ -289,3 +291,7 @@ pub(crate) use commands::*;
 #[cfg(test)]
 #[path = "native_files_tests.rs"]
 mod tests;
+
+#[path = "native_files_ack.rs"]
+mod ack;
+pub(crate) use ack::*;

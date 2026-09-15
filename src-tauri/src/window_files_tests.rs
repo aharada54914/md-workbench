@@ -63,33 +63,70 @@ fn failed_transfer_registration_rollback_preserves_existing_target() {
     );
 }
 #[test]
-fn editor_navigation_uses_host_configuration_and_encodes_filename_once() {
+fn editor_navigation_uses_host_configuration_without_a_second_file_route() {
     let mut config = tauri::utils::config::Config::default();
     config.build.dev_url = Some(tauri::Url::parse("http://localhost:1420/").unwrap());
-    let path = "/日本語/a%20 # &?.md";
-    let url = editor_url(&config, true, false, Some(path)).unwrap();
+    let url = editor_url(&config, true, false).unwrap();
     assert_eq!(url.origin().ascii_serialization(), "http://localhost:1420");
-    assert_eq!(url.path(), "/index.html");
+    assert_eq!(url.path(), "/");
+    assert!(url.query().is_none());
     assert_eq!(
-        url.query_pairs().find(|(key, _)| key == "file").unwrap().1,
-        path
-    );
-    assert_eq!(
-        editor_url(&config, false, false, None).unwrap().as_str(),
+        editor_url(&config, false, false).unwrap().as_str(),
         "tauri://localhost"
     );
     assert_eq!(
-        editor_url(&config, false, true, None).unwrap().as_str(),
+        editor_url(&config, false, true).unwrap().as_str(),
         "http://tauri.localhost/"
     );
     config.build.frontend_dist = Some(tauri::utils::config::FrontendDist::Url(
         tauri::Url::parse("https://app.example.test/base/").unwrap(),
     ));
     assert_eq!(
-        editor_url(&config, false, false, Some(path))
+        editor_url(&config, false, false)
             .unwrap()
             .origin()
             .ascii_serialization(),
         "https://app.example.test"
     );
+}
+
+#[test]
+fn transfer_nonce_cleanup_never_removes_other_transfer_or_normal_registration() {
+    let registry = OpenFilesRegistry::default();
+    let first = native_files::PendingTabTransfer {
+        id: "first".into(),
+        file_path: "doc.md".into(),
+        source_window: "main".into(),
+        target_window: "window-1".into(),
+    };
+    let second = native_files::PendingTabTransfer {
+        id: "second".into(),
+        ..first.clone()
+    };
+    registry.add_transfer(&first);
+    registry.add_transfer(&second);
+    registry.register("doc.md", "main");
+    registry.remove_transfer("first");
+    assert_eq!(
+        registry.owner("doc.md", "window-1", |_| true).as_deref(),
+        Some("window-1")
+    );
+    registry.register("doc.md", "window-1");
+    registry.remove_transfer("second");
+    assert_eq!(
+        registry.owner("doc.md", "window-1", |_| true).as_deref(),
+        Some("window-1")
+    );
+    registry.add_transfer(&first);
+    registry.remove_file("doc.md", "window-1");
+    assert_eq!(
+        registry.owner("doc.md", "window-1", |_| true).as_deref(),
+        Some("window-1")
+    );
+    registry.remove_window("window-1");
+    assert_eq!(
+        registry.owner("doc.md", "window-1", |_| true).as_deref(),
+        Some("main")
+    );
+    assert!(registry.0.lock().unwrap().transfers.is_empty());
 }

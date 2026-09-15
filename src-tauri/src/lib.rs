@@ -940,6 +940,8 @@ pub fn run() {
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            native_files::native_get_pending_transfers,
+            native_files::native_ack_tab_transfer,
             native_files::native_get_grant,
             native_files::native_read_grant,
             native_files::native_pick_documents,

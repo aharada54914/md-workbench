@@ -171,22 +171,53 @@ its metadata and capabilities.
 `transfer_tab_to_window({filePath, targetWindow})` requires the actual caller's
 existing exact-file READ grant and an already registered target. It copies the
 retained anchor with unchanged rights; neither a registry entry nor a path string
-creates authority. Source grants stay valid. A failed event emission revokes the
-copy and restores prior target metadata without erasing later native selections.
+creates authority. Source grants stay valid. The returned Promise resolves only
+when the actual target acknowledges successfully opening the file. Failed opening,
+60 seconds without acknowledgement, or destruction of either participant rejects
+the transfer and revokes its copy. Source tab removal belongs after this success.
+
+| Command arguments | Result | Contract |
+| --- | --- | --- |
+| `native_get_pending_transfers()` | `{id, file_path, source_window, target_window}[]` | Ordered, non-destructive lookup restricted to the actual target and its current host generation. |
+| `native_ack_tab_transfer({id, success})` | `void` | Consumes one pending UUID only for its actual target generation; source generation must still be live. |
+
+The `tab-transfer` event carries that same DTO as a wakeup hint. Register its
+listener before fetching pending requests, and fetch from the host after each
+wakeup. Do not open directly from the event payload or remove pending items on
+lookup. Target code acknowledges after the open result is known; it must not
+acknowledge a cancelled, denied or failed read as success. Window command errors
+remain strings: `permission_required`, `transfer_not_found`, `transfer_open_failed`,
+`transfer_timeout`, `transfer_window_closed`, `transfer_cancelled`,
+`transfer_in_progress`, or diagnostic
+native errors. An expired/already acknowledged UUID cannot be acknowledged again.
+
+Only one transfer to the same target and canonical document may be pending. A
+duplicate, including a native selection alias, rejects with `transfer_in_progress`
+without modifying the first transfer or existing target metadata.
+
+One host lock decides acknowledgement, timeout and destruction. If a successful
+ACK wins that lock as the timer fires, the waiting sender receives success. Failed
+transfers roll back only their capability and nonce-owned temporary routing entry;
+concurrent normal registrations and other pending transfers remain intact. A later
+native selection cannot be erased by a delayed rollback. Cancelling the invoke
+future also releases pending custody. This is a delivery acknowledgement, not a
+filesystem save transaction or an acknowledgement of source tab closure.
 
 `create_new_window({filePath})` starts a hidden `about:blank` webview, activates its
-host reservation, copies existing sender authority, then navigates to the trusted
-host-configured application URL. Application code cannot race ahead of grant
-registration. Failed preparation/navigation/show revokes target grants, removes
-metadata and destroys the new window. A destroyed reservation cannot reactivate.
-The URL's file parameter is routing metadata only. Native configured URL resolution
-mirrors the pinned desktop Tauri implementation because its resolver is private.
+host reservation, enqueues a transfer of existing sender authority, then navigates
+to the trusted host-configured application URL. Application code cannot race ahead
+of registration. The new frontend retrieves pending transfers at startup; there is
+no file query parameter causing a duplicate open. A file window stays hidden until
+successful target ACK, then is shown and its label returned; this prevents timeout
+rollback from discarding unrelated user edits made during the wait. Without a
+file, the window is shown and returned immediately after startup.
+Failed preparation/navigation/show/ACK or invoke cancellation revokes target grants,
+removes metadata and destroys the new window. A destroyed reservation cannot
+reactivate. Native configured URL resolution mirrors the pinned desktop Tauri
+implementation because its resolver is private.
 
-Target-open acknowledgement is not implemented in this stage: successful event
-emission/navigation alone does not prove the target has read the file. The frontend
-must retain the source until that acknowledgement is integrated. Recent/workspace
-restoration still needs explicit broker integration; old access-map and plugin-FS
-behavior must not be used as authorization evidence.
+Recent/workspace restoration still needs explicit broker integration; old
+access-map and plugin-FS behavior must not be used as authorization evidence.
 
 Native state tests cover lookup isolation, cancellation/batch failure, stale
 callbacks, fixed picker rights, pending reassignment, re-selection after a prior
@@ -194,6 +225,10 @@ resource grant, DTO/error serialization, and a real Unix parent-symlink swap.
 Window tests additionally cover caller ownership, stable routing, attenuated
 exact-file copy, directory/write-only rejection, rollback isolation, stale window
 generations, blank-window reservations and retained Unix parent handles.
-The macOS full native suite passed 232 tests with zero failures.
+Additional ACK tests cover non-destructive ordered delivery, ownership and reused
+labels, false ACK, both participant destructions, timeout, simultaneous ACK/expiry,
+nonce-specific routing cleanup and source capability retention. Full native test
+results are recorded with the implementation handoff; packaged GUI acceptance is
+still required on every supported OS.
 Actual native picker interaction, drop ordering and closed-window behavior still
 require packaged tests on each supported OS.
