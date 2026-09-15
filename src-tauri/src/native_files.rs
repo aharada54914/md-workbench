@@ -301,3 +301,7 @@ pub(crate) use mutation::*;
 #[path = "native_files_reveal.rs"]
 mod reveal;
 pub(crate) use reveal::*;
+
+#[path = "native_files_images.rs"]
+mod images;
+pub(crate) use images::*;

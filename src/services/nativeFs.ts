@@ -40,6 +40,11 @@ export interface NativeDirectoryListing {
   omitted: number;
 }
 
+/** Current document/workspace READ identity, checked against a regular document. */
+export interface NativeImageDocument {
+  grantId: string;
+}
+
 /** Native grants are scoped to the invoking editor window. Never fall back to
  * plugin-fs when authority is missing or revoked. Callers handle typed rejects. */
 export const nativeFs = {
@@ -56,6 +61,23 @@ export const nativeFs = {
 
   listDirectory: (path: string, limit = MAX_NATIVE_DIRECTORY_ENTRIES) =>
     invoke<NativeDirectoryListing>('native_list_directory', { path, limit }),
+
+  resolveImageDocument: (documentPath: string) =>
+    invoke<NativeImageDocument>('native_resolve_image_document', { documentPath }),
+
+  /** Literal filesystem-relative path, not a URL: no percent or image decoding.
+   * The host enforces current authority and the fixed 8 MiB limit. Bytes returned
+   * here are not validated image content or a guarantee of safe display. */
+  async readDocumentImageBytes(
+    documentPath: string,
+    expectedDocumentGrantId: string,
+    relativePath: string,
+  ): Promise<Uint8Array> {
+    const bytes = await invoke<number[]>('native_read_document_image', {
+      documentPath, expectedDocumentGrantId, relativePath,
+    });
+    return Uint8Array.from(bytes);
+  },
 
   // The host resolves only grants already owned by this caller. This lookup
   // cannot authorize recent/session paths or create access from a path string.

@@ -522,6 +522,8 @@ pub fn run() {
             native_files::native_take_drops,
             native_files::native_read_grant,
             native_files::native_read_path,
+            native_files::native_resolve_image_document,
+            native_files::native_read_document_image,
             native_files::native_list_directory,
             native_files::native_pick_documents,
             native_files::native_pick_save_destination,

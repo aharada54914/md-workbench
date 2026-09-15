@@ -60,3 +60,51 @@ describe('native file manager reveal', () => {
     ]);
   });
 });
+
+describe('native document image byte foundation', () => {
+  beforeEach(() => { invokeMock.mockReset(); });
+
+  it('returns only the host descriptor without selecting or deriving authority', async () => {
+    const descriptor = { grantId: 'current-workspace-id' };
+    invokeMock.mockResolvedValue(descriptor);
+
+    expect(await nativeFs.resolveImageDocument('/selected/日本語.md')).toBe(descriptor);
+    expect(invokeMock.mock.calls).toEqual([
+      ['native_resolve_image_document', { documentPath: '/selected/日本語.md' }],
+    ]);
+  });
+
+  it.each([{ bytes: [] }, { bytes: [0, 255, 0xc3, 0x28, 13, 10] }])('returns original binary bytes $bytes without text or image decoding', async ({ bytes }) => {
+    invokeMock.mockResolvedValue(bytes);
+    const relativePath = 'images/%2e%2e/%2f雪 (1)#literal.png';
+
+    const result = await nativeFs.readDocumentImageBytes('/selected/日本語.md', 'current-id', relativePath);
+
+    expect(result).toBeInstanceOf(Uint8Array);
+    expect(Array.from(result)).toEqual(bytes);
+    expect(invokeMock.mock.calls).toEqual([
+      ['native_read_document_image', {
+        documentPath: '/selected/日本語.md',
+        expectedDocumentGrantId: 'current-id',
+        relativePath,
+      }],
+    ]);
+  });
+
+  it.each(['permission_required', 'invalid_grant_kind', 'file_too_large'] as const)(
+    'preserves %s from both commands without retry, picker or fallback', async (code) => {
+      const failure = { code, message: 'host rejected image access' };
+      invokeMock.mockRejectedValue(failure);
+
+      await expect(nativeFs.resolveImageDocument('/selected/doc.md')).rejects.toBe(failure);
+      await expect(nativeFs.readDocumentImageBytes('/selected/doc.md', 'stale-id', 'images/a.png')).rejects.toBe(failure);
+
+      expect(invokeMock.mock.calls).toEqual([
+        ['native_resolve_image_document', { documentPath: '/selected/doc.md' }],
+        ['native_read_document_image', {
+          documentPath: '/selected/doc.md', expectedDocumentGrantId: 'stale-id', relativePath: 'images/a.png',
+        }],
+      ]);
+    },
+  );
+});
