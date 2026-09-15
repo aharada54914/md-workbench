@@ -8,6 +8,7 @@ mod ai;
 mod file_access;
 mod native_files;
 mod open_files;
+mod resources;
 mod window_files;
 use window_files::*;
 

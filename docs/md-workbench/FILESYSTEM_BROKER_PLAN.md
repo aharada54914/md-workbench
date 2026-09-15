@@ -176,3 +176,7 @@ not confirmed durable (for example directory-sync failure). A failure after comm
 cannot truthfully promise unchanged original bytes; never automatically roll back
 over an externally changed hash. Document OS/local-filesystem and external-writer
 limits explicitly. No replacement API was added in this stage.
+
+The pure [Resource journal foundation](RESOURCE_JOURNAL.md) now validates v1
+metadata, stage transitions and read-only recovery observations. It performs no
+I/O and does not activate native Save or satisfy the remaining T08 crash gates.
