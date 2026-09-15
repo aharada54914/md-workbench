@@ -1,4 +1,5 @@
 import { readFile } from '@tauri-apps/plugin-fs';
+import { markdownLanguage } from '@codemirror/lang-markdown';
 
 function isAbsoluteImagePath(path: string): boolean {
   return /^[a-zA-Z]:/.test(path) || path.startsWith('/');
@@ -59,6 +60,23 @@ async function fileToDataUri(absolutePath: string): Promise<string> {
   return `data:${mimeForPath(absolutePath)};base64,${bytesToBase64(bytes)}`;
 }
 
+function inlineImageSources(markdown: string): Array<{ from: number; to: number; src: string }> {
+  const images: Array<{ from: number; to: number; src: string }> = [];
+  // Use the same source-offset parser as resource-document; no serialization or code masking.
+  const tree = markdownLanguage.parser.parse(markdown.startsWith('\uFEFF') ? ' ' + markdown.slice(1) : markdown);
+  tree.iterate({ enter(node) {
+    if (node.name !== 'Image') return;
+    const url = node.node.getChild('URL');
+    // Keep the existing direct-destination syntax. Reference resolution and decoding are separate work.
+    const match = /^!\[([^\]]*)\]\(\s*([^)\s]+)((?:\s+"[^"]*")?)\s*\)$/.exec(markdown.slice(node.from, node.to));
+    if (url && match && markdown.slice(url.from, url.to) === match[2]) {
+      images.push({ from: url.from, to: url.to, src: match[2] });
+    }
+    return false; // Nested syntax in an image's alt text is not another rendered image.
+  } });
+  return images;
+}
+
 /**
  * Inlines local image references in a markdown string as base64 data URIs.
  * Used for Marp export/preview where the rendered HTML lives in a sandboxed
@@ -66,8 +84,8 @@ async function fileToDataUri(absolutePath: string): Promise<string> {
  * Remote (http/https), data: and blob: sources are left untouched.
  */
 export async function inlineMarkdownImages(markdown: string, baseDir?: string, isCurrent: () => boolean = () => true): Promise<string> {
-  const imageRe = /!\[([^\]]*)\]\(\s*([^)\s]+)((?:\s+"[^"]*")?)\s*\)/g;
-  const matches = [...markdown.matchAll(imageRe)];
+  if (!isCurrent()) return markdown;
+  const matches = inlineImageSources(markdown);
   const replacements = new Map<string, string>();
   // Only share reads within this rendering request; document changes never reuse bytes.
   const reads = new Map<string, Promise<string>>();
@@ -75,7 +93,7 @@ export async function inlineMarkdownImages(markdown: string, baseDir?: string, i
   await Promise.all(
     matches.map(async (m) => {
       if (!isCurrent()) return;
-      const src = m[2];
+      const src = m.src;
       if (replacements.has(src)) return;
       if (/^(data:|blob:|https?:)/i.test(src)) return;
 
@@ -96,10 +114,14 @@ export async function inlineMarkdownImages(markdown: string, baseDir?: string, i
   );
 
   if (replacements.size === 0) return markdown;
-  return markdown.replace(imageRe, (full, alt, src, title) => {
-    const uri = replacements.get(src);
-    return uri ? `![${alt}](${uri}${title})` : full;
-  });
+  let result = '', from = 0;
+  for (const image of matches) {
+    const uri = replacements.get(image.src);
+    if (!uri) continue;
+    result += markdown.slice(from, image.from) + uri;
+    from = image.to;
+  }
+  return result + markdown.slice(from);
 }
 
 type DisplayMutation = (apply: () => void) => void;
