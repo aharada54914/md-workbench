@@ -66,13 +66,13 @@ const IndentAwareCodeBlock = CodeBlockLowlight.extend({
 import { Placeholder } from "@tiptap/extension-placeholder";
 import { CharacterCount } from "@tiptap/extension-character-count";
 import { common, createLowlight } from "lowlight";
-import { watch, ref, nextTick, computed, watchEffect, provide } from "vue";
+import { watch, ref, nextTick, computed, watchEffect, provide, onBeforeUnmount } from "vue";
 import { Extension, Node, mergeAttributes, textblockTypeInputRule, type Editor as TiptapEditor } from "@tiptap/core";
 import { useEditorZoom } from "../composables/useEditorZoom";
 import { useSettings } from "../composables/useSettings";
 import { useFootnotes } from "../composables/useFootnotes";
 import { useLineNumbers } from "../composables/useLineNumbers";
-import { resolveEditorImages, getDirectoryFromFilePath } from "../utils/image-resolver";
+import { createEditorImageResolver, getDirectoryFromFilePath } from "../utils/image-resolver";
 import { importImageBytes } from "../services/imageImport";
 import TableContextMenu from "./TableContextMenu.vue";
 import ImagePreview from "./ImagePreview.vue";
@@ -81,10 +81,6 @@ import EditorGutter from "./EditorGutter.vue";
 // Guards against false hasChanges during programmatic content updates.
 // Starts at 1 to cover initial editor creation; released after 300ms.
 let settingContentCount = 1;
-
-// Prevents concurrent image resolution calls (race condition between onUpdate's
-// requestAnimationFrame and watch handler's resolveEditorImages).
-let imageResolutionInProgress = false;
 
 // HTML snapshot from last file open/save — used to detect real changes (e.g. after undo).
 let lastSavedHtml = '';
@@ -433,6 +429,36 @@ function refreshSourceSafety(ed: TiptapEditor) {
   ed.setEditable(props.editable && sourceSafe.value, false);
 }
 
+// Keep network/file waits outside ProseMirror's observer suppression window.
+const editorImages = createEditorImageResolver(apply => {
+  const ed = editor.value;
+  const observer = ed && !ed.isDestroyed
+    ? (ed.view as unknown as { domObserver?: { stop(): void; start(): void } }).domObserver
+    : undefined;
+  observer?.stop();
+  try { apply(); } finally { observer?.start(); }
+}, url => {
+  if (previewImageSrc.value === url) showImagePreview.value = false;
+});
+let imageContextGeneration = 0;
+watch([() => props.documentId, () => props.filePath], () => {
+  imageContextGeneration += 1;
+  editorImages.reset();
+  showImagePreview.value = false;
+  void nextTick(() => { if (editor.value) void resolveImages(editor.value); });
+}, { flush: 'sync' });
+onBeforeUnmount(() => { imageContextGeneration += 1; editorImages.dispose(); });
+
+async function resolveImages(ed: TiptapEditor) {
+  const generation = imageContextGeneration;
+  const isCurrent = () => !ed.isDestroyed && editor.value === ed && generation === imageContextGeneration;
+  if (!isCurrent()) return;
+  const root = editorContainerRef.value?.querySelector('.ProseMirror');
+  if (!root) return;
+  const baseDir = props.filePath ? getDirectoryFromFilePath(props.filePath) : undefined;
+  await editorImages.resolve(root, baseDir || undefined, isCurrent);
+}
+
 function pickImageFile(data: DataTransfer): File | null {
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i];
@@ -482,23 +508,7 @@ const editor = useEditor({
   // Without this, images wouldn't display after code→visual switch (Editor recreated).
   onCreate: ({ editor: ed }) => {
     refreshSourceSafety(ed);
-    nextTick(() => {
-      const editorEl = editorContainerRef.value?.querySelector('.ProseMirror');
-      if (!editorEl) return;
-      const baseDir = props.filePath ? getDirectoryFromFilePath(props.filePath) : undefined;
-      if (!baseDir) return;
-      const unresolved = editorEl.querySelectorAll(
-        'img.editor-image:not([src^="blob:"]):not([src^="data:"]):not([src^="http"])'
-      );
-      if (unresolved.length === 0) return;
-      imageResolutionInProgress = true;
-      const domObs = (ed.view as any).domObserver;
-      domObs?.stop();
-      resolveEditorImages(editorEl, baseDir).finally(() => {
-        domObs?.start();
-        imageResolutionInProgress = false;
-      });
-    });
+    void nextTick(() => resolveImages(ed));
   },
   extensions: [
     sourcePreservationExtension(() => applyingSource || (props.editable && sourceSafe.value)),
@@ -566,29 +576,8 @@ const editor = useEditor({
       emit("update:hasChanges", html !== lastSavedHtml);
     }
     footnotes.consumePendingInsert(ed);
-    // Defer image resolution to next frame to avoid conflicting with ProseMirror's
-    // current update cycle. Stop the DOM observer so blob URL changes don't get
-    // synced back into the document model (which would corrupt save/roundtrip).
-    requestAnimationFrame(() => {
-      // Skip if the watch handler is already resolving images (prevents race condition
-      // where this callback's .finally() starts the DOM observer while watch's
-      // resolveEditorImages is still changing img.src, corrupting the model with blob URLs).
-      if (imageResolutionInProgress) return;
-      const editorEl = editorContainerRef.value?.querySelector('.ProseMirror');
-      if (!editorEl) return;
-      const unresolved = editorEl.querySelectorAll(
-        'img.editor-image:not([src^="blob:"]):not([src^="data:"]):not([src^="http"])'
-      );
-      if (unresolved.length === 0) return;
-      const baseDir = props.filePath ? getDirectoryFromFilePath(props.filePath) : undefined;
-      imageResolutionInProgress = true;
-      const domObs = (ed.view as any).domObserver;
-      domObs?.stop();
-      resolveEditorImages(editorEl, baseDir || undefined).finally(() => {
-        domObs?.start();
-        imageResolutionInProgress = false;
-      });
-    });
+    // Resolve after ProseMirror finishes this update; individual results own their nodes.
+    requestAnimationFrame(() => { void resolveImages(ed); });
   },
   editorProps: {
     // Disable spell-check, autocomplete, and autocorrect to prevent interference with code blocks
@@ -657,21 +646,7 @@ watch(
       }
       lastSavedHtml = editor.value.getHTML();
       await nextTick();
-      // Resolve local image paths to blob URLs.
-      // Stop ProseMirror's DOM observer so blob URLs don't get synced into the model.
-      // Set imageResolutionInProgress to prevent onUpdate's rAF from running concurrently.
-      const editorEl = editorContainerRef.value?.querySelector('.ProseMirror');
-      if (editorEl && props.filePath && editor.value) {
-        const baseDir = getDirectoryFromFilePath(props.filePath);
-        if (baseDir) {
-          imageResolutionInProgress = true;
-          const domObs = (editor.value.view as any).domObserver;
-          domObs?.stop();
-          await resolveEditorImages(editorEl, baseDir);
-          domObs?.start();
-          imageResolutionInProgress = false;
-        }
-      }
+      if (editor.value) await resolveImages(editor.value);
       setTimeout(() => {
         settingContentCount = Math.max(0, settingContentCount - 1);
         emit("update:hasChanges", false);
@@ -862,22 +837,8 @@ async function insertImagesByPath(items: { path: string; alt: string }[]) {
   await nextTick();
   if (ed.isDestroyed || ed !== editor.value || targetPath !== props.filePath || generation !== sourceGeneration) return;
 
-  const editorEl = editorContainerRef.value?.querySelector('.ProseMirror');
-  if (!editorEl) return;
-  // baseDir is only needed for relative paths (saved docs). Unsaved-doc images
-  // are stored with an absolute path, which resolveEditorImages handles even
-  // without a baseDir — so resolve in both cases.
-  const baseDir = props.filePath ? getDirectoryFromFilePath(props.filePath) : undefined;
-
-  imageResolutionInProgress = true;
-  const domObs = (ed.view as any).domObserver;
-  domObs?.stop();
-  try {
-    await resolveEditorImages(editorEl, baseDir || undefined);
-  } finally {
-    domObs?.start();
-    imageResolutionInProgress = false;
-  }
+  // Absolute paths remain valid for legacy imports into unsaved documents.
+  await resolveImages(ed);
 }
 
 defineExpose({

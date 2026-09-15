@@ -8,7 +8,8 @@ import { writeFile, exists, remove } from '@tauri-apps/plugin-fs';
 import { readTextFile } from './services/documentText';
 import { nativeFs, type NativeGrant } from './services/nativeFs';
 import { htmlToMarkdown, markdownToHtml } from './utils/markdown-converter';
-import { inlineMarkdownImages, getDirectoryFromFilePath } from './utils/image-resolver';
+import { getDirectoryFromFilePath } from './utils/image-resolver';
+import { useMarkdownImageInlining } from './composables/useMarkdownImageInlining';
 import type { Editor as TiptapEditor } from '@tiptap/vue-3';
 
 // Components
@@ -605,7 +606,7 @@ const marpTitle = ref('deck');
 async function openMarpDialog() {
   const tab = activeTab.value;
   const fileName = tab?.fileName ?? '';
-  marpTitle.value = fileName.replace(/\.(md|markdown)$/i, '') || 'deck';
+  const title = fileName.replace(/\.(md|markdown)$/i, '') || 'deck';
   // In code / split-editor modes the WYSIWYG editor is unmounted and serializes
   // to empty — read the live markdown source instead so Present isn't blank.
   // eslint-disable-next-line @typescript-eslint/no-use-before-define
@@ -618,8 +619,11 @@ async function openMarpDialog() {
   // Inline local images as data URIs: the deck renders inside a sandboxed
   // iframe (srcdoc) with no base URL, so relative/local paths won't load.
   const baseDir = tab?.filePath ? getDirectoryFromFilePath(tab.filePath) : undefined;
-  marpMarkdown.value = await inlineMarkdownImages(raw, baseDir);
-  showMarpDialog.value = true;
+  await marpDialogImages.render(raw, baseDir, rendered => {
+    marpTitle.value = title;
+    marpMarkdown.value = rendered;
+    showMarpDialog.value = true;
+  });
 }
 
 // Marp mode = active doc has a `marp: true` front-matter badge node.
@@ -752,12 +756,11 @@ const marpPreviewVisible = computed(
 );
 
 async function refreshMarpLive() {
-  if (!editingEnabled.value) return;
+  if (!marpPreviewVisible.value) return;
   const tab = activeTab.value;
   const raw = htmlToMarkdown(getEditorContent() ?? '');
   const baseDir = tab?.filePath ? getDirectoryFromFilePath(tab.filePath) : undefined;
-  const rendered = await inlineMarkdownImages(raw, baseDir);
-  if (editingEnabled.value && activeTab.value === tab) marpLiveMarkdown.value = rendered;
+  await marpLiveImages.render(raw, baseDir, rendered => { marpLiveMarkdown.value = rendered; });
 }
 
 function scheduleMarpLive() {
@@ -921,6 +924,15 @@ const scrollSync = useScrollSync();
 // Tags splitMarkdownSource with the tab it was seeded from so the WRITE paths
 // can refuse to persist a source belonging to a different tab.
 const splitSourceTabId = ref<string | null>(null);
+
+function marpImageContext() {
+  const tab = activeTab.value;
+  return [tab, tab?.id, tab?.filePath, tab?.content, tab?.pendingMarkdown,
+    activePaneId.value, editingEnabled.value, codeView.value, codeContent.value,
+    splitEditorActive.value, splitSourceTabId.value, splitMarkdownSource.value];
+}
+const marpDialogImages = useMarkdownImageInlining(() => [...marpImageContext(), showMarpDialog.value]);
+const marpLiveImages = useMarkdownImageInlining(() => [...marpImageContext(), marpPreviewVisible.value]);
 
 const enterSplitEditor = (html: string): void => {
   const tab = activeTab.value;
