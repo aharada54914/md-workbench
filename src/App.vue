@@ -270,8 +270,13 @@ const {
 } = useFileReload({
   activePaneId,
   currentFile,
+  activeTab,
   hasChanges,
-  findTabByFilePathSplit,
+  findTabByFilePathSplit: (filePath, expectedTab) => {
+    if (!expectedTab) return findTabByFilePathSplit(filePath);
+    const pane = splitState.value.panes.find(pane => pane.tabs.includes(expectedTab));
+    return pane && expectedTab.filePath === filePath ? { pane, tab: expectedTab } : undefined;
+  },
   setEditorContent,
   setCodeMarkdown: (markdown: string) => {
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
@@ -322,7 +327,7 @@ const handlePreSaveConflictLoadExternal = () => {
   const tab = currentPreSaveTab();
   if (tab) {
     if (tab.filePath === preSaveConflictFilePath.value) {
-      reloadTabContent(tab.filePath, preSaveConflictDiskContent.value);
+      reloadTabContent(tab.filePath, preSaveConflictDiskContent.value, tab);
     } else {
       // Save As conflict belongs to the chosen destination, not the old file.
       applyPreSaveBuffer(tab, preSaveConflictDiskContent.value);
@@ -350,8 +355,8 @@ const closeTabAndCheckWindow = async (paneId: string, tabId: string) => {
 
   closeTabFromSplit(paneId, tabId);
 
-  // Unregister the file from the global registry and stop watching
-  if (filePath) {
+  // Watchers and global registration belong to every tab using this path.
+  if (filePath && !findTabByFilePathSplit(filePath)) {
     unwatchFile(filePath);
     try {
       await unregisterOpenFile(filePath);

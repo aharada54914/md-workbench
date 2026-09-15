@@ -25,6 +25,20 @@ if no other open tab still uses that path. Cancellation, stale results and faile
 writes do not move the watch. An already dispatched write may finish after a tab
 closes; its completion cannot restore that tab or its watches.
 
+## Manual reload and conflict confirmation
+
+Manual reload captures the active tab object, including when another tab has the
+same path. A newer reload supersedes an older read for that tab. Delayed reads
+and their errors are discarded if the tab closes, is replaced, changes path or
+baseline, or acquires new raw/Visual edits. Switching focus alone keeps the
+original target; it does not reseed the newly active editor.
+
+Reload conflict Keep/Load/Merge actions revalidate that same snapshot when the
+user confirms. Stale confirmations dismiss the dialog without applying its old
+result. The pre-save Load External action also forwards the captured tab to the
+reload helper. Closing one of several same-path tabs retains the shared watcher
+and routing registration until the last owner closes.
+
 ## Verification and limits
 
 Unit regressions cover delayed dialogs, tab replacement/closure/movement, pending
@@ -32,6 +46,11 @@ edits, concurrent saves, conflicts, late reads and source grant identity. Three
 Chromium UI tests exercise switching tabs during Save As, cancellation and closing
 the originating tab during the dialog. Native dialogs, files and watches are
 mocked in those browser tests.
+
+Additional unit and browser regressions cover same-path duplicate tabs, pending
+manual reads, stale conflict confirmations and the last shared watcher owner.
+Automatic external-change notification fan-out across duplicate tabs is separate
+from the manual reload targeting covered here.
 
 The disk writer still uses the existing plugin-filesystem temporary-file protocol.
 This change does not provide a native journal, crash recovery or atomic

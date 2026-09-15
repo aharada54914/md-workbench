@@ -49,8 +49,11 @@ interface PaneTabResult {
 export interface UseFileReloadOptions {
   activePaneId: Ref<string>;
   currentFile: ComputedRef<string | null>;
+  /** Select manual reload by object identity when multiple tabs share a path. */
+  activeTab?: ComputedRef<Tab | undefined>;
   hasChanges: ComputedRef<boolean>;
-  findTabByFilePathSplit: (filePath: string) => PaneTabResult | undefined;
+  /** With expectedTab, resolve that exact object across all live panes. */
+  findTabByFilePathSplit: (filePath: string, expectedTab?: Tab) => PaneTabResult | undefined;
   setEditorContent: (content: string) => void;
   /** Reseed active Source/Split editors with the exact reloaded Markdown. */
   setCodeMarkdown?: (markdown: string) => void;
@@ -58,6 +61,24 @@ export interface UseFileReloadOptions {
 
 export function useFileReload(options: UseFileReloadOptions) {
   const { activePaneId, currentFile, findTabByFilePathSplit, setEditorContent, setCodeMarkdown } = options;
+  const findTarget = (filePath: string, expectedTab?: Tab) => {
+    const result = findTabByFilePathSplit(filePath, expectedTab);
+    return result && (!expectedTab || result.tab === expectedTab) ? result : undefined;
+  };
+  const captureTab = (tab: Tab, filePath: string) => ({
+    tab, filePath, originalMarkdown: tab.originalMarkdown,
+    pendingMarkdown: tab.pendingMarkdown, content: tab.content, hasChanges: tab.hasChanges,
+  });
+  type TabSnapshot = ReturnType<typeof captureTab>;
+  const currentSnapshotTarget = (snapshot: TabSnapshot) => {
+    const { tab, filePath } = snapshot;
+    const target = findTarget(filePath, tab);
+    return target && tab.filePath === filePath
+      && tab.originalMarkdown === snapshot.originalMarkdown
+      && tab.pendingMarkdown === snapshot.pendingMarkdown
+      && tab.content === snapshot.content
+      && tab.hasChanges === snapshot.hasChanges ? target : undefined;
+  };
 
   // Toast state
   const showToast = ref(false);
@@ -71,6 +92,7 @@ export function useFileReload(options: UseFileReloadOptions) {
   const conflictDiffStats = ref<DiffStats>({ additions: 0, deletions: 0 });
   const conflictFilePath = ref('');
   const conflictNewContent = ref('');
+  let conflictTarget: TabSnapshot | null = null;
 
   const showToastNotification = (message: string, type: 'info' | 'success' | 'warning' = 'info') => {
     toastMessage.value = message;
@@ -97,8 +119,8 @@ export function useFileReload(options: UseFileReloadOptions) {
     },
   });
 
-  const reloadTabContent = (filePath: string, newContent: string) => {
-    const result = findTabByFilePathSplit(filePath);
+  const reloadTabContent = (filePath: string, newContent: string, expectedTab?: Tab) => {
+    const result = findTarget(filePath, expectedTab);
     if (!result) return;
 
     const { pane, tab } = result;
@@ -134,19 +156,20 @@ export function useFileReload(options: UseFileReloadOptions) {
     }
   };
 
-  const handleExternalFileChange = (filePath: string, newDiskContent: string) => {
-    const result = findTabByFilePathSplit(filePath);
+  const handleExternalFileChange = (filePath: string, newDiskContent: string, expectedTab?: Tab) => {
+    const result = findTarget(filePath, expectedTab);
     if (!result) return;
 
     const { tab } = result;
 
     if (!tab.hasChanges) {
-      reloadTabContent(filePath, newDiskContent);
+      reloadTabContent(filePath, newDiskContent, tab);
       showToastNotification(t.value.fileReloadedExternally(filePath), 'info');
     } else {
       // Diff shows local (current editor) → disk so the user sees their changes vs external changes.
       const localMarkdown = tab.pendingMarkdown ?? serializeVisualMarkdown(tab.content, tab.originalMarkdown);
       const diffResult = generateDiff(localMarkdown, newDiskContent);
+      conflictTarget = captureTab(tab, filePath);
       conflictFilePath.value = filePath;
       conflictFileName.value = tab.fileName;
       conflictDiffLines.value = diffResult.lines;
@@ -156,46 +179,67 @@ export function useFileReload(options: UseFileReloadOptions) {
     }
   };
 
-  const handleConflictKeepLocal = () => {
-    fileWatcher.updateKnownContent(conflictFilePath.value, conflictNewContent.value);
+  const takeConflictTarget = () => {
+    const target = conflictTarget && currentSnapshotTarget(conflictTarget);
+    conflictTarget = null;
     showConflictModal.value = false;
+    return target;
+  };
+
+  const handleConflictKeepLocal = () => {
+    if (!takeConflictTarget()) return;
+    fileWatcher.updateKnownContent(conflictFilePath.value, conflictNewContent.value);
   };
 
   const handleConflictLoadExternal = () => {
-    reloadTabContent(conflictFilePath.value, conflictNewContent.value);
-    showConflictModal.value = false;
+    const target = takeConflictTarget();
+    if (target) reloadTabContent(conflictFilePath.value, conflictNewContent.value, target.tab);
   };
 
   const handleConflictMerge = (mergedContent: string) => {
+    const target = takeConflictTarget();
+    if (!target) return;
     const filePath = conflictFilePath.value;
-    reloadTabContent(filePath, mergedContent);
-    const result = findTabByFilePathSplit(filePath);
-    if (result) {
-      // A manual merge edits the buffer; the external version is still on disk.
-      result.tab.originalMarkdown = conflictNewContent.value;
-      result.tab.hasChanges = mergedContent !== conflictNewContent.value;
-      fileWatcher.updateKnownContent(filePath, conflictNewContent.value);
-    }
-    showConflictModal.value = false;
+    reloadTabContent(filePath, mergedContent, target.tab);
+    // A manual merge edits the buffer; the external version is still on disk.
+    target.tab.originalMarkdown = conflictNewContent.value;
+    target.tab.hasChanges = mergedContent !== conflictNewContent.value;
+    fileWatcher.updateKnownContent(filePath, conflictNewContent.value);
   };
 
+  const manualReads = new WeakMap<Tab, symbol>();
   const manualReload = async () => {
     const filePath = currentFile.value;
     if (!filePath) return;
+    const activeTab = options.activeTab?.value;
+    if (options.activeTab && !activeTab) return;
+    const target = findTarget(filePath, activeTab);
+    if (!target) return;
+    const { tab } = target;
+    const snapshot = captureTab(tab, filePath);
+    const request = Symbol();
+    manualReads.set(tab, request);
+    // A path can be reopened into a different tab while this read is pending.
+    // Buffer comparison also protects edits before the dirty flag is updated.
+    const isCurrent = () => manualReads.get(tab) === request
+      && !!currentSnapshotTarget(snapshot);
 
     try {
       const newContent = await readTextFile(filePath);
+      if (!isCurrent()) return;
 
-      // The active tab can change while the disk read is pending.
-      if (findTabByFilePathSplit(filePath)?.tab.hasChanges) {
-        handleExternalFileChange(filePath, newContent);
+      if (tab.hasChanges) {
+        handleExternalFileChange(filePath, newContent, tab);
       } else {
-        reloadTabContent(filePath, newContent);
+        reloadTabContent(filePath, newContent, tab);
         showToastNotification(t.value.fileReloaded, 'success');
       }
     } catch (error) {
+      if (!isCurrent()) return;
       console.error('Error reloading file:', error);
       showToastNotification(t.value.fileReloadError, 'warning');
+    } finally {
+      if (manualReads.get(tab) === request) manualReads.delete(tab);
     }
   };
 
