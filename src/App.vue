@@ -35,6 +35,7 @@ import WorkspaceSidebar from './components/WorkspaceSidebar.vue';
 import WorkspaceQuickSwitcher from './components/WorkspaceQuickSwitcher.vue';
 import DocumentSearchBar from './components/DocumentSearchBar.vue';
 import AiPanel from './components/ai/AiPanel.vue';
+import { useAiSnapshotTarget } from './composables/useAiSnapshotRestore';
 import AiFirstRunTooltip from './components/ai/AiFirstRunTooltip.vue';
 import AiTmpRecoveryModal from './components/ai/AiTmpRecoveryModal.vue';
 import ToastNotification from './components/ToastNotification.vue';
@@ -1305,6 +1306,18 @@ function onAiApplyContent(content: string) {
     (tab as { originalMarkdown: string | null; hasChanges: boolean }).hasChanges = false;
   }
 }
+
+// Capture live App state rather than asynchronous panel props. The synchronous
+// revision also invalidates edit/revert and switch-away/back within one tick.
+const captureAiSnapshotTarget = useAiSnapshotTarget(() => ({
+  document: activeTab.value,
+  path: activeTab.value?.filePath ?? '',
+  enabled: editingEnabled.value && aiPanelOpen.value,
+  revisionInputs: aiPanelOpen.value ? [activeTab.value?.content, activeTab.value?.pendingMarkdown,
+    activeTab.value?.originalMarkdown, activeTab.value?.hasChanges,
+    activeTab.value?.editorMode, codeView.value, codeContent.value,
+    splitEditorActive.value, splitMarkdownSource.value, getEditorContent()] : [],
+}), onAiApplyContent);
 
 function onAiShowDiff(_orig: string, candidate: string) {
   if (!editingEnabled.value) return;
@@ -2622,6 +2635,7 @@ onUnmounted(async () => {
       v-if="editingEnabled && aiPanelOpen"
       :open="aiPanelOpen"
       :document-id="activeTab?.id || ''"
+      :capture-snapshot-target="captureAiSnapshotTarget"
       :doc-path="aiDocPath"
       :doc-content="aiDocContent"
       :selection-range="aiSelectionRange"
@@ -2631,7 +2645,6 @@ onUnmounted(async () => {
       :workspace-root="aiWorkspaceRoot"
       @close="closeAiPanel"
       @layout-change="aiPanelReservedSide = $event"
-      @apply-content="onAiApplyContent"
       @show-diff="onAiShowDiff"
       @link-click="handleLinkClick"
     />

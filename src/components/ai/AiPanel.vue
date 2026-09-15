@@ -9,6 +9,7 @@ import { useAiAccessMap } from '../../composables/useAiAccessMap';
 import { useAiHealth } from '../../composables/useAiHealth';
 import { useAiContext } from '../../composables/useAiContext';
 import { modelsFor, effortsFor, useAiModels } from '../../composables/useAiModels';
+import { useAiSnapshotRestore, type SnapshotRestoreRequest, type SnapshotRestoreTarget } from '../../composables/useAiSnapshotRestore';
 import { aiCommands } from '../../services/aiCommands';
 import { useAiPanelLayout } from '../../composables/useAiPanelLayout';
 import { useAiToolToast } from '../../composables/useAiToolToast';
@@ -32,6 +33,7 @@ import AiToolToast from './AiToolToast.vue';
 const props = defineProps<{
   open: boolean;
   documentId: string;
+  captureSnapshotTarget: () => SnapshotRestoreTarget | null;
   docPath: string;
   docContent: string;
   selectionRange: { start: number; end: number } | null;
@@ -46,7 +48,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   layoutChange: [side: 'left' | 'right' | null];
-  applyContent: [content: string];
   showDiff: [orig: string, candidate: string];
   linkClick: [url: string];
 }>();
@@ -414,37 +415,16 @@ async function onSend() {
 
 async function onCancel() { await ai.cancel(); }
 
-async function revertLastSnapshot() {
+const snapshotRestore = useAiSnapshotRestore(() => props.captureSnapshotTarget());
+async function restoreSnapshot(request?: SnapshotRestoreRequest) {
   try {
-    const items = await aiCommands.snapshotList(props.docPath);
-    if (items.length === 0) {
-      window.alert('No snapshots to revert to.');
-      return;
-    }
-    const sorted = [...items].sort((a, b) => b.ts.localeCompare(a.ts));
-    const latest = sorted[0];
-    const ok = window.confirm(`Revert to snapshot from ${latest.ts}?`);
-    if (!ok) return;
-    const content = await aiCommands.snapshotRestore(props.docPath, latest.id);
-    const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-    await writeTextFile(props.docPath, content);
-    emit('applyContent', content);
+    await snapshotRestore.restore(request);
   } catch (e) {
-    console.error('[AiPanel] revert failed:', e);
-    window.alert(`Revert failed: ${(e as Error).message}`);
-  }
-}
-
-async function onSnapshotRestored(content: string) {
-  try {
-    const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-    await writeTextFile(props.docPath, content);
-    emit('applyContent', content);
-  } catch (e) {
-    console.error('[AiPanel] snapshot restore write failed:', e);
+    console.error('[AiPanel] snapshot restore failed:', e);
     window.alert(`Restore failed: ${(e as Error).message}`);
   }
 }
+function revertLastSnapshot() { return restoreSnapshot(); }
 
 function newChat() {
   ai.startNewThread();
@@ -608,6 +588,7 @@ function onPreviewImage(img: PendingImage) {
       :cancel-button-text="t.aiCancelButton"
       :access-map-title="t.aiAccessMapTitle"
       :doc-path="props.docPath"
+      :snapshot-restoring="snapshotRestore.restoring.value"
       :doc-too-large="docTooLarge"
       :doc-markdown-length-kb="Math.round(docMarkdown.length / 1024)"
       :send-full-doc-override="sendFullDocOverride"
@@ -632,7 +613,7 @@ function onPreviewImage(img: PendingImage) {
       @preview-image="onPreviewImage"
       @remove-image="(id) => images.removePendingImage(id)"
       @clear-images="images.clearPendingImages"
-      @snapshot-restored="onSnapshotRestored"
+      @snapshot-restore-requested="restoreSnapshot"
     />
 
     <AiToolToast :tool="toolToast.toolActivity.value" />

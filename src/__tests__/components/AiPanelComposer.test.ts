@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { mount, flushPromises } from '@vue/test-utils';
 
 // The composer embeds AiSnapshotList, which loads snapshots over Tauri invoke
 // on mount — stub the IPC layer so jsdom mounting stays self-contained.
@@ -7,6 +7,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(() => Promise.resolve([])),
 }));
 
+import { invoke } from '@tauri-apps/api/core';
 import AiPanelComposer from '../../components/ai/AiPanelComposer.vue';
 
 function baseProps() {
@@ -53,5 +54,25 @@ describe('AiPanelComposer model guard', () => {
   it('still disables send for empty input even without the guard', () => {
     const w = mount(AiPanelComposer, { props: { ...baseProps(), inputValue: '' } });
     expect(sendButton(w).attributes('disabled')).toBeDefined();
+  });
+});
+
+describe('composer snapshot origin forwarding', () => {
+  it('forwards only the current loaded snapshot id/path after an out-of-order list', async () => {
+    let finishOld!: (items: unknown[]) => void;
+    const old = new Promise<unknown[]>(resolve => { finishOld = resolve; });
+    vi.mocked(invoke).mockReturnValueOnce(old).mockResolvedValueOnce([
+      { id: 'new', ts: '2026-01-01', byteSize: 4, pinned: false },
+    ]);
+    const wrapper = mount(AiPanelComposer, { props: baseProps() });
+    await wrapper.setProps({ docPath: '/new.md' });
+    await flushPromises();
+    finishOld([{ id: 'old', ts: '2025-01-01', byteSize: 4, pinned: false }]);
+    await flushPromises();
+    await wrapper.get('.ai-snap-card__btn--primary').trigger('click');
+    expect(wrapper.emitted('snapshotRestoreRequested')).toEqual([[{ id: 'new', path: '/new.md' }]]);
+    await wrapper.setProps({ snapshotRestoring: true });
+    expect(wrapper.get('.ai-snap-card__btn--primary').attributes('disabled')).toBeDefined();
+    wrapper.unmount();
   });
 });

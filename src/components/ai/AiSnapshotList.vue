@@ -1,39 +1,31 @@
 <script setup lang="ts">
-import { onMounted, watch, computed, ref } from 'vue';
+import { onMounted, watch, computed } from 'vue';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { useAiSnapshots } from '../../composables/useAiSnapshots';
+import type { SnapshotRestoreRequest } from '../../composables/useAiSnapshotRestore';
 import { useI18n } from '../../i18n';
 
 const { t } = useI18n();
 
-const props = defineProps<{ docPath: string }>();
-const emit = defineEmits<{ restored: [content: string] }>();
+const props = defineProps<{ docPath: string; restoring?: boolean }>();
+const emit = defineEmits<{ restoreRequested: [request: SnapshotRestoreRequest] }>();
 
 const snapshots = useAiSnapshots();
 
 onMounted(() => snapshots.loadFor(props.docPath));
 watch(() => props.docPath, p => snapshots.loadFor(p));
+watch(() => props.restoring, (busy, wasBusy) => {
+  if (wasBusy && !busy) return snapshots.loadFor(props.docPath);
+});
 
 const sortedItems = computed(() =>
   [...snapshots.items.value].sort((a, b) => b.ts.localeCompare(a.ts))
 );
 
-const restoring = ref<string | null>(null);
-
-async function onRestore(id: string) {
-  if (restoring.value) return;
-  restoring.value = id;
-  try {
-    const content = await snapshots.restore(id);
-    emit('restored', content);
-    // Force reload of the list so any state drift between calls is reset.
-    await snapshots.loadFor(props.docPath);
-  } catch (e) {
-    console.error('[AiSnapshotList] restore failed:', e);
-    window.alert(`Restore failed: ${(e as Error).message}`);
-  } finally {
-    restoring.value = null;
-  }
+function onRestore(id: string) {
+  if (props.restoring || snapshots.docPath.value !== props.docPath) return;
+  // Parent captures the live document now, before the first asynchronous call.
+  emit('restoreRequested', { id, path: props.docPath });
 }
 
 async function onExport(id: string) {
@@ -84,12 +76,12 @@ function formatBytes(n: number): string {
         <div class="ai-snap-card__actions">
           <button
             class="ai-snap-card__btn ai-snap-card__btn--primary"
-            :disabled="restoring !== null"
+            :disabled="restoring"
             @click="onRestore(item.id)"
             :title="t.aiSnapshotRestoreTooltip"
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/></svg>
-            {{ restoring === item.id ? t.aiSnapshotRestoring : t.aiSnapshotRestore }}
+            {{ restoring ? t.aiSnapshotRestoring : t.aiSnapshotRestore }}
           </button>
           <button class="ai-snap-card__btn" @click="snapshots.setPinned(item.id, !item.pinned)" :title="item.pinned ? t.aiSnapshotUnpinTooltip : t.aiSnapshotPinTooltip">
             {{ item.pinned ? t.aiSnapshotUnpin : t.aiSnapshotPin }}
