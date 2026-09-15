@@ -159,13 +159,41 @@ use the host grant event, or query after queue delivery. Errors without a live
 owner remain represented by the legacy queued request rather than a replayable
 error event.
 
-`create_new_window({filePath})` never grants its renderer-provided URL path. Recent,
-workspace restoration and tab transfer still need explicit broker integration;
-old access-map and plugin-FS behavior must not be used as authorization evidence.
+## Window registry and transfer boundary
+
+The open-file registry is caller-owned routing metadata, never filesystem authority.
+Register/unregister commands derive their owner from the injected native window;
+obsolete renderer `windowLabel` / `sourceWindow` arguments cannot choose an owner.
+Several windows can temporarily own the same path; lookup prefers the caller's
+registration, then the lowest live editor label. Destroying a window removes only
+its metadata and capabilities.
+
+`transfer_tab_to_window({filePath, targetWindow})` requires the actual caller's
+existing exact-file READ grant and an already registered target. It copies the
+retained anchor with unchanged rights; neither a registry entry nor a path string
+creates authority. Source grants stay valid. A failed event emission revokes the
+copy and restores prior target metadata without erasing later native selections.
+
+`create_new_window({filePath})` starts a hidden `about:blank` webview, activates its
+host reservation, copies existing sender authority, then navigates to the trusted
+host-configured application URL. Application code cannot race ahead of grant
+registration. Failed preparation/navigation/show revokes target grants, removes
+metadata and destroys the new window. A destroyed reservation cannot reactivate.
+The URL's file parameter is routing metadata only. Native configured URL resolution
+mirrors the pinned desktop Tauri implementation because its resolver is private.
+
+Target-open acknowledgement is not implemented in this stage: successful event
+emission/navigation alone does not prove the target has read the file. The frontend
+must retain the source until that acknowledgement is integrated. Recent/workspace
+restoration still needs explicit broker integration; old access-map and plugin-FS
+behavior must not be used as authorization evidence.
 
 Native state tests cover lookup isolation, cancellation/batch failure, stale
 callbacks, fixed picker rights, pending reassignment, re-selection after a prior
 resource grant, DTO/error serialization, and a real Unix parent-symlink swap.
-The macOS full native suite passed 222 tests with zero failures.
+Window tests additionally cover caller ownership, stable routing, attenuated
+exact-file copy, directory/write-only rejection, rollback isolation, stale window
+generations, blank-window reservations and retained Unix parent handles.
+The macOS full native suite passed 232 tests with zero failures.
 Actual native picker interaction, drop ordering and closed-window behavior still
 require packaged tests on each supported OS.

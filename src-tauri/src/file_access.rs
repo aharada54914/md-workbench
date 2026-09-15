@@ -284,6 +284,25 @@ impl FileAccess {
         self.insert(target, path, kind, rights, anchor)
     }
 
+    /// Tab transfer must never turn a directory grant into document authority.
+    pub(crate) fn transfer_file(
+        &mut self,
+        source: &str,
+        target: &str,
+        id: GrantId,
+        rights: Rights,
+    ) -> Result<GrantInfo, AccessError> {
+        if self
+            .get(source, id, Rights::READ)?
+            .anchor
+            .file_name
+            .is_none()
+        {
+            return Err(AccessError::InvalidKind);
+        }
+        self.transfer(source, target, id, rights)
+    }
+
     pub(crate) fn describe(&self, window: &str, id: GrantId) -> Result<GrantInfo, AccessError> {
         self.require_window(window)?;
         self.grants

@@ -40,6 +40,7 @@ pub(crate) struct NativeFiles(Mutex<NativeState>);
 struct NativeState {
     access: FileAccess,
     windows: HashMap<String, Uuid>,
+    building: HashSet<String>,
     owned: HashMap<(String, String), GrantInfo>,
     // Only OS ingress adds these capabilities; a path lookup cannot populate it.
     pending: HashMap<String, HeldGrant>,
@@ -84,6 +85,7 @@ impl NativeState {
     }
     fn revoke(&mut self, label: &str) {
         self.windows.remove(label);
+        self.building.remove(label);
         self.owned.retain(|(owner, _), _| owner != label);
         self.access.revoke_window(label);
         self.distributed.retain(|(owner, _)| owner != label);
@@ -275,6 +277,10 @@ pub(crate) fn native_drop(app: &tauri::AppHandle, label: &str, paths: &[PathBuf]
         let _ = app.emit_to(label, "native-file-errors", errors);
     }
 }
+
+#[path = "native_files_transfer.rs"]
+mod transfer;
+pub(crate) use transfer::*;
 
 #[path = "native_files_commands.rs"]
 mod commands;

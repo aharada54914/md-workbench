@@ -1,41 +1,22 @@
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::collections::{HashMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use tauri::{Manager, Emitter, WebviewUrl, WebviewWindowBuilder, RunEvent, WindowEvent};
 use tauri_plugin_fs::FsExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use font_kit::source::SystemSource;
 
 mod ai;
 mod file_access;
 mod native_files;
 mod open_files;
+mod window_files;
+use window_files::*;
 
 use open_files::{OpenFileState, paths_from_args, document_window_owner};
 
-// Global registry of open files: file_path -> window_label
-pub struct OpenFilesRegistry(pub Mutex<HashMap<String, String>>);
-
-impl OpenFilesRegistry {
-    fn remove_window(&self, window_label: &str) {
-        let mut files = self.0.lock().unwrap();
-        files.retain(|_, label| label != window_label);
-    }
-}
-
-// Counter for unique window IDs
-static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
 // Serialize queue mutation with retained native authority acknowledgement.
 static NATIVE_OPEN_DELIVERY_LOCK: Mutex<()> = Mutex::new(());
-
-// Payload for transferring tabs between windows
-#[derive(Clone, Serialize, Deserialize)]
-pub struct TabTransferPayload {
-    pub file_path: String,
-    pub source_window: String,
-    pub target_window: String,
-}
 
 fn native_open_owner(app: &tauri::AppHandle, closing_label: Option<&str>) -> Option<tauri::WebviewWindow> {
     let windows = app.webview_windows();
@@ -106,76 +87,6 @@ fn queue_open_files(app: &tauri::AppHandle, paths: Vec<String>) {
     notify_pending_open_files(app, None);
 }
 
-// Register a file as open in a specific window
-#[tauri::command]
-fn register_open_file(
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    file_path: String,
-    window_label: String,
-) {
-    let mut files = registry.0.lock().unwrap();
-    files.insert(file_path, window_label);
-}
-
-// Unregister a file when it's closed
-#[tauri::command]
-fn unregister_open_file(
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    file_path: String,
-) {
-    let mut files = registry.0.lock().unwrap();
-    files.remove(&file_path);
-}
-
-// Unregister all files for a specific window (when window closes)
-#[tauri::command]
-fn unregister_window_files(
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    window_label: String,
-) {
-    registry.remove_window(&window_label);
-}
-
-// Check if a file is already open and return the window label if so
-#[tauri::command]
-fn check_file_open(
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    file_path: String,
-) -> Option<String> {
-    let files = registry.0.lock().unwrap();
-    files.get(&file_path).cloned()
-}
-
-// Focus the window that has a specific file open
-#[tauri::command]
-async fn focus_window_with_file(
-    app: tauri::AppHandle,
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    file_path: String,
-) -> Result<bool, String> {
-    let window_label = {
-        let files = registry.0.lock().unwrap();
-        files.get(&file_path).cloned()
-    };
-
-    if let Some(label) = window_label {
-        if let Some(window) = app.get_webview_window(&label) {
-            // Bring window to front even if minimized (#49)
-            if window.is_minimized().unwrap_or(false) {
-                let _ = window.unminimize();
-            }
-            if !window.is_visible().unwrap_or(true) {
-                let _ = window.show();
-            }
-            window.set_focus().map_err(|e| e.to_string())?;
-            // Emit event to switch to the tab with this file
-            window.emit("focus-file", file_path).map_err(|e| e.to_string())?;
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 // Dedicated window that renders the print-ready document for native printing.
 const PRINT_WINDOW_LABEL: &str = "print-preview";
 // Custom URI scheme that serves the print-ready HTML from memory.
@@ -188,7 +99,7 @@ pub struct PrintHtmlState(pub Mutex<Option<String>>);
 fn get_all_windows(app: tauri::AppHandle) -> Vec<String> {
     app.webview_windows()
         .keys()
-        .filter(|label| *label != PRINT_WINDOW_LABEL)
+        .filter(|label| native_files::is_registered(&app, label))
         .cloned()
         .collect()
 }
@@ -239,29 +150,6 @@ async fn print_document(app: tauri::AppHandle, html: String) -> Result<(), Strin
 #[tauri::command]
 fn get_current_window_label(window: tauri::Window) -> String {
     window.label().to_string()
-}
-
-#[tauri::command]
-async fn transfer_tab_to_window(
-    app: tauri::AppHandle,
-    file_path: String,
-    source_window: String,
-    target_window: String,
-) -> Result<(), String> {
-    let payload = TabTransferPayload {
-        file_path,
-        source_window,
-        target_window: target_window.clone(),
-    };
-
-    if let Some(target) = app.get_webview_window(&target_window) {
-        target.emit("tab-transfer", payload).map_err(|e| e.to_string())?;
-        target.set_focus().map_err(|e| e.to_string())?;
-    } else {
-        return Err(format!("Window {} not found", target_window));
-    }
-
-    Ok(())
 }
 
 // ============== AI commands (storage + health) ==============
@@ -914,38 +802,6 @@ fn list_system_fonts() -> Vec<String> {
     families.into_iter().collect()
 }
 
-#[tauri::command]
-async fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Result<String, String> {
-    let window_id = WINDOW_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let window_label = format!("window-{}", window_id);
-
-    let url = match &file_path {
-        Some(path) => {
-            let encoded_path = urlencoding::encode(path);
-            format!("index.html?file={}", encoded_path)
-        }
-        None => "index.html".to_string()
-    };
-
-    let window = WebviewWindowBuilder::new(
-        &app,
-        &window_label,
-        WebviewUrl::App(url.into())
-    )
-    .title("MD Workbench")
-    .inner_size(1200.0, 800.0)
-    .resizable(true)
-    .center()
-    .build()
-    .map_err(|e| e.to_string())?;
-
-    native_files::register_editor(&app, &window_label)?;
-    notify_pending_open_files(&app, None);
-    window.set_focus().map_err(|e| e.to_string())?;
-
-    Ok(window_label)
-}
-
 #[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Copy)]
 struct StartupEnvOverride {
@@ -1072,7 +928,7 @@ pub fn run() {
         }))
         .manage(OpenFileState::default())
         .manage(native_files::NativeFiles::default())
-        .manage(OpenFilesRegistry(Mutex::new(HashMap::new())))
+        .manage(OpenFilesRegistry::default())
         .manage(PrintHtmlState(Mutex::new(None)))
         .manage(ai::process::ChildRegistry::new())
         .invoke_handler(move |invoke| {
@@ -1216,21 +1072,6 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
-
-    #[test]
-    fn destroyed_window_releases_only_its_current_file_registrations() {
-        let registry = OpenFilesRegistry(Mutex::new(HashMap::from([
-            ("closed.md".to_string(), "window-1".to_string()),
-            ("remaining.md".to_string(), "main".to_string()),
-            ("transferred.md".to_string(), "main".to_string()),
-        ])));
-        registry.remove_window("window-1");
-        registry.remove_window("window-1"); // destruction cleanup is idempotent
-        let files = registry.0.lock().unwrap();
-        assert!(!files.contains_key("closed.md"));
-        assert_eq!(files.get("remaining.md").map(String::as_str), Some("main"));
-        assert_eq!(files.get("transferred.md").map(String::as_str), Some("main"));
-    }
 
     #[test]
     fn webkit_override_applies_when_unset_or_blank() {
