@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { getTabImageOwner } from '../composables/useSplitView';
 import { ref, computed } from 'vue';
 import type { Pane } from '../types/pane';
 import TabBar from './TabBar.vue';
@@ -104,6 +105,7 @@ defineExpose({
   editor: computed(() => activeTab.value?.readOnly ? undefined : editorRef.value?.editor),
   paneId: computed(() => props.pane.id),
   getFilePath: () => activeTab.value?.filePath ?? null,
+  getImageOwner: () => activeTab.value ? getTabImageOwner(activeTab.value) : undefined,
   insertImagesByPath: (items: { path: string; alt: string }[]) =>
     !activeTab.value?.readOnly && editorRef.value?.insertImagesByPath?.(items),
   getEditorContent: () => editorRef.value?.editor?.getHTML() ?? activeTab.value?.content ?? '',

@@ -264,11 +264,14 @@ const findVisualTargetAt = (x: number, y: number) => {
   if (!targetRef?.editor) return null;
   const editor = targetRef.editor;
   const filePath = targetRef.getFilePath?.() ?? null;
+  const imageOwner = targetRef.getImageOwner?.();
 
   return {
     filePath,
+    imageOwner,
     isCurrent: () => (idx === 0 ? leftPaneRef.value : rightPaneRef.value) === targetRef
-      && targetRef.editor === editor && (targetRef.getFilePath?.() ?? null) === filePath,
+      && targetRef.editor === editor && (targetRef.getFilePath?.() ?? null) === filePath
+      && targetRef.getImageOwner?.() === imageOwner,
     insertImages: (items: { path: string; alt: string }[]) =>
       targetRef.insertImagesByPath?.(items),
   };

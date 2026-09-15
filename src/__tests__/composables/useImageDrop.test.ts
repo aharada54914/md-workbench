@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ref } from 'vue';
 import { useImageDrop, type ImageDropTarget } from '../../composables/useImageDrop';
 import { importImage } from '../../services/imageImport';
+import { documentImageBytes } from '../../services/documentImageBytes';
 import type { NativeGrant } from '../../services/nativeFs';
 import type { CodeEditorHandle } from '../../types/code-editor';
 
@@ -17,19 +18,21 @@ function editor(): CodeEditorHandle {
     scrollToRatio: vi.fn(), scrollToPosition: vi.fn(), highlightSelectionLine: vi.fn(),
   };
 }
-function setup(code = true) {
+function setup(code = true, withOwner = false) {
+  let owner = withOwner ? documentImageBytes.createOwner() : undefined;
   let currentEditor: CodeEditorHandle | null = editor();
   let filePath: string | null = '/docs/note.md';
   let current = true;
   const codeView = ref(code);
-  let target: ImageDropTarget | null = { filePath, insertImages: vi.fn(), isCurrent: () => true };
+  let target: ImageDropTarget | null = { imageOwner: owner, filePath, insertImages: vi.fn(), isCurrent: () => true };
   const onError = vi.fn();
   const onImagesImported = vi.fn();
   const findVisualTargetAt = vi.fn(() => target);
   const drop = useImageDrop({ codeView, codeEditor: () => currentEditor, activeFilePath: () => filePath,
-    findVisualTargetAt, onError, onImagesImported });
+    findVisualTargetAt, onError, onImagesImported, activeImageOwner: () => owner });
   return { ...drop, codeView, editor: currentEditor, target, onError, onImagesImported, findVisualTargetAt,
     selection: { grants: [grant(), grant('/drop/b.png')], isCurrent: () => current },
+    getOwner: () => owner, replaceOwner: () => { owner = documentImageBytes.createOwner(); },
     stop: () => { current = false; }, setFilePath: (value: string | null) => { filePath = value; },
     setEditor: (value: CodeEditorHandle | null) => { currentEditor = value; },
     setTarget: (value: ImageDropTarget | null) => { target = value; },
@@ -40,6 +43,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(importImage).mockResolvedValue(image);
 });
+
+afterEach(() => documentImageBytes.disposeAll());
 
 describe('useImageDrop captured OS selection', () => {
   it('passes the live session guard to asynchronous workspace refresh', async () => {
@@ -148,5 +153,71 @@ describe('useImageDrop captured OS selection', () => {
     await state.handleDrop(['/drop/a.png'], pos);
     expect(importImage).toHaveBeenCalledWith('/drop/a.png', '/docs/note.md');
     expect(state.editor.replaceSelection).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useImageDrop preparation lifecycle', () => {
+  it('commits prepared snapshots before insertion and releases tokens afterwards', async () => {
+    const state = setup(false);
+    const calls: string[] = [];
+    const prepared = { commit: vi.fn(() => calls.push('commit')), release: vi.fn(() => calls.push('release')) };
+    vi.mocked(importImage).mockResolvedValue({ ...image, prepared });
+    state.target!.insertImages = () => { calls.push('insert'); };
+    await state.handleDrop(['/drop/a.png'], pos, state.selection);
+    expect(calls).toEqual(['commit', 'insert', 'release']);
+  });
+
+  it('releases all earlier pending images when a later import becomes stale', async () => {
+    const state = setup();
+    const first = { commit: vi.fn(), release: vi.fn() };
+    const second = { commit: vi.fn(), release: vi.fn() };
+    vi.mocked(importImage).mockResolvedValueOnce({ ...image, prepared: first })
+      .mockImplementationOnce(async () => { state.stop(); return { ...image, prepared: second }; });
+    await state.handleDrop(['/drop/a.png', '/drop/b.png'], pos, state.selection);
+    expect(first.commit).not.toHaveBeenCalled(); expect(second.commit).not.toHaveBeenCalled();
+    expect(first.release).toHaveBeenCalledOnce(); expect(second.release).toHaveBeenCalledOnce();
+    expect(state.editor.replaceSelection).not.toHaveBeenCalled();
+  });
+
+  it('releases accumulated preparations when the error callback itself throws', async () => {
+    const state = setup();
+    const prepared = { commit: vi.fn(), release: vi.fn() };
+    vi.mocked(importImage).mockResolvedValueOnce({ ...image, prepared }).mockRejectedValueOnce(new Error('import'));
+    state.onError.mockImplementation(() => { throw new Error('callback'); });
+    await expect(state.handleDrop(['/drop/a.png', '/drop/b.png'], pos, state.selection)).rejects.toThrow('callback');
+    expect(prepared.release).toHaveBeenCalledOnce();
+    expect(prepared.commit).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('useImageDrop exact document owner', () => {
+  it('passes the captured owner without conflating same-path code documents', async () => {
+    const state = setup(true, true);
+    const owner = state.getOwner();
+    const prepared = { commit: vi.fn(), release: vi.fn() };
+    vi.mocked(importImage).mockImplementationOnce(async (_src, _doc, selected) => {
+      expect(selected?.owner).toBe(owner);
+      state.replaceOwner();
+      expect(selected?.isCurrent()).toBe(false);
+      return { ...image, prepared };
+    });
+    await state.handleDrop(['/drop/a.png'], pos, state.selection);
+    expect(prepared.commit).not.toHaveBeenCalled();
+    expect(prepared.release).toHaveBeenCalledOnce();
+    expect(state.editor.replaceSelection).not.toHaveBeenCalled();
+  });
+
+  it('rejects a new visual owner even when path and legacy target guard match', async () => {
+    const state = setup(false, true);
+    const prepared = { commit: vi.fn(), release: vi.fn() };
+    vi.mocked(importImage).mockImplementationOnce(async () => {
+      state.setTarget({ filePath: '/docs/note.md', imageOwner: documentImageBytes.createOwner(), insertImages: vi.fn() });
+      return { ...image, prepared };
+    });
+    await state.handleDrop(['/drop/a.png'], pos, state.selection);
+    expect(prepared.commit).not.toHaveBeenCalled();
+    expect(prepared.release).toHaveBeenCalledOnce();
+    expect(state.target!.insertImages).not.toHaveBeenCalled();
   });
 });

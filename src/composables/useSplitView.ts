@@ -1,4 +1,5 @@
-import { ref, computed, watch, type Ref, type ComputedRef } from 'vue';
+import { ref, computed, watch, toRaw, type Ref, type ComputedRef } from 'vue';
+import { documentImageBytes, type ImageDocumentOwner } from '../services/documentImageBytes';
 import type { Tab } from './useTabs';
 import {
   type Pane,
@@ -41,6 +42,30 @@ function saveSplitViewPreferences(state: SplitViewState): void {
 }
 
 const splitState = ref<SplitViewState>(loadSplitViewState());
+const imageOwners = new Map<Tab, ImageDocumentOwner>();
+/** Actual live Tab identity; IDs/paths are never sufficient to recover snapshots. */
+export function getTabImageOwner(tab: Tab): ImageDocumentOwner | undefined {
+  const raw = toRaw(tab);
+  if (!splitState.value.panes.some(pane => pane.tabs.some(candidate => toRaw(candidate) === raw))) return undefined;
+  let owner = imageOwners.get(raw);
+  if (!owner) {
+    owner = documentImageBytes.createOwner();
+    imageOwners.set(raw, owner);
+  }
+  return owner;
+}
+function releaseTabImages(tab: Tab): void {
+  const raw = toRaw(tab);
+  const owner = imageOwners.get(raw);
+  if (owner) documentImageBytes.dispose(owner);
+  imageOwners.delete(raw);
+}
+// Also covers whole-state replacement. Post-flush preserves synchronous pane moves.
+watch(() => splitState.value.panes.flatMap(pane => pane.tabs.map(tab => toRaw(tab))), live => {
+  const current = new Set(live);
+  for (const tab of imageOwners.keys()) if (!current.has(tab)) releaseTabImages(tab);
+}, { flush: 'post' });
+
 let tabCounter = 1;
 
 watch(() => splitState.value.splitRatio, () => {
@@ -200,6 +225,7 @@ export function useSplitView(): UseSplitViewReturn {
     const tabIndex = pane.tabs.findIndex(t => t.id === tabId);
     if (tabIndex === -1) return;
 
+    releaseTabImages(pane.tabs[tabIndex]);
     pane.tabs.splice(tabIndex, 1);
 
     if (pane.activeTabId === tabId) {
@@ -219,6 +245,7 @@ export function useSplitView(): UseSplitViewReturn {
     const tabIndex = pane.tabs.findIndex(t => t.id === tabId);
     if (tabIndex === -1) return;
 
+    releaseTabImages(pane.tabs[tabIndex]);
     pane.tabs.splice(tabIndex, 1);
 
     if (pane.activeTabId === tabId && pane.tabs.length > 0) {

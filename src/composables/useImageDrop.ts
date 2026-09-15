@@ -3,6 +3,7 @@ import type { CodeEditorHandle } from '../types/code-editor';
 import { isImageFile, escapeMarkdownAlt } from '../utils/image-file-utils';
 import { importImage, type ImportedImage } from '../services/imageImport';
 import type { NativeGrant } from '../services/nativeFs';
+import { documentImageBytes, type ImageDocumentOwner } from '../services/documentImageBytes';
 
 export interface InsertableImage {
   path: string;
@@ -10,6 +11,7 @@ export interface InsertableImage {
 }
 
 export interface ImageDropTarget {
+  imageOwner?: ImageDocumentOwner;
   filePath: string | null;
   insertImages: (items: InsertableImage[]) => void;
   isCurrent?: () => boolean;
@@ -23,6 +25,7 @@ export interface UseImageDropOptions {
   codeView: Ref<boolean>;
   codeEditor: () => CodeEditorHandle | null;
   activeFilePath: () => string | null;
+  activeImageOwner?: () => ImageDocumentOwner | undefined;
   findVisualTargetAt: (x: number, y: number) => ImageDropTarget | null;
   onImagesImported?: (isCurrent?: () => boolean) => void;
   onError?: (message: string) => void;
@@ -70,12 +73,20 @@ async function insertIntoVisualPane(
   if (!target) return;
 
   const filePath = target.filePath;
+  const owner = target.imageOwner;
   const isCurrent = () => (!selection || selection.isCurrent())
+    && (!owner || documentImageBytes.isCurrent(owner))
     && !options.codeView.value
     && (target.isCurrent?.() ?? true)
-    && options.findVisualTargetAt(position.x / dpr, position.y / dpr)?.filePath === filePath;
-  const items = await importAll(paths, filePath, options.onError, selection, isCurrent);
-  if (isCurrent() && items.length > 0) target.insertImages(items.map(toInsertable));
+    && options.findVisualTargetAt(position.x / dpr, position.y / dpr)?.filePath === filePath
+    && (!owner || options.findVisualTargetAt(position.x / dpr, position.y / dpr)?.imageOwner === owner);
+  const items = await importAll(paths, filePath, options.onError, selection, isCurrent, owner);
+  try {
+    if (isCurrent() && items.length > 0) {
+      for (const item of items) item.prepared?.commit();
+      target.insertImages(items.map(toInsertable));
+    }
+  } finally { for (const item of items) item.prepared?.release(); }
 }
 
 async function insertIntoCodeEditor(
@@ -87,15 +98,19 @@ async function insertIntoCodeEditor(
   if (!editor) return;
 
   const filePath = options.activeFilePath();
+  const owner = options.activeImageOwner?.();
   const isCurrent = () => (!selection || selection.isCurrent())
+    && (!owner || (documentImageBytes.isCurrent(owner) && options.activeImageOwner?.() === owner))
     && options.codeView.value
     && options.codeEditor() === editor
     && options.activeFilePath() === filePath;
-  const items = await importAll(paths, filePath, options.onError, selection, isCurrent);
-  if (!isCurrent() || items.length === 0) return;
-
-  const markdown = buildMarkdownBlock(items);
-  insertAtCursor(editor, markdown);
+  const items = await importAll(paths, filePath, options.onError, selection, isCurrent, owner);
+  try {
+    if (!isCurrent() || items.length === 0) return;
+    const markdown = buildMarkdownBlock(items);
+    for (const item of items) item.prepared?.commit();
+    insertAtCursor(editor, markdown);
+  } finally { for (const item of items) item.prepared?.release(); }
 }
 
 async function importAll(
@@ -104,23 +119,29 @@ async function importAll(
   onError: ((msg: string) => void) | undefined,
   selection: ImageDropSelection | undefined,
   isCurrent: () => boolean,
+  owner?: ImageDocumentOwner,
 ): Promise<ImportedImage[]> {
   const results: ImportedImage[] = [];
-  for (const src of paths) {
-    if (!isCurrent()) break;
-    try {
-      const grant = selection?.grants.find((item) => item.path === src && item.kind === 'resource' && item.read);
-      if (selection && !grant) throw new Error('Image source has no matching OS grant');
-      const item = selection && grant
-        ? await importImage(src, docPath, { expectedGrantId: grant.id, isCurrent })
-        : await importImage(src, docPath);
+  try {
+    for (const src of paths) {
       if (!isCurrent()) break;
-      results.push(item);
-    } catch (err) {
-      if (!isCurrent()) break;
-      console.warn('[useImageDrop] Failed to import image:', src, err);
-      onError?.(src);
+      try {
+        const grant = selection?.grants.find((item) => item.path === src && item.kind === 'resource' && item.read);
+        if (selection && !grant) throw new Error('Image source has no matching OS grant');
+        const item = selection && grant
+          ? await importImage(src, docPath, { expectedGrantId: grant.id, isCurrent, ...(owner ? { owner } : {}) })
+          : await importImage(src, docPath);
+        if (!isCurrent()) { item.prepared?.release(); break; }
+        results.push(item);
+      } catch (err) {
+        if (!isCurrent()) break;
+        console.warn('[useImageDrop] Failed to import image:', src, err);
+        onError?.(src);
+      }
     }
+  } catch (error) {
+    for (const item of results) item.prepared?.release();
+    throw error;
   }
   return results;
 }
