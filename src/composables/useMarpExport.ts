@@ -1,3 +1,4 @@
+import { sanitizeMarpBody, MARP_CSP } from '../utils/marp-document';
 import { Marp } from '@marp-team/marp-core';
 import { normalizeMathForMarp } from '../utils/math';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -49,7 +50,7 @@ export function splitSlides(markdown: string): string[] {
 }
 
 export function renderDeck(markdown: string, marp?: MarpRenderer): MarpRenderResult {
-  const renderer = marp ?? new Marp({ html: true });
+  const renderer = marp ?? new Marp({ html: false });
   const { html, css } = renderer.render(normalizeMathForMarp(markdown));
   return { html, css };
 }
@@ -66,14 +67,15 @@ export function buildStandaloneHtml(deck: MarpRenderResult, title = 'Marp Deck')
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="${MARP_CSP}">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)}</title>
 <style>
-${deck.css}
+${deck.css.replace(/</g, '\\3c ')}
 </style>
 </head>
 <body>
-${deck.html}
+${sanitizeMarpBody(deck.html)}
 </body>
 </html>`;
 }
