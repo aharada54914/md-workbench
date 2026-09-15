@@ -58,9 +58,10 @@ record update, overwrite or orphan deletion.
 
 ## Integration still required
 
-Private storage and ACL validation, snapshot retention, actual hash computation,
-source-revision checks, retained filesystem authority, publication ordering,
-crash recovery and Save/Resource UI integration remain open T08 work. Current
+The inactive native store below supplies private storage checks, bounded snapshots
+and exact-byte hash verification. Source-revision checks, destination authority,
+publication ordering, retention controls, crash recovery and Save/Resource UI
+integration remain open T08 work. Current
 wildcard renderer filesystem permissions must not be mistaken for isolation of
 private records. The isolated native API probe succeeded with read-write
 directory handles on Windows Server 2022 and Windows 11 ARM NTFS; read-only
@@ -120,10 +121,11 @@ those decisions.
 The result type is `MetadataOnlyHistory`; its snapshot state can only be
 `Unverified`. A recorded COMPLETED stage cannot create a verified recovery/commit
 result. Replay does not call the observation classifier or obtain permissions.
-The existing JSON schema contains no snapshot references. A future versioned
-reference format and private-storage verifier must bind transaction, target slot,
-prior/candidate role, container identity, checked byte ranges and hashes before
-recovery readiness can be assessed. Missing or unverified snapshots cannot be
+The existing JSON schema contains no snapshot references. The one-document
+extension below binds a separate versioned envelope to the journal record,
+transaction, target slot, prior/candidate roles, session, lengths and hashes.
+General asset snapshots and recovery readiness remain separate work.
+Missing or unverified snapshots cannot be
 treated as usable recovery evidence. Flush ordering and namespace durability
 remain separate prerequisites, even after bytes have been verified.
 
@@ -250,5 +252,8 @@ bytes and clean their own sessions. A separate process observes killed cases, ch
 exact journal/snapshot prefixes and accepts verified document bytes only in the final
 case. Metadata remains Unverified in every case. Four killed synthetic sessions are
 reported as retained; no observer receives cleanup ownership. Process kill is not a
-power-loss test. Windows Server 2022, Windows 11 ARM and macOS CI must independently
-validate this increment; earlier metadata-only CI does not cover snapshot behavior.
+power-loss test. At `bf5e5b5`, [storage CI 35016911912](https://github.com/aharada54914/md-workbench/actions/runs/35016911912)
+passed all five jobs. Windows Server 2022, Windows 11 ARM and macOS each passed
+all eight snapshot process-termination/control cases with no reported error.
+Their reports retain `namespace: unestablished` and `snapshots: unverified`.
+Earlier metadata-only CI does not cover this snapshot behavior.
