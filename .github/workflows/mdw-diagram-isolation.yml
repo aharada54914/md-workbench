@@ -40,11 +40,22 @@ jobs:
           node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe diagram-default --expect-disabled
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and observe opt-in synthetic fixture
+        id: fixture
         run: |
           pnpm tauri build --no-bundle --features diagram-isolation-spike
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "built=true" >> $env:GITHUB_OUTPUT
           node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe diagram-spike
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Observe genuine frame provenance and no forwarding
+        if: always() && steps.fixture.outputs.built == 'true'
+        run: |
+          $probeFailed = $false
+          foreach ($case in @('roundtrip', 'active')) {
+            node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe "diagram-frame-$case" "--frame-$case"
+            if ($LASTEXITCODE -ne 0) { $probeFailed = $true }
+          }
+          if ($probeFailed) { exit 1 }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -52,5 +63,7 @@ jobs:
           path: |
             diagram-default/**
             diagram-spike/**
+            diagram-frame-roundtrip/**
+            diagram-frame-active/**
           retention-days: 14
           if-no-files-found: error

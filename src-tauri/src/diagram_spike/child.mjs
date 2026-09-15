@@ -1,6 +1,7 @@
 import { receiver, envelope, LIMITS } from './protocol.mjs';
 const meta = name => document.querySelector(`meta[name="${name}"]`).content;
 const session = meta('session'), hostOrigin = meta('host-origin'), expectedChild = meta('child-origin');
+const frameProbe = meta('frame-probe') === 'true';
 const report = globalThis.__diagramChildReport = {status:'starting',origin:location.origin,observedHost:null,parentAccessible:false};
 try { report.parentAccessible = !!parent.document; } catch { /* Expected cross-origin denial. */ }
 if (location.origin === 'null' || location.origin !== expectedChild || location.origin === hostOrigin || parent === window) {
@@ -23,5 +24,12 @@ if (location.origin === 'null' || location.origin !== expectedChild || location.
   }
   addEventListener('message',onMessage);
   addEventListener('pagehide',stop,{once:true});
-  parent.postMessage(envelope(session,0,'ready'),hostOrigin);
+  if (frameProbe) {
+    // The owned observer probes an active receiver before the normal handshake.
+    // This function sends only the existing fixed envelope, never native IPC.
+    globalThis.__diagramStart = () => parent.postMessage(envelope(session,0,'ready'),hostOrigin);
+    report.status = 'awaiting_probe';
+  } else {
+    parent.postMessage(envelope(session,0,'ready'),hostOrigin);
+  }
 }

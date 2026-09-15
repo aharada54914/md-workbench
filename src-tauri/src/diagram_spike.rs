@@ -4,6 +4,7 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 const HOST: &str = "mdwdiagramhost";
 const CHILD: &str = "mdwdiagramfixture";
+const FOREIGN: &str = "mdwdiagramforeign";
 const LABEL_PREFIX: &str = "diagram-spike-";
 #[derive(Default)]
 struct Session {
@@ -13,6 +14,8 @@ struct Session {
     served_host: bool,
     served_child: bool,
     started: Option<std::time::Instant>,
+    frame_probe: bool,
+    served_foreign: bool,
 }
 type Shared = Arc<Mutex<Session>>;
 
@@ -46,6 +49,17 @@ fn asset(scheme: &str, path: &str) -> Option<(&'static str, &'static str)> {
         _ => None,
     }
 }
+fn probe_asset(scheme: &str, path: &str) -> Option<(&'static str, &'static str)> {
+    match (scheme, path) {
+        (FOREIGN, "/") | (CHILD, "/sibling.html") => {
+            Some((include_str!("diagram_spike/peer.html"), "text/html"))
+        }
+        (FOREIGN | CHILD, "/peer.mjs") => {
+            Some((include_str!("diagram_spike/peer.mjs"), "text/javascript"))
+        }
+        _ => None,
+    }
+}
 fn reply(
     state: &Shared,
     label: &str,
@@ -53,7 +67,12 @@ fn reply(
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
     let mut session = state.lock().unwrap();
-    let route = asset(scheme, request.uri().path());
+    let route = asset(scheme, request.uri().path()).or_else(|| {
+        session
+            .frame_probe
+            .then(|| probe_asset(scheme, request.uri().path()))
+            .flatten()
+    });
     if session
         .started
         .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(10))
@@ -95,15 +114,38 @@ fn reply(
         }
         session.served_child = true;
     }
+    if scheme == FOREIGN && request.uri().path() == "/" {
+        if session.served_foreign {
+            session.live = false;
+            return tauri::http::Response::builder()
+                .status(410)
+                .body(Vec::new())
+                .unwrap();
+        }
+        session.served_foreign = true;
+    }
     let (body, mime) = route.unwrap();
     // Only native random hex and compile-time origins enter these fixed HTML files.
     let body = body
         .replace("__NONCE__", &session.nonce)
         .replace("__HOST_ORIGIN__", &origin(HOST))
-        .replace("__CHILD_ORIGIN__", &origin(CHILD));
+        .replace("__CHILD_ORIGIN__", &origin(CHILD))
+        .replace("__FOREIGN_ORIGIN__", &origin(FOREIGN))
+        .replace(
+            "__FRAME_PROBE__",
+            if session.frame_probe { "true" } else { "false" },
+        );
+    let csp = if scheme == HOST && session.frame_probe {
+        policy(false).replace(
+            &format!("frame-src {}", origin(CHILD)),
+            &format!("frame-src {} {}", origin(CHILD), origin(FOREIGN)),
+        )
+    } else {
+        policy(scheme != HOST)
+    };
     tauri::http::Response::builder()
         .header("Content-Type", format!("{mime}; charset=utf-8"))
-        .header("Content-Security-Policy", policy(scheme == CHILD))
+        .header("Content-Security-Policy", csp)
         .header("X-Content-Type-Options", "nosniff")
         .header("Cache-Control", "no-store")
         .body(body.into_bytes())
@@ -113,6 +155,7 @@ pub(super) fn configure(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
     let state = Shared::default();
     let host = state.clone();
     let child = state.clone();
+    let foreign = state.clone();
     builder
         .manage(state)
         .register_uri_scheme_protocol(HOST, move |ctx, request| {
@@ -121,6 +164,9 @@ pub(super) fn configure(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
         .register_uri_scheme_protocol(CHILD, move |ctx, request| {
             reply(&child, ctx.webview_label(), CHILD, request)
         })
+        .register_uri_scheme_protocol(FOREIGN, move |ctx, request| {
+            reply(&foreign, ctx.webview_label(), FOREIGN, request)
+        })
 }
 pub(super) fn setup(app: &tauri::App) -> tauri::Result<()> {
     if !std::env::args_os().any(|a| a == "--diagram-isolation-spike") {
@@ -128,6 +174,7 @@ pub(super) fn setup(app: &tauri::App) -> tauri::Result<()> {
     }
     let state = app.state::<Shared>().inner().clone();
     let label = format!("{LABEL_PREFIX}{}", uuid::Uuid::new_v4().simple());
+    let frame_probe = std::env::args_os().any(|a| a == "--diagram-isolation-frame-probe");
     *state.lock().unwrap() = Session {
         label: label.clone(),
         nonce: nonce(),
@@ -135,9 +182,13 @@ pub(super) fn setup(app: &tauri::App) -> tauri::Result<()> {
         served_host: false,
         served_child: false,
         started: Some(std::time::Instant::now()),
+        frame_probe,
+        served_foreign: false,
     };
     let host_url = format!("{}/", origin(HOST));
     let child_url = format!("{}/", origin(CHILD));
+    let foreign_url = format!("{}/", origin(FOREIGN));
+    let sibling_url = format!("{}/sibling.html", origin(CHILD));
     let navigation_state = state.clone();
     let window =
         WebviewWindowBuilder::new(app, &label, WebviewUrl::External(host_url.parse().unwrap()))
@@ -148,7 +199,10 @@ pub(super) fn setup(app: &tauri::App) -> tauri::Result<()> {
                 // fixed documents; fragment carries no routing or filesystem authority.
                 let mut clean = url.clone();
                 clean.set_fragment(None);
-                let allowed = clean.as_str() == host_url || clean.as_str() == child_url;
+                let allowed = clean.as_str() == host_url
+                    || clean.as_str() == child_url
+                    || (frame_probe
+                        && (clean.as_str() == foreign_url || clean.as_str() == sibling_url));
                 if !allowed {
                     navigation_state.lock().unwrap().live = false;
                 }
@@ -200,6 +254,8 @@ mod tests {
             served_host: false,
             served_child: false,
             started: Some(std::time::Instant::now()),
+            frame_probe: false,
+            served_foreign: false,
         }))
     }
     fn request(path: &str) -> tauri::http::Request<Vec<u8>> {
@@ -300,6 +356,66 @@ mod tests {
             assert!(p.contains("connect-src 'none'"));
             assert!(!p.contains("unsafe-"));
             assert!(!p.contains("ipc:"));
+        }
+    }
+    #[test]
+    fn frame_probe_routes_require_mode_and_actual_owner() {
+        let s = state();
+        let req = |scheme: &str, path: &str| {
+            tauri::http::Request::builder()
+                .uri(format!("http://{scheme}.localhost{path}"))
+                .body(Vec::new())
+                .unwrap()
+        };
+        for (scheme, path) in [
+            (FOREIGN, "/"),
+            (FOREIGN, "/peer.mjs"),
+            (CHILD, "/sibling.html"),
+            (CHILD, "/peer.mjs"),
+        ] {
+            assert_eq!(
+                reply(&s, "diagram-spike-test", scheme, req(scheme, path)).status(),
+                403
+            );
+        }
+        s.lock().unwrap().frame_probe = true;
+        for (scheme, path) in [
+            (FOREIGN, "/"),
+            (FOREIGN, "/peer.mjs"),
+            (CHILD, "/sibling.html"),
+            (CHILD, "/peer.mjs"),
+        ] {
+            assert_eq!(reply(&s, "main", scheme, req(scheme, path)).status(), 403);
+            assert_eq!(
+                reply(&s, "diagram-spike-test", scheme, req(scheme, path)).status(),
+                200
+            );
+        }
+        assert_eq!(
+            reply(&s, "diagram-spike-test", FOREIGN, req(FOREIGN, "/")).status(),
+            410
+        );
+        assert_eq!(
+            reply(&s, "diagram-spike-test", CHILD, req(CHILD, "/")).status(),
+            403
+        );
+    }
+    #[test]
+    fn frame_probe_keeps_restrictive_csp_and_nosniff_headers() {
+        let s = state();
+        s.lock().unwrap().frame_probe = true;
+        let host = reply(&s, "diagram-spike-test", HOST, request("/host.mjs"));
+        let csp = host.headers()["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains(&format!("frame-src {} {}", origin(CHILD), origin(FOREIGN))));
+        assert!(csp.contains("connect-src 'none'"));
+        for scheme in [FOREIGN, CHILD] {
+            let request = tauri::http::Request::builder()
+                .uri(format!("http://{scheme}.localhost/peer.mjs"))
+                .body(Vec::new())
+                .unwrap();
+            let peer = reply(&s, "diagram-spike-test", scheme, request);
+            assert_eq!(peer.headers()["content-security-policy"], policy(true));
+            assert_eq!(peer.headers()["x-content-type-options"], "nosniff");
         }
     }
 }

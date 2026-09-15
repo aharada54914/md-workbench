@@ -1,8 +1,10 @@
 import { receiver, envelope, LIMITS } from './protocol.mjs';
 const meta = name => document.querySelector(`meta[name="${name}"]`).content;
 const session = meta('session'), expectedHost = meta('host-origin'), childOrigin = meta('child-origin');
+const frameProbe = meta('frame-probe') === 'true', foreignOrigin = meta('foreign-origin');
 // Only nonsecret observations are exposed to the packaged observer.
 const report = globalThis.__diagramReport = { version:1, status:'starting', hostOrigin:location.origin, expectedHost, expectedChild:childOrigin, childOrigin:null, candidate:false, violations:[] };
+if (frameProbe) report.frames = { foreign:null, sibling:null, selectedRejected:null };
 document.addEventListener('securitypolicyviolation', event => {
   if (report.violations.length < 32) report.violations.push({directive:event.effectiveDirective,blocked:event.blockedURI});
 });
@@ -15,17 +17,40 @@ if (location.origin === 'null' || location.origin !== expectedHost || location.o
   // Attach the empty browsing context first; register the listener before navigation.
   document.body.append(iframe);
   const peer = iframe.contentWindow;
+  let sibling = null;
   const gate = receiver({source:peer,origin:childOrigin,session,steps:[{seq:0,kinds:['ready']},{seq:2,kinds:['candidate','cancel']}]});
   let retired = false;
   const stop = () => { retired = true; gate.retire(); clearTimeout(timer); removeEventListener('message', onMessage); };
   const timer = setTimeout(() => { report.status = 'timeout'; stop(); }, LIMITS.timeout);
   function onMessage(event) {
     if (retired) return;
+    if (frameProbe && event.source === peer && event.origin === foreignOrigin) {
+      const result = gate.receive(event);
+      report.frames.foreign = { selectedSource:true, origin:event.origin, result:result.status };
+      if (result.status !== 'ignored') { report.status='foreign_not_ignored'; stop(); return; }
+      // Navigation retains the selected WindowProxy, while its real origin changes.
+      iframe.src = `${childOrigin}/`;
+      sibling = document.createElement('iframe');
+      sibling.title = 'Fixed sibling provenance probe';
+      sibling.sandbox = 'allow-scripts allow-same-origin';
+      document.body.append(sibling);
+      sibling.src = `${childOrigin}/sibling.html`;
+      return;
+    }
+    if (frameProbe && sibling && event.source === sibling.contentWindow && event.origin === childOrigin) {
+      const result = gate.receive(event);
+      report.frames.sibling = { selectedSource:event.source === peer, origin:event.origin, result:result.status };
+      if (result.status !== 'ignored') { report.status='sibling_not_ignored'; stop(); }
+      return;
+    }
     if (event.source === peer) report.childOrigin = event.origin;
     if (event.source === peer && (event.origin === 'null' || event.origin === location.origin)) { report.status='unsupported_origin'; stop(); return; }
     const result = gate.receive(event);
     if (result.status === 'ignored') return;
-    if (result.status !== 'accepted') { report.status = result.reason ?? result.status; stop(); return; }
+    if (result.status !== 'accepted') {
+      if (frameProbe) report.frames.selectedRejected = { selectedSource:event.source === peer, origin:event.origin, reason:result.reason };
+      report.status = result.reason ?? result.status; stop(); return;
+    }
     if (result.value.kind === 'ready') {
       peer.postMessage(envelope(session,1,'load','fixed synthetic text'),childOrigin);
     } else {
@@ -35,5 +60,5 @@ if (location.origin === 'null' || location.origin !== expectedHost || location.o
   }
   addEventListener('message', onMessage);
   addEventListener('pagehide', stop, {once:true});
-  iframe.src = `${childOrigin}/`;
+  iframe.src = `${frameProbe ? foreignOrigin : childOrigin}/`;
 }

@@ -7,7 +7,9 @@ import { resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import { commands, observeNativeDenials } from './native-receipts.mjs';
+import { observeFrames } from './frame-observer.mjs';
 const [binaryArg, outArg, mode] = process.argv.slice(2);
+const frameProbe = mode === '--frame-active' || mode === '--frame-roundtrip';
 if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') throw Error('Requires hosted Windows CI');
 const binary=resolve(binaryArg), out=resolve(outArg);
 await mkdir(out,{recursive:false});
@@ -22,9 +24,9 @@ const bounded=(current, chunk)=>(current+chunk.toString()).slice(-262144);
 async function until(fn, ms=15000) { const deadline=Date.now()+ms; do { const value=await fn(); if(value)return value; await delay(100); }while(Date.now()<deadline); throw Error('Observation timeout'); }
 try {
  report.fixtureHashes={};
- for(const name of ['host.html','child.html','host.mjs','child.mjs','protocol.mjs'])report.fixtureHashes[name]=createHash('sha256').update(await readFile(new URL(`../../src-tauri/src/diagram_spike/${name}`,import.meta.url))).digest('hex');
+ for(const name of ['host.html','child.html','host.mjs','child.mjs','protocol.mjs',...(frameProbe?['peer.html','peer.mjs']:[])])report.fixtureHashes[name]=createHash('sha256').update(await readFile(new URL(`../../src-tauri/src/diagram_spike/${name}`,import.meta.url))).digest('hex');
  report.binarySha256=createHash('sha256').update(await readFile(binary)).digest('hex');
- child=spawn(binary,['--diagram-isolation-spike'],{env:{...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1'},stdio:['ignore','pipe','pipe']});
+ child=spawn(binary,['--diagram-isolation-spike',...(frameProbe?['--diagram-isolation-frame-probe']:[])],{env:{...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1'},stdio:['ignore','pipe','pipe']});
  child.stdout.on('data',c=>{stdout=bounded(stdout,c)});child.stderr.on('data',c=>{stderr=bounded(stderr,c)});
  child.on('error',error=>report.errors.push(error.message));
  browser=await until(async()=>{try{return await chromium.connectOverCDP('http://127.0.0.1:9222',{timeout:1000})}catch{return null}});
@@ -37,6 +39,11 @@ try {
  } else {
  const fixture=await until(()=>pages().find(p=>p.url().startsWith('http://mdwdiagramhost.localhost/')));
  const main=await until(async()=>{for(const p of pages())if(p!==fixture && await p.evaluate(()=>!!window.__TAURI_INTERNALS__).catch(()=>false))return p;return null});
+ if(frameProbe){
+  report.mode=mode;
+  await observeFrames({fixture,main,report,until,readLog:()=>stderr,active:mode==='--frame-active'});
+  report.status='unsupported';process.exitCode=1; // No child native rejection receipt; never substitute absence for denial.
+ } else {
  report.roundtrip=await until(async()=>{const r=await fixture.evaluate(()=>window.__diagramReport);return r && r.status!=='starting'?r:null});
  const frame=fixture.frames().find(f=>f.url().startsWith('http://mdwdiagramfixture.localhost/'));
  if(frame)report.child=await frame.evaluate(()=>window.__diagramChildReport);
@@ -107,6 +114,7 @@ try {
  // This is a bounded first observer, not complete T04/T16 or platform acceptance.
  report.status=requiredFailure?'failed':requiredUnsupported?'unsupported':'passed_measured_subset';
  if(requiredFailure||requiredUnsupported)process.exitCode=1;
+ }
  }
 } catch(error) { if(report.status!=='unsupported')report.status='failed';report.errors.push(String(error?.stack??error));process.exitCode=1; }
 finally {
