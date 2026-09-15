@@ -43,7 +43,7 @@ pub(super) fn validate_native_selection(path: &Path) -> Result<(), AccessError> 
     Ok(())
 }
 
-fn validate_name(name: &str) -> Result<(), AccessError> {
+pub(crate) fn validate_name(name: &str) -> Result<(), AccessError> {
     if name.is_empty()
         || name == "."
         || name == ".."

@@ -180,6 +180,8 @@ const en: Translations = {
   // File dialogs
   workspacePermissionRequired: "Choose this folder again with Open Folder to grant access.",
   workspaceOpenFailed: "Could not open the workspace.",
+  workspaceInvalidName: "Use a valid file or folder name without path separators or reserved characters.",
+  workspaceCreateFailed: "Could not create the file or folder. Check that the name is available and the folder is writable.",
   openPermissionRequired: "Access to this document is required. Select it again using Open File.",
   openDocumentFailed: "Could not open the document.",
   openFile: 'Open Markdown file',

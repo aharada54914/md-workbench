@@ -186,6 +186,8 @@ export interface Translations {
   // File dialogs
   workspacePermissionRequired: string;
   workspaceOpenFailed: string;
+  workspaceInvalidName: string;
+  workspaceCreateFailed: string;
   openPermissionRequired: string;
   openDocumentFailed: string;
   openFile: string;

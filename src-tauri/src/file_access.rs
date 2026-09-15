@@ -14,11 +14,15 @@ use uuid::Uuid;
 
 #[path = "file_access_policy.rs"]
 mod policy;
+pub(crate) use policy::validate_name as validate_child_name;
 use policy::{supported_platform, validate_native_selection, validate_relative};
 
 #[path = "file_access_directory.rs"]
 mod directory;
 pub(crate) use directory::{DirectoryEntry, DirectoryListing, MAX_DIRECTORY_ENTRIES};
+
+#[path = "file_access_create.rs"]
+mod create;
 
 pub(crate) const MAX_IO_BYTES: usize = 64 * 1024 * 1024;
 

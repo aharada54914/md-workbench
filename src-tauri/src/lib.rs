@@ -318,53 +318,6 @@ fn is_workspace_hidden(name: &str) -> bool {
 }
 
 #[tauri::command]
-fn create_md_file(parent: String, name: String) -> Result<String, String> {
-    let parent_path = Path::new(&parent);
-    if !parent_path.is_dir() {
-        return Err(format!("parent is not a directory: {}", parent));
-    }
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err("file name cannot be empty".into());
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err("file name cannot contain path separators".into());
-    }
-    let final_name = if is_workspace_markdown(trimmed) {
-        trimmed.to_string()
-    } else {
-        format!("{}.md", trimmed)
-    };
-    let full = parent_path.join(&final_name);
-    if full.exists() {
-        return Err(format!("file already exists: {}", full.display()));
-    }
-    std::fs::write(&full, "").map_err(|e| format!("create file: {}", e))?;
-    Ok(full.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-fn create_folder(parent: String, name: String) -> Result<String, String> {
-    let parent_path = Path::new(&parent);
-    if !parent_path.is_dir() {
-        return Err(format!("parent is not a directory: {}", parent));
-    }
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err("folder name cannot be empty".into());
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err("folder name cannot contain path separators".into());
-    }
-    let full = parent_path.join(trimmed);
-    if full.exists() {
-        return Err(format!("folder already exists: {}", full.display()));
-    }
-    std::fs::create_dir(&full).map_err(|e| format!("create folder: {}", e))?;
-    Ok(full.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
 fn rename_path(from: String, to: String) -> Result<(), String> {
     let from_path = Path::new(&from);
     let to_path = Path::new(&to);
@@ -662,8 +615,8 @@ pub fn run() {
             focus_window_with_file,
             list_system_fonts,
             native_files::read_workspace_tree,
-            create_md_file,
-            create_folder,
+            native_files::create_md_file,
+            native_files::create_folder,
             rename_path,
             delete_path,
             reveal_in_os,

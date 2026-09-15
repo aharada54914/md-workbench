@@ -392,6 +392,25 @@ describe('useWorkspace', () => {
   });
 
   describe('file operations', () => {
+    it.each(['createFile', 'createFolder'] as const)('%s reports typed denial without changing the open workspace', async (operation) => {
+      const ws = useWorkspace();
+      const oldTree = makeFolderNode('/r');
+      invokeMock.mockResolvedValueOnce(oldTree);
+      const opened = await ws.openWorkspace('/r');
+      for (const [code, message] of [
+        ['permission_required', 'Choose this folder again with Open Folder to grant access.'],
+        ['invalid_path', 'Use a valid file or folder name without path separators or reserved characters.'],
+        ['filesystem_error', 'Could not create the file or folder. Check that the name is available and the folder is writable.'],
+      ]) {
+        invokeMock.mockClear();
+        invokeMock.mockRejectedValueOnce({ code, message: 'native diagnostic' });
+        await expect(ws[operation]('/r', 'new')).rejects.toThrow(message);
+        expect(invokeMock).toHaveBeenCalledTimes(1);
+        expect(ws.activeWorkspaceId.value).toBe(opened.id);
+        expect(ws.tree.value).toEqual(oldTree);
+      }
+    });
+
     it('createFile invokes command and refreshes all open trees', async () => {
       const ws = useWorkspace();
       invokeMock.mockResolvedValue(makeFolderNode('any'));

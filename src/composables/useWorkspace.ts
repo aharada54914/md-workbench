@@ -73,6 +73,13 @@ export function useWorkspace() {
     }
     return error instanceof Error ? error.message : t.value.workspaceOpenFailed;
   };
+  const describeCreateError = (error: unknown): string => {
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+      if (error.code === 'permission_required') return t.value.workspacePermissionRequired;
+      if (error.code === 'invalid_path') return t.value.workspaceInvalidName;
+    }
+    return t.value.workspaceCreateFailed;
+  };
   const {
     settings,
     setOpenWorkspaces,
@@ -372,13 +379,23 @@ export function useWorkspace() {
   // ===== Public API: file operations =====
 
   async function createFile(parent: string, name: string): Promise<string> {
-    const created = await workspaceFs.createFile(parent, name);
+    let created: string;
+    try {
+      created = await workspaceFs.createFile(parent, name);
+    } catch (error) {
+      throw new Error(describeCreateError(error));
+    }
     await refreshAll();
     return created;
   }
 
   async function createFolder(parent: string, name: string): Promise<string> {
-    const created = await workspaceFs.createFolder(parent, name);
+    let created: string;
+    try {
+      created = await workspaceFs.createFolder(parent, name);
+    } catch (error) {
+      throw new Error(describeCreateError(error));
+    }
     await refreshAll();
     return created;
   }

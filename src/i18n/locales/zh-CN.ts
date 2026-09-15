@@ -180,6 +180,8 @@ const zhCN: Translations = {
   // File dialogs
   workspacePermissionRequired: "请通过“打开文件夹”重新选择此文件夹以授予访问权限。",
   workspaceOpenFailed: "无法打开工作区。",
+  workspaceInvalidName: "请使用有效的文件或文件夹名称，不要包含路径分隔符或保留字符。",
+  workspaceCreateFailed: "无法创建文件或文件夹。请检查名称是否可用，以及文件夹是否允许写入。",
   openPermissionRequired: "需要文档访问权限。请通过“打开文件”重新选择此文档。",
   openDocumentFailed: "无法打开文档。",
   openFile: '打开 Markdown 文件',

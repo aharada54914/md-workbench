@@ -9,12 +9,16 @@ UNC and check/use races; preview must not receive filesystem IPC.
 The inventory below records the original migration targets; its old line numbers
 are not a description of the current implementation. The retained-handle core,
 native authority ingress, acknowledged window transfers, owned path reads and
-bounded workspace trees and content search are implemented. Document and workspace Open actions
+bounded workspace trees and content search are implemented. Native drops use an
+owned queue with current grant identity checks. Workspace file/folder creation
+uses current Workspace WRITE grants and exclusive creation. Document and workspace Open actions
 now use native pickers. See [FILESYSTEM_BROKER_API.md](FILESYSTEM_BROKER_API.md)
 [NATIVE_DOCUMENT_OPEN.md](NATIVE_DOCUMENT_OPEN.md) and
-[NATIVE_WORKSPACE_SEARCH.md](NATIVE_WORKSPACE_SEARCH.md) for their exact scope.
+[NATIVE_WORKSPACE_SEARCH.md](NATIVE_WORKSPACE_SEARCH.md),
+[NATIVE_DROP.md](NATIVE_DROP.md) and
+[NATIVE_WORKSPACE_CREATE.md](NATIVE_WORKSPACE_CREATE.md) for their exact scope.
 
-Mutation, classification/reveal, subscriptions/reload, images, exports,
+Rename/deletion/save, OS reveal, subscriptions/reload, images, exports,
 AI writes, recovery and app-private grant restoration still need migration.
 Broad plugin-fs permissions remain until those callers have moved. Native Windows
 validation and the real packaged preview IPC probes are separate from browser

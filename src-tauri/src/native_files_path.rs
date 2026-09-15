@@ -59,6 +59,22 @@ impl NativeState {
         path: &str,
         directory: bool,
     ) -> Result<(GrantId, String), String> {
+        self.resolve_path(label, path, directory, false)
+    }
+    pub(super) fn resolve_writable_workspace(
+        &self,
+        label: &str,
+        path: &str,
+    ) -> Result<(GrantId, String), String> {
+        self.resolve_path(label, path, true, true)
+    }
+    fn resolve_path(
+        &self,
+        label: &str,
+        path: &str,
+        directory: bool,
+        workspace_write: bool,
+    ) -> Result<(GrantId, String), String> {
         self.generation(label)?;
         if !Path::new(path).is_absolute() {
             return Err("invalid_path".into());
@@ -67,7 +83,14 @@ impl NativeState {
         let mut owned: Vec<_> = self
             .owned
             .iter()
-            .filter(|((owner, _), info)| owner == label && info.rights.can_read())
+            .filter(|((owner, _), info)| {
+                owner == label
+                    && if workspace_write {
+                        info.kind == GrantKind::Workspace
+                    } else {
+                        info.rights.can_read()
+                    }
+            })
             .collect();
         // Prefer the precise native alias (or its spelled workspace prefix),
         // then stable spelling order. Equal-length candidates must retain this
@@ -93,12 +116,16 @@ impl NativeState {
             .filter_map(|((_, alias), info)| {
                 let root = routing_path(alias);
                 relative_to(&routed, &root)
-                    .map(|relative| (root.trim_end_matches('/').len(), info.id, relative))
+                    .map(|relative| (root.trim_end_matches('/').len(), *info, relative))
             })
             .reduce(|best, next| if next.0 > best.0 { next } else { best });
-        candidate
-            .map(|(_, id, relative)| (id, relative))
-            .ok_or_else(|| "permission_required".into())
+        let candidate = candidate.ok_or_else(|| "permission_required".to_owned())?;
+        // Select current metadata first: a narrower READ-only workspace must
+        // not fall back to a broader WRITE grant or resurrect an older grant.
+        if workspace_write && !candidate.1.rights.can_write() {
+            return Err("permission_required".into());
+        }
+        Ok((candidate.1.id, candidate.2))
     }
     // Resolve once under the registry lock. An expected identity never authorizes
     // a historical grant or changes the normal exact-file/workspace precedence.

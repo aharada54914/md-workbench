@@ -10,6 +10,51 @@ const tree: WorkspaceNode = {
 };
 const permission = 'Choose this folder again with Open Folder to grant access.';
 
+for (const kind of ['file', 'folder'] as const) {
+  test(`denied native ${kind} creation explains the failure and preserves the open document`, async ({ page }) => {
+    const fs = await setupTauriMocks(page, {
+      initialFs: { [file]: '# Keep current\n' }, workspaceTrees: { [root]: tree },
+    });
+    await seedWorkspace(page);
+    await page.goto('/');
+    await openFolder(page, root);
+    await page.locator('.tree-row', { hasText: 'note.md' }).dblclick();
+    const preview = page.frameLocator('iframe[title="Isolated document preview"]').locator('body');
+    await expect(preview).toContainText('Keep current');
+    const before = await workspaceState(page);
+    const calls = fs.getCalls().slice();
+    await page.evaluate(kind => {
+      const internals = (window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, ...args: unknown[]) => Promise<unknown> };
+      }).__TAURI_INTERNALS__;
+      const invoke = internals.invoke;
+      internals.invoke = (command, ...args) => {
+        if (command === (kind === 'file' ? 'create_md_file' : 'create_folder')) {
+          return Promise.reject({ code: 'permission_required', message: 'Native detail' });
+        }
+        return invoke(command, ...args);
+      };
+    }, kind);
+    await page.locator('.ws-section-name').click({ button: 'right' });
+    await page.locator('.workspace-context-menu').getByRole('button', {
+      name: kind === 'file' ? 'New file…' : 'New folder…', exact: true,
+    }).click();
+    await page.locator('.wid-input').fill('new-item');
+    const alert = page.waitForEvent('dialog').then(async dialog => {
+      const message = dialog.message();
+      await dialog.accept();
+      return message;
+    });
+    await page.locator('.wid-panel').getByRole('button', { name: 'Create', exact: true }).click();
+    expect(await alert).toBe(`Error: ${permission}`);
+    await expect(page.locator('.wid-panel')).toHaveCount(0);
+    await expect(preview).toContainText('Keep current');
+    await expect(page.locator('.tree-label')).toHaveText('note.md');
+    expect(await workspaceState(page)).toEqual(before);
+    expect(fs.getCalls()).toEqual(calls);
+  });
+}
+
 async function seedWorkspace(page: Page, restored = false) {
   await page.addInitScript(({ root, restored }) => {
     localStorage.setItem('mermark-settings', JSON.stringify({

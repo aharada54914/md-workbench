@@ -180,6 +180,8 @@ const pl: Translations = {
   // File dialogs
   workspacePermissionRequired: "Wybierz ponownie ten folder przez Otwórz folder, aby udzielić dostępu.",
   workspaceOpenFailed: "Nie udało się otworzyć obszaru roboczego.",
+  workspaceInvalidName: "Użyj poprawnej nazwy pliku lub folderu bez separatorów ścieżki i znaków zastrzeżonych.",
+  workspaceCreateFailed: "Nie udało się utworzyć pliku lub folderu. Sprawdź, czy nazwa jest wolna i czy folder umożliwia zapis.",
   openPermissionRequired: "Wymagany jest dostęp do dokumentu. Wybierz go ponownie przez Otwórz plik.",
   openDocumentFailed: "Nie udało się otworzyć dokumentu.",
   openFile: 'Otwórz plik Markdown',
