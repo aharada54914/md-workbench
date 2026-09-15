@@ -61,3 +61,18 @@ describe('DOCX export content ownership', () => {
     expect(writeFile).not.toHaveBeenCalled();
   });
 });
+
+
+it('converts the captured DOCX HTML without the browsing-capable HTML parser', async () => {
+  vi.mocked(save).mockResolvedValue('/selected/export.docx');
+  vi.spyOn(serializer, 'serializeEditorContent').mockReturnValue('<h1>日本語</h1><img src="https://example.invalid/authored.png"><p>Exact text</p>');
+  const parse = vi.spyOn(DOMParser.prototype, 'parseFromString').mockImplementation(() => {
+    throw new Error('Browsing-capable HTML parser must not run');
+  });
+  const bytes = new Uint8Array([1, 2, 3]);
+  const pack = vi.spyOn(Packer, 'toBlob').mockResolvedValue({ arrayBuffer: async () => bytes.buffer } as Blob);
+  await useDocxExport().exportDocx();
+  expect(parse).not.toHaveBeenCalled();
+  expect(pack).toHaveBeenCalledOnce();
+  expect(writeFile).toHaveBeenCalledExactlyOnceWith('/selected/export.docx', bytes);
+});

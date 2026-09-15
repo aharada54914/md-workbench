@@ -1,5 +1,48 @@
 import { expect, test } from '@playwright/test';
 
+test('print TOC and math preparation preserve image sources without fetching them', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', request => {
+    if (request.url().includes('__print_inert_sentinel__')) requests.push(request.url());
+  });
+  await page.route('**/*__print_inert_sentinel__*', route => route.abort());
+  // Deliberately no CSP, so it cannot mask a resource request during parsing.
+  await page.route('**/print-inert-probe', route => route.fulfill({
+    contentType: 'text/html', body: '<!doctype html><html><body></body></html>',
+  }));
+  await page.goto('/print-inert-probe');
+  const result = await page.evaluate(async () => {
+    const path = '/src/composables/usePdfExport.ts';
+    const { buildPrintDocument, PDF_SETTINGS_DEFAULTS } = await import(/* @vite-ignore */ path);
+    const originalParse = DOMParser.prototype.parseFromString;
+    DOMParser.prototype.parseFromString = () => { throw new Error('Browser DOMParser reached'); };
+    try {
+      const source = '<h1 id="intro">日本語 heading</h1><img src="/__print_inert_sentinel__-authored.png">';
+      const settings = { ...PDF_SETTINGS_DEFAULTS, showToc: true };
+      const plain = buildPrintDocument(source, settings, '');
+      const math = buildPrintDocument(source + '<span data-type="katex-inline" data-formula="x%5E2"></span>', settings, '');
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      return { plain, math };
+    } finally { DOMParser.prototype.parseFromString = originalParse; }
+  });
+  for (const output of [result.plain, result.math]) {
+    expect(output).toContain('href="#intro"');
+    expect(output).toContain('日本語 heading');
+    expect(output).toContain('src="/__print_inert_sentinel__-authored.png"');
+  }
+  expect(result.math).toContain('class="katex"');
+  expect(requests).toEqual([]);
+  // A live image must be observable by this same request collector.
+  const positive = page.waitForRequest(request => request.url().includes('__print_inert_sentinel__-positive'));
+  await page.evaluate(() => {
+    const image = document.createElement('img');
+    image.src = '/__print_inert_sentinel__-positive.png';
+    document.body.appendChild(image);
+  });
+  await positive;
+  expect(requests).toHaveLength(1);
+});
+
 test('inert helpers preserve actual TipTap image models without raw resource fetches', async ({ page }) => {
   const requests: string[] = [];
   const routed: string[] = [];
