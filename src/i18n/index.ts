@@ -204,6 +204,7 @@ export interface Translations {
   workspaceMutationUnsupported: string;
   openPermissionRequired: string;
   openDocumentFailed: string;
+  externalLinkFailed: string;
   openFile: string;
   saveFile: string;
   markdownFiles: string;

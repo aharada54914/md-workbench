@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { open as openExternal } from '@tauri-apps/plugin-shell';
+import { openExternalWithFeedback } from '../../services/nativeExternalLink';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '../../i18n';
 import { useSettings, OLLAMA_MIN_NUM_CTX, type CliKind, type PanelSide } from '../../composables/useSettings';
@@ -154,7 +154,7 @@ const installUrl: Record<CliKind, string> = {
 };
 
 async function openInstall(cli: CliKind) {
-  await openExternal(installUrl[cli]);
+  await openExternalWithFeedback(installUrl[cli], t.value.externalLinkFailed);
 }
 
 function setCliPath(cli: CliKind, value: string) {

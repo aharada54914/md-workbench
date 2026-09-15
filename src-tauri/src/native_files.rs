@@ -319,3 +319,7 @@ pub(crate) use image_picker::*;
 #[allow(dead_code)] // Inactive; deliberately not registered as a Tauri command.
 #[path = "native_files_save_preflight.rs"]
 mod save_preflight;
+
+#[path = "native_files_external_link.rs"]
+mod external_link;
+pub(crate) use external_link::*;

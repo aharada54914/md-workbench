@@ -198,6 +198,7 @@ const pl: Translations = {
   workspaceMutationUnsupported: "Ta operacja nie jest obsługiwana dla tego elementu lub systemu plików.",
   openPermissionRequired: "Wymagany jest dostęp do dokumentu. Wybierz go ponownie przez Otwórz plik.",
   openDocumentFailed: "Nie udało się otworzyć dokumentu.",
+  externalLinkFailed: "Nie udało się otworzyć odnośnika w przeglądarce.",
   openFile: 'Otwórz plik Markdown',
   saveFile: 'Zapisz plik Markdown',
   markdownFiles: 'Pliki Markdown',

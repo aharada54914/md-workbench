@@ -18,7 +18,7 @@ const mockRemove = vi.fn();
 const mockExists = vi.fn();
 const mockOpenDialog = vi.fn();
 const mockSaveDialog = vi.fn();
-const mockOpenShell = vi.fn();
+const mockOpenExternal = vi.fn();
 vi.mock('../../services/documentText', () => ({
   readTextFile: (...args: unknown[]) => mockReadTextFile(...args),
 }));
@@ -45,8 +45,8 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   save: (...args: unknown[]) => mockSaveDialog(...args),
 }));
 
-vi.mock('@tauri-apps/plugin-shell', () => ({
-  open: (...args: unknown[]) => mockOpenShell(...args),
+vi.mock('../../services/nativeExternalLink', () => ({
+  openExternal: (...args: unknown[]) => mockOpenExternal(...args),
 }));
 
 vi.mock('@tauri-apps/api/window', () => ({

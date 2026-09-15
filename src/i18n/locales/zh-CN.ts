@@ -198,6 +198,7 @@ const zhCN: Translations = {
   workspaceMutationUnsupported: "此项目或文件系统不支持该操作。",
   openPermissionRequired: "需要文档访问权限。请通过“打开文件”重新选择此文档。",
   openDocumentFailed: "无法打开文档。",
+  externalLinkFailed: "无法在浏览器中打开链接。",
   openFile: '打开 Markdown 文件',
   saveFile: '保存 Markdown 文件',
   markdownFiles: 'Markdown 文件',

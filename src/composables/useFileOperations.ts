@@ -4,7 +4,7 @@ import { writeTextFile, rename, remove, exists } from '@tauri-apps/plugin-fs';
 import { readTextFile } from '../services/documentText';
 import { nativeFs } from '../services/nativeFs';
 import { resolveDocumentLinkPath } from '../utils/document-link-path';
-import { open as openExternal } from '@tauri-apps/plugin-shell';
+import { openExternal } from '../services/nativeExternalLink';
 import { generateSlug } from '../utils/markdown-converter';
 import { serializeVisualMarkdown } from '../utils/visual-source';
 import { aiCommands } from '../services/aiCommands';

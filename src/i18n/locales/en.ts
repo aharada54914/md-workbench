@@ -198,6 +198,7 @@ const en: Translations = {
   workspaceMutationUnsupported: "This operation is not supported for this item or filesystem.",
   openPermissionRequired: "Access to this document is required. Select it again using Open File.",
   openDocumentFailed: "Could not open the document.",
+  externalLinkFailed: "Could not open the link in your browser.",
   openFile: 'Open Markdown file',
   saveFile: 'Save Markdown file',
   markdownFiles: 'Markdown Files',

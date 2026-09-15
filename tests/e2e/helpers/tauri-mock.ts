@@ -343,8 +343,10 @@ export async function setupTauriMocks(
             return (window as Record<string, unknown>).__mockDialogSavePath ?? null;
           }
 
-          // ── shell plugin ───────────────────────────────────────────
-          if (cmd === 'plugin:shell|open') {
+          if (cmd === 'plugin:shell|open') throw new Error('Ambient shell open is prohibited by this fixture');
+          if (cmd === 'native_open_external_link') {
+            const target = (args as { url: string }).url;
+            ((window as unknown as { __mockExternalLinks?: string[] }).__mockExternalLinks ??= []).push(target);
             return undefined;
           }
 

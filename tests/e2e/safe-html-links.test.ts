@@ -68,6 +68,10 @@ test.describe('safe HTML external links', () => {
 
     await expect(page.locator('.dialog-url')).toHaveText('https://example.com/badge');
     expect(page.url()).toBe(initialUrl);
+    expect(await page.evaluate(() => (window as unknown as { __mockExternalLinks?: string[] }).__mockExternalLinks ?? [])).toEqual([]);
+    await page.locator('.dialog-overlay .btn-confirm').click();
+    expect(await page.evaluate(() => (window as unknown as { __mockExternalLinks?: string[] }).__mockExternalLinks)).toEqual(['https://example.com/badge']);
+    expect(page.url()).toBe(initialUrl);
   });
 
   test('text HTML link uses the same confirmation dialog', async ({ page }) => {

@@ -44,7 +44,6 @@
       "identifier": "fs:allow-exists",
       "allow": [{ "path": "**" }]
     },
-    "shell:allow-open",
     "deep-link:default",
     "process:default",
     "core:window:allow-set-focus",

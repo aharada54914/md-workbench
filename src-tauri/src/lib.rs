@@ -559,6 +559,7 @@ pub fn run() {
             native_files::rename_path,
             native_files::delete_path,
             native_files::reveal_in_os,
+            native_files::native_open_external_link,
             native_files::search_workspace_content,
             ai_health_check,
             ai_ollama_models,
