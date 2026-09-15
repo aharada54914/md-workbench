@@ -6,7 +6,7 @@ use crate::{
         journal_replay::{ReplayStatus, SnapshotVerification},
         private_store::{
             probe::{self, Boundary},
-            FreshJournalWriter, PrivateSession,
+            PrivateSession, SnapshotSession, SnapshotStoreError,
         },
         transaction::{JournalRecord, PriorState, Sha256Digest, TargetRecord, TransactionId},
     },
@@ -16,6 +16,8 @@ use std::{
     io::{BufRead, Read, Write},
     sync::OnceLock,
 };
+const BEFORE: &[u8] = b"\xef\xbb\xbfsynthetic-before\r\n \xff";
+const AFTER: &[u8] = b"synthetic-after\r\n\t\xff";
 static TARGET: OnceLock<Boundary> = OnceLock::new();
 static IDENTIFIER: OnceLock<String> = OnceLock::new();
 #[derive(Serialize, Deserialize)]
@@ -31,9 +33,7 @@ enum Message {
     },
     Observed {
         exact: bool,
-        sequence: u64,
-        validated_bytes: usize,
-        incomplete_tail: bool,
+        verified_bytes: bool,
         unverified: bool,
     },
     Failed {
@@ -42,47 +42,48 @@ enum Message {
 }
 fn name(boundary: Boundary) -> &'static str {
     match boundary {
-        Boundary::Bootstrap => "bootstrap",
-        Boundary::PartialAppend => "partial_append",
-        Boundary::FlushedBeforeAck => "flushed_before_ack",
-        Boundary::AfterAck => "after_ack",
         Boundary::BeforeSnapshot => "before_snapshot",
         Boundary::PartialSnapshot => "partial_snapshot",
         Boundary::SnapshotFlushed => "snapshot_flushed",
         Boundary::SnapshotPrepared => "snapshot_prepared",
+        _ => "invalid",
     }
 }
 fn parse(value: &str) -> Option<Boundary> {
     [
-        Boundary::Bootstrap,
-        Boundary::PartialAppend,
-        Boundary::FlushedBeforeAck,
-        Boundary::AfterAck,
+        Boundary::BeforeSnapshot,
+        Boundary::PartialSnapshot,
+        Boundary::SnapshotFlushed,
+        Boundary::SnapshotPrepared,
     ]
     .into_iter()
     .find(|b| name(*b) == value)
 }
 fn record() -> JournalRecord {
+    use sha2::{Digest, Sha256};
+    let hash = |v: &[u8]| Sha256Digest::parse(&format!("{:x}", Sha256::digest(v))).unwrap();
     JournalRecord::new(
         TransactionId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap(),
         TargetRecord::new(
             "synthetic-document.md".into(),
-            PriorState::Missing,
-            Sha256Digest::parse(&"a".repeat(64)).unwrap(),
-            0,
+            PriorState::Hash { hash: hash(BEFORE) },
+            hash(AFTER),
+            AFTER.len() as u64,
         )
         .unwrap(),
         vec![],
     )
     .unwrap()
 }
-fn expected(boundary: Boundary) -> Vec<u8> {
-    let frame = encode_frame(1, &record()).unwrap();
-    match boundary {
-        Boundary::Bootstrap => vec![],
-        Boundary::PartialAppend => frame[..probe::FIRST_FRAGMENT].to_vec(),
-        _ => frame,
+fn expected(id: &str, boundary: Boundary) -> Option<Vec<u8>> {
+    if boundary == Boundary::BeforeSnapshot {
+        return None;
     }
+    let mut bytes = probe::snapshot_bytes(id, &record(), Some(BEFORE), AFTER).unwrap();
+    if boundary == Boundary::PartialSnapshot {
+        bytes.truncate(probe::FIRST_FRAGMENT);
+    }
+    Some(bytes)
 }
 fn hook(boundary: Boundary, id: Option<&str>) {
     if let Some(id) = id {
@@ -114,47 +115,61 @@ fn hook(boundary: Boundary, id: Option<&str>) {
 fn child(boundary: Boundary) -> Result<(), &'static str> {
     TARGET.set(boundary).map_err(|_| "duplicate_target")?;
     probe::install(hook).map_err(|_| "duplicate_hook")?;
-    let mut writer = FreshJournalWriter::create().map_err(|_| "bootstrap_failed")?;
-    let ack = writer.append(&record()).map_err(|_| "append_failed")?;
-    if ack.sequence != 1 {
+    let session = match SnapshotSession::create(&record(), Some(BEFORE), AFTER) {
+        Ok(session) => session,
+        Err(failure) => {
+            // Typed error contains only bounded operations/reasons/codes, never bytes or paths.
+            let reason = serde_json::to_string(&failure.error).map_err(|_| "error_schema")?;
+            if let Some(owner) = failure.owner {
+                let _ = owner.cleanup();
+            }
+            let _ = emit(&Message::Failed { reason });
+            std::process::exit(1);
+        }
+    };
+    if session.observation().sequence != 1 {
         return Err("wrong_ack");
     }
-    probe::notify(Boundary::AfterAck, None);
-    let session = writer.close();
-    let exact = PrivateSession::probe_matches(session.identifier(), &expected(Boundary::AfterAck))
-        .map_err(|_| "control_read_failed");
-    let cleaned = session.cleanup().is_ok();
-    emit(&Message::Done {
-        exact: exact?,
-        cleaned,
-    })?;
-    if !cleaned {
-        return Err("control_cleanup_failed");
+    let owner = session.close();
+    let exact = PrivateSession::inspect_document_snapshot(owner.identifier())
+        .map(|v| v.before() == Some(BEFORE) && v.after() == AFTER)
+        .unwrap_or(false);
+    let cleaned = owner.cleanup().is_ok();
+    emit(&Message::Done { exact, cleaned })?;
+    if !exact || !cleaned {
+        return Err("control_failed");
     }
     Ok(())
 }
 fn observe(id: &str, boundary: Boundary) -> Result<(), &'static str> {
-    let bytes = expected(boundary);
-    let exact = PrivateSession::probe_matches(id, &bytes).map_err(|_| "exact_read_failed")?;
-    let history = PrivateSession::inspect_existing(id).map_err(|_| "metadata_read_failed")?;
-    let sequence = if matches!(boundary, Boundary::Bootstrap | Boundary::PartialAppend) {
-        0
+    let bytes = expected(id, boundary);
+    let exact_snapshot =
+        PrivateSession::probe_snapshot_matches(id, record().id(), bytes.as_deref())
+            .map_err(|_| "snapshot_exact_read_failed")?;
+    let journal = if boundary == Boundary::SnapshotPrepared {
+        encode_frame(1, &record()).unwrap()
     } else {
-        1
+        vec![]
     };
-    let incomplete = boundary == Boundary::PartialAppend;
-    let valid = history.last_sequence() == sequence
-        && history.status()
-            == if incomplete {
-                ReplayStatus::IncompleteTail
+    let exact_journal =
+        PrivateSession::probe_matches(id, &journal).map_err(|_| "journal_exact_read_failed")?;
+    let history = PrivateSession::inspect_existing(id).map_err(|_| "metadata_read_failed")?;
+    let inspection = PrivateSession::inspect_document_snapshot(id);
+    let verified_bytes = match inspection {
+        Ok(v) => v.before() == Some(BEFORE) && v.after() == AFTER,
+        Err(SnapshotStoreError::UnboundHistory) if boundary != Boundary::SnapshotPrepared => false,
+        Err(_) => return Err("unexpected_snapshot_result"),
+    };
+    let valid = history.status() == ReplayStatus::CompletePrefix
+        && history.last_sequence()
+            == if boundary == Boundary::SnapshotPrepared {
+                1
             } else {
-                ReplayStatus::CompletePrefix
+                0
             };
     emit(&Message::Observed {
-        exact: exact && valid,
-        sequence: history.last_sequence(),
-        validated_bytes: history.validated_bytes(),
-        incomplete_tail: incomplete,
+        exact: exact_snapshot && exact_journal && valid,
+        verified_bytes,
         unverified: history.snapshots() == SnapshotVerification::Unverified,
     })
 }
@@ -165,7 +180,7 @@ struct ResultRow {
     reached: bool,
     passed: bool,
     residual_synthetic_store: bool,
-    error: Option<&'static str>,
+    error: Option<String>,
 }
 fn valid_ready(actual: Boundary, wanted: Boundary, identifier: &str) -> bool {
     actual == wanted
@@ -182,58 +197,48 @@ fn run_one(boundary: Boundary, kill: bool) -> ResultRow {
         residual_synthetic_store: false,
         error: None,
     };
-    let result = (|| {
-        let mut child = OwnedChild::spawn(&["--metadata-kill-child", name(boundary)])?;
+    let result: Result<(), String> = (|| {
+        let mut child = OwnedChild::spawn(&["--snapshot-kill-child", name(boundary)])?;
         // Creation may precede a failed handshake; conservatively report residual risk.
         row.residual_synthetic_store = true;
-        let Message::Ready {
-            boundary: actual,
-            identifier,
-        } = child.receive()?
-        else {
-            return Err("missing_ready");
+        let (actual, identifier) = match child.receive()? {
+            Message::Ready {
+                boundary,
+                identifier,
+            } => (boundary, identifier),
+            Message::Failed { reason } => return Err(reason),
+            _ => return Err("missing_ready".into()),
         };
         if !valid_ready(actual, boundary, &identifier) {
-            return Err("invalid_ready");
+            return Err("invalid_ready".into());
         }
         row.reached = true;
         if kill {
             child.kill_and_reap()?;
             let mut reader =
-                OwnedChild::spawn(&["--metadata-kill-read", &identifier, name(boundary)])?;
+                OwnedChild::spawn(&["--snapshot-kill-read", &identifier, name(boundary)])?;
             let Message::Observed {
                 exact,
-                sequence,
-                validated_bytes,
-                incomplete_tail,
+                verified_bytes,
                 unverified,
             } = reader.receive()?
             else {
-                return Err("missing_observation");
+                return Err("missing_observation".into());
             };
-            let length = expected(boundary).len();
-            let wanted_seq = if matches!(boundary, Boundary::Bootstrap | Boundary::PartialAppend) {
-                0
-            } else {
-                1
-            };
-            let wanted_extent = if wanted_seq == 0 { 0 } else { length };
             if !reader.wait()?.success()
                 || !exact
                 || !unverified
-                || sequence != wanted_seq
-                || validated_bytes != wanted_extent
-                || incomplete_tail != (boundary == Boundary::PartialAppend)
+                || verified_bytes != (boundary == Boundary::SnapshotPrepared)
             {
-                return Err("unexpected_observation");
+                return Err("unexpected_observation".into());
             }
         } else {
             child.proceed()?;
             let Message::Done { exact, cleaned } = child.receive()? else {
-                return Err("missing_control_done");
+                return Err("missing_control_done".into());
             };
             if !child.wait()?.success() || !exact || !cleaned {
-                return Err("control_failed");
+                return Err("control_failed".into());
             }
             row.residual_synthetic_store = false;
         }
@@ -256,9 +261,9 @@ struct Report {
 }
 pub fn dispatch() -> bool {
     let args: Vec<String> = std::env::args().collect();
-    let result = if args.len() == 3 && args[1] == "--metadata-kill-child" {
+    let result = if args.len() == 3 && args[1] == "--snapshot-kill-child" {
         Some(parse(&args[2]).ok_or("invalid_boundary").and_then(child))
-    } else if args.len() == 4 && args[1] == "--metadata-kill-read" {
+    } else if args.len() == 4 && args[1] == "--snapshot-kill-read" {
         Some(
             parse(&args[3])
                 .ok_or("invalid_boundary")
@@ -276,21 +281,21 @@ pub fn dispatch() -> bool {
         }
         return true;
     }
-    if args.len() != 2 || args[1] != "--metadata-kill" {
+    if args.len() != 2 || args[1] != "--snapshot-kill" {
         return false;
     }
     let results = [
-        Boundary::Bootstrap,
-        Boundary::PartialAppend,
-        Boundary::FlushedBeforeAck,
-        Boundary::AfterAck,
+        Boundary::BeforeSnapshot,
+        Boundary::PartialSnapshot,
+        Boundary::SnapshotFlushed,
+        Boundary::SnapshotPrepared,
     ]
     .into_iter()
     .flat_map(|b| [run_one(b, false), run_one(b, true)])
     .collect::<Vec<_>>();
     let report = Report {
         schema_version: 1,
-        scope: "process_kill_visibility_only",
+        scope: "snapshot_process_kill_visibility_only",
         namespace: "unestablished",
         snapshots: "unverified",
         passed: results.iter().all(|r| r.passed),
@@ -309,33 +314,30 @@ pub fn dispatch() -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn exact_boundary_contract() {
-        assert!(expected(Boundary::Bootstrap).is_empty());
+    fn exact_prefix_and_record_hash_contract() {
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        assert!(expected(id, Boundary::BeforeSnapshot).is_none());
         assert_eq!(
-            expected(Boundary::PartialAppend),
-            expected(Boundary::AfterAck)[..17]
+            expected(id, Boundary::PartialSnapshot).unwrap(),
+            expected(id, Boundary::SnapshotFlushed).unwrap()[..17]
         );
         assert_eq!(
-            expected(Boundary::FlushedBeforeAck),
-            expected(Boundary::AfterAck)
+            expected(id, Boundary::SnapshotFlushed),
+            expected(id, Boundary::SnapshotPrepared)
         );
-        assert!(parse("../elsewhere").is_none());
+        assert!(parse("../path").is_none());
     }
     #[test]
-    fn wrong_boundary_and_noncanonical_identifier_never_count_as_ready() {
-        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        assert!(valid_ready(Boundary::Bootstrap, Boundary::Bootstrap, id));
-        assert!(!valid_ready(Boundary::AfterAck, Boundary::Bootstrap, id));
-        for invalid in [
-            "../elsewhere",
-            "00000000-0000-0000-0000-000000000000",
-            "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
-        ] {
-            assert!(!valid_ready(
-                Boundary::Bootstrap,
-                Boundary::Bootstrap,
-                invalid
-            ));
-        }
+    fn forged_handshake_never_qualifies() {
+        assert!(!valid_ready(
+            Boundary::PartialSnapshot,
+            Boundary::SnapshotPrepared,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        ));
+        assert!(!valid_ready(
+            Boundary::BeforeSnapshot,
+            Boundary::BeforeSnapshot,
+            "../path"
+        ));
     }
 }

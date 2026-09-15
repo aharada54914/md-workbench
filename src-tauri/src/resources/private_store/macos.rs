@@ -248,6 +248,7 @@ pub(super) struct Root {
     dir: File,
     id: String,
     created: bool,
+    snapshot_identity: Option<snapshot_native::OwnedSnapshot>,
     file_identity: Option<(dev_t, ino_t)>,
 }
 impl Root {
@@ -332,6 +333,7 @@ impl Root {
             id,
             created,
             file_identity: None,
+            snapshot_identity: None,
         })
     }
     pub(super) fn open_file(&self) -> Result<File, StoreError> {
@@ -364,6 +366,7 @@ impl Root {
             });
         }
         let file = self.open_file()?;
+        self.cleanup_snapshot()?;
         drop(file);
         let name = format!("{PREFIX}{}", self.id);
         let current = open_at(
@@ -401,3 +404,6 @@ impl Root {
 #[cfg(test)]
 #[path = "macos_tests.rs"]
 mod tests;
+
+#[path = "macos_snapshot.rs"]
+mod snapshot_native;

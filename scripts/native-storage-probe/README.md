@@ -239,3 +239,20 @@ rejecting these tokens. Typed `windows_security` failures retain their operation
 and exact bounded policy reason, without logging SIDs or privilege lists.
 Run 35012508629 reported only the earlier generic `unsafe/permissions`; the shell
 explanation remains a hypothesis until the direct native invocation is measured.
+
+
+### Inactive document snapshots
+
+`cargo run --manifest-path scripts/native-storage-probe/Cargo.toml --features private-store-probe -- --snapshot-kill`
+uses the same inactive product snapshot primitive and bounded child supervisor.
+It runs four normal controls plus four actual child terminations: before the bundle,
+after an exact 17-byte prefix, after snapshot file/root barriers, and after PREPARED.
+Separate observer processes compare exact synthetic snapshot and journal bytes.
+Only the final boundary has a bound document snapshot; metadata still reports
+Unverified and namespace remains Unestablished. The bounded JSON contains no source,
+path or session UUID. Four killed synthetic sessions remain and are explicitly
+reported. No scan, adopted cleanup owner or recursive cleanup is available.
+
+This is one document/one transaction/no assets, with no Save or IPC integration,
+no recovered writer, no RecoveryReady state and no power-loss certification.
+Run directly through PowerShell on Windows, preserving the strict native token policy.

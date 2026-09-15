@@ -6,6 +6,8 @@ mod kill_process;
 mod metadata;
 mod report;
 mod resources;
+#[cfg(all(feature = "private-store-probe", any(windows, target_os = "macos")))]
+mod snapshot_probe;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -17,7 +19,7 @@ use std::io::Write;
 
 fn main() {
     #[cfg(all(feature = "private-store-probe", any(windows, target_os = "macos")))]
-    if kill_probe::dispatch() {
+    if snapshot_probe::dispatch() || kill_probe::dispatch() {
         return;
     }
     #[cfg(any(windows, target_os = "macos"))]

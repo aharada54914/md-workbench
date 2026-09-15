@@ -97,3 +97,6 @@ fn read_bytes(mut file: File) -> Result<Vec<u8>, StoreError> {
     }
     Ok(bytes)
 }
+
+#[path = "snapshot_session.rs"]
+pub(super) mod snapshot_session;

@@ -120,6 +120,21 @@ jobs:
           [System.IO.File]::WriteAllText((Join-Path $PWD 'metadata-kill-probe.json'), ($report -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
           if ($probeExit -ne 0) { throw 'Process-boundary probe failed; see typed report' }
           'Four owned child processes are terminated at explicit boundaries; four synthetic sessions remain on this disposable runner. Reopen stays metadata-only. Process kill does not simulate power loss.' | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Observe inactive document snapshots and owned child termination (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cargo run --quiet --locked --manifest-path scripts/native-storage-probe/Cargo.toml --features private-store-probe -- --snapshot-kill > snapshot-kill-probe.json
+          echo 'Document bytes are independently inspected only. Four synthetic snapshot sessions remain; no RecoveryReady, Save, namespace or power-loss claim.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Observe inactive document snapshots and owned child termination (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $report = & cargo run --quiet --locked --manifest-path scripts/native-storage-probe/Cargo.toml --features private-store-probe -- --snapshot-kill
+          $probeExit = $LASTEXITCODE
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'snapshot-kill-probe.json'), ($report -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
+          if ($probeExit -ne 0) { throw 'Snapshot boundary probe failed; see report' }
+          'Document bytes are independently inspected only. Four synthetic snapshot sessions remain; no RecoveryReady, Save, namespace or power-loss claim.' | Add-Content $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -127,5 +142,6 @@ jobs:
           path: |
             metadata-store-probe.json
             metadata-kill-probe.json
+            snapshot-kill-probe.json
           retention-days: 14
           if-no-files-found: error

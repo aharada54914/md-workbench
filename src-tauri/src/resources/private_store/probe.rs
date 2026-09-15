@@ -8,6 +8,10 @@ pub enum Boundary {
     PartialAppend,
     FlushedBeforeAck,
     AfterAck,
+    BeforeSnapshot,
+    PartialSnapshot,
+    SnapshotFlushed,
+    SnapshotPrepared,
 }
 pub const FIRST_FRAGMENT: usize = 17;
 type Callback = fn(Boundary, Option<&str>);
@@ -26,4 +30,16 @@ pub fn notify(boundary: Boundary, identifier: Option<&str>) {
     if let Some(callback) = CALLBACK.get() {
         callback(boundary, identifier);
     }
+}
+
+pub fn snapshot_bytes(
+    session: &str,
+    record: &crate::resources::transaction::JournalRecord,
+    before: Option<&[u8]>,
+    after: &[u8],
+) -> Result<Vec<u8>, super::SnapshotError> {
+    let mut bytes = super::snapshot::encode_header(session, record, before, after)?;
+    bytes.extend_from_slice(before.unwrap_or_default());
+    bytes.extend_from_slice(after);
+    Ok(bytes)
 }

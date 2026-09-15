@@ -239,6 +239,7 @@ pub(super) struct Root {
     id: String,
     user: String,
     created: bool,
+    snapshot_identity: Option<snapshot_native::OwnedSnapshot>,
     file_identity: Option<(u32, u32, u32)>,
 }
 impl Root {
@@ -314,6 +315,7 @@ impl Root {
             user,
             created,
             file_identity: None,
+            snapshot_identity: None,
         })
     }
     fn path(&self) -> Result<PathBuf, StoreError> {
@@ -348,6 +350,7 @@ impl Root {
             });
         }
         let file = self.file(true)?;
+        self.cleanup_snapshot()?;
         delete_handle(&file)?;
         drop(file);
         let path = self.path()?;
@@ -414,3 +417,6 @@ mod tests {
         );
     }
 }
+
+#[path = "windows_snapshot.rs"]
+mod snapshot_native;

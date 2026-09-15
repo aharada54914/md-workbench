@@ -118,3 +118,13 @@ impl std::error::Error for StoreError {}
 
 #[cfg(feature = "private-store-probe")]
 pub(crate) mod probe;
+
+mod snapshot;
+pub use snapshot::{SnapshotError, VerifiedDocumentSnapshotBytes};
+
+mod snapshot_write;
+#[cfg(any(windows, target_os = "macos"))]
+#[allow(unused_imports)]
+// Re-export the host API; the standalone consumer need not name its error owner.
+pub use session::snapshot_session::{SnapshotFailure, SnapshotSession};
+pub use snapshot_write::SnapshotStoreError;
