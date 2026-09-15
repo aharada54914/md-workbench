@@ -3,6 +3,8 @@
 The native substrate supplies authorized reads for the frontend polling scheduler.
 Native code installs no OS watcher, timer, polling loop, or filesystem event queue.
 `useFileWatcher` and manual reload use native READ authority without plugin-fs fallback.
+The document-window capability no longer permits the unused plugin-fs `watch`
+command. Other legacy filesystem permissions remain until their callers migrate.
 
 ## Contract
 
