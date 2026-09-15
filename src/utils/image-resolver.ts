@@ -1,15 +1,21 @@
 import { readFile } from '@tauri-apps/plugin-fs';
 
+function isAbsoluteImagePath(path: string): boolean {
+  return /^[a-zA-Z]:/.test(path) || path.startsWith('/');
+}
+
 /**
  * Resolves a relative image path to an absolute file path.
  */
 function resolveToAbsolutePath(src: string, baseDir: string): string {
-  if (/^[a-zA-Z]:/.test(src) || src.startsWith('/')) {
+  if (isAbsoluteImagePath(src)) {
     return src; // Already absolute
   }
 
-  let absolutePath = `${baseDir}/${src}`.replace(/\\/g, '/');
-  const parts = absolutePath.split('/');
+  const absolutePath = `${baseDir.replace(/[\\/]+$/, '')}/${src}`.replace(/\\/g, '/');
+  // Keep filesystem roots outside the dot-segment stack, including UNC share roots.
+  const root = absolutePath.match(/^(?:[a-zA-Z]:\/|\/\/[^/]+\/[^/]+(?:\/|$)|\/)/)?.[0] ?? '';
+  const parts = absolutePath.slice(root.length).split('/');
   const normalized: string[] = [];
   for (const part of parts) {
     if (part === '..') {
@@ -18,11 +24,7 @@ function resolveToAbsolutePath(src: string, baseDir: string): string {
       normalized.push(part);
     }
   }
-  absolutePath = normalized.join('/');
-  if (/^[a-zA-Z]\//.test(absolutePath)) {
-    absolutePath = absolutePath.replace(/^([a-zA-Z])\//, '$1:/');
-  }
-  return absolutePath;
+  return root + normalized.join('/');
 }
 
 /**
@@ -77,7 +79,7 @@ export async function inlineMarkdownImages(markdown: string, baseDir?: string, i
       if (replacements.has(src)) return;
       if (/^(data:|blob:|https?:)/i.test(src)) return;
 
-      const isAbsolute = /^[a-zA-Z]:/.test(src) || src.startsWith('/');
+      const isAbsolute = isAbsoluteImagePath(src);
       if (!isAbsolute && !baseDir) return;
       const absolutePath = isAbsolute ? src : resolveToAbsolutePath(src, baseDir!);
 
@@ -161,7 +163,7 @@ export function createEditorImageResolver(mutate: DisplayMutation = apply => app
       if (previous) release(img, previous);
       const source = img.getAttribute('src') || '';
       if (!source || /^(blob:|data:|https?:)/i.test(source)) return;
-      const absolute = /^[a-zA-Z]:/.test(source) || source.startsWith('/');
+      const absolute = isAbsoluteImagePath(source);
       if (!absolute && !baseDir) return;
       const absolutePath = absolute ? source : resolveToAbsolutePath(source, baseDir!);
       const display: ImageDisplay = { source };
@@ -198,5 +200,5 @@ export function createEditorImageResolver(mutate: DisplayMutation = apply => app
  */
 export function getDirectoryFromFilePath(filePath: string): string {
   const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
-  return lastSlash > 0 ? filePath.substring(0, lastSlash) : '';
+  return lastSlash === 0 ? filePath[0] : lastSlash > 0 ? filePath.substring(0, lastSlash) : '';
 }
