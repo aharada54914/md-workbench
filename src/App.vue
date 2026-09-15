@@ -2554,6 +2554,7 @@ onUnmounted(async () => {
     <AiPanel
       v-if="editingEnabled && aiPanelOpen"
       :open="aiPanelOpen"
+      :document-id="activeTab?.id || ''"
       :doc-path="aiDocPath"
       :doc-content="aiDocContent"
       :selection-range="aiSelectionRange"

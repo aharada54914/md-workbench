@@ -31,6 +31,7 @@ import AiToolToast from './AiToolToast.vue';
 
 const props = defineProps<{
   open: boolean;
+  documentId: string;
   docPath: string;
   docContent: string;
   selectionRange: { start: number; end: number } | null;
@@ -110,7 +111,7 @@ const liveSelectionText = computed<string | null>(() => {
 });
 
 const pins = useAiPinnedSelections({ liveSelectionText });
-const images = useAiPendingImages();
+const images = useAiPendingImages(() => [props.documentId, props.docPath, ai.activeThread.value, props.open]);
 
 // ===== Mermaid edit mode bridge =====
 // When a Mermaid node registers an AI edit target, auto-pin its source so the
