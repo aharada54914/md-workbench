@@ -246,6 +246,8 @@ export function useDocxExport() {
 
     if (!editorEl) return;
 
+    // A native dialog can outlive this editor's document or content.
+    const cleanHtml = serializeEditorContent(editorEl);
     const filePath = await save({
       filters: [{ name: 'Word Document', extensions: ['docx'] }],
       defaultPath: 'document.docx',
@@ -253,7 +255,6 @@ export function useDocxExport() {
 
     if (!filePath) return;
 
-    const cleanHtml = serializeEditorContent(editorEl);
     const doc = buildDocxDocument(cleanHtml);
     const blob = await Packer.toBlob(doc);
     const arrayBuffer = await blob.arrayBuffer();
