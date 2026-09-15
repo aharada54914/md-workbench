@@ -68,8 +68,67 @@ This establishes API support on those runners. Namespace durability, private
 ACLs and recovery ordering still need evidence; a process-kill test alone does
 not prove power-loss survival.
 
+## Pure append-frame codec and metadata replay
+
+`resources::journal_frame` wraps the existing strict `JournalRecord` JSON in a
+fixed version 1 envelope. It operates on byte slices and vectors only. Integer
+fields are little endian; UUID bytes use UUID order, not native struct layout.
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 8 bytes | `MDWJFRM` followed by NUL |
+| 8 | 4 bytes | Frame version, exactly 1 |
+| 12 | 8 bytes | Consecutive global sequence, starting at 1 |
+| 20 | 16 bytes | Nonnil transaction UUID, matching the JSON record |
+| 36 | 4 bytes | Nonzero JSON byte length, at most 64 KiB |
+| 40 | Declared length | Exact JSON bytes |
+| After JSON | 32 bytes | SHA-256 of the entire fixed header and exact JSON bytes |
+| After digest | 8 bytes | `MDWJEND` followed by NUL |
+
+The maximum frame is 65,616 bytes, including 80 bytes of overhead. Lengths and
+offsets are checked before payload allocation. The digest is checked before
+strict JSON parsing. The marker is checked only at the declared end: marker text
+inside a payload cannot terminate it. Neither the marker nor the checksum proves
+that anything was flushed. SHA-256 detects corruption; it does not authenticate
+records against an actor who can rewrite the checksum.
+
+`resources::journal_replay` accepts at most 64 MiB, 4096 frames and 1024 distinct
+transactions, keeping only each transaction's latest validated record. It stops
+at the first error and never searches for a later magic marker. Failure leaves
+the preceding validated prefix available for diagnostics, not recovery execution.
+There is no truncation, eviction, compaction, append I/O or disk reservation.
+
+The first record for an ID must be PREPARED with all assets PLANNED. Subsequent
+records retain the same document and ordered asset targets, including display
+labels, prior state, new digest and byte length. Asset state may only advance
+while PREPARED; stage changes must follow the existing adjacent transitions.
+Several assets may become durable in one record, including when advancing to
+ASSET_DURABLE. No-op duplicates, stage skips/regressions and records after
+COMPLETED fail. Transactions may interleave under the consecutive global sequence.
+
+An incomplete final frame yields `IncompleteTail`, never a new stage. A malformed
+complete frame, even at EOF, is invalid history. Unknown versions and exceeded
+limits have separate outcomes. EOF at a frame boundary yields `CompletePrefix`:
+**this does not certify complete historical storage**. Removing a whole suffix
+is indistinguishable from a shorter valid stream; a partial old frame can also
+look like a torn new append. Neither empty input nor an incomplete tail permits
+automatic initialization, truncation or resumed append. A future storage protocol
+must establish store identity and acknowledged extent independently before making
+those decisions.
+
+The result type is `MetadataOnlyHistory`; its snapshot state can only be
+`Unverified`. A recorded COMPLETED stage cannot create a verified recovery/commit
+result. Replay does not call the observation classifier or obtain permissions.
+The existing JSON schema contains no snapshot references. A future versioned
+reference format and private-storage verifier must bind transaction, target slot,
+prior/candidate role, container identity, checked byte ranges and hashes before
+recovery readiness can be assessed. Missing or unverified snapshots cannot be
+treated as usable recovery evidence. Flush ordering and namespace durability
+remain separate prerequisites, even after bytes have been verified.
+
 ## Verification
 
-Seventeen focused native tests cover strict parsing, limits, stage transitions,
-non-mutating failures and recovery classification. The module makes no tested
-claim about disk persistence or platform filesystem behavior.
+Focused native tests cover strict parsing, limits, stage transitions,
+non-mutating failures and recovery classification, plus frame golden bytes,
+every-byte mutation/truncation and bounded history replay. The modules make no
+tested claim about disk persistence or platform filesystem behavior.
