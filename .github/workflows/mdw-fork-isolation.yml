@@ -35,6 +35,29 @@ jobs:
       - run: pnpm build
       - name: Full regression including deterministic LF, CRLF and BOM fixtures
         run: pnpm test:run
+  linux-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: '1.93.0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - run: npm install --global pnpm@11.3.0 --ignore-scripts
+      - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
+      - name: Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libfontconfig1-dev libfreetype-dev patchelf pkg-config
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Native filesystem and application regression tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
   windows-native:
     runs-on: windows-2022
     timeout-minutes: 60

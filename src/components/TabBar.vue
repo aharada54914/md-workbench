@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import { describeRevealError } from '../utils/reveal-error';
 import { ref, computed, nextTick } from 'vue';
 import type { Tab } from '../composables/useTabs';
 import { useTabDrag } from '../composables/useTabDrag';
 import { useI18n } from '../i18n';
 import { useSettings } from '../composables/useSettings';
 import TabContextMenu, { type TabContextAction } from './TabContextMenu.vue';
-import { invoke } from '@tauri-apps/api/core';
+import { nativeFs } from '../services/nativeFs';
 
 const { t } = useI18n();
 const { settings } = useSettings();
@@ -65,8 +66,8 @@ async function onContextAction(action: TabContextAction) {
       break;
     case 'reveal-in-os':
       if (tab.filePath) {
-        try { await invoke('reveal_in_os', { path: tab.filePath }); }
-        catch (e) { console.error('reveal:', e); }
+        try { await nativeFs.revealPath(tab.filePath); }
+        catch (e) { window.alert(describeRevealError(e)); }
       }
       break;
   }

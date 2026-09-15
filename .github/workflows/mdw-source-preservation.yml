@@ -2,9 +2,10 @@ name: MDW source preservation
 on:
   pull_request:
     paths:
-      - 'src/composables/useFileOperations.ts'
-      - 'src/__tests__/composables/useFileOperations.test.ts'
-      - 'tests/e2e/source-preservation.test.ts'
+      - 'src/**'
+      - 'tests/e2e/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
       - '.github/workflows/mdw-source-preservation.yml'
 permissions:
   contents: read

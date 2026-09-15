@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { describeRevealError } from '../utils/reveal-error';
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useI18n } from '../i18n';
 import { useWorkspace, type WorkspaceNode } from '../composables/useWorkspace';
@@ -128,7 +129,7 @@ async function onContextAction(action: WorkspaceContextAction) {
   if (!node) return;
 
   if (action === 'reveal') {
-    try { await ws.revealInOs(node.path); } catch (e) { console.error('reveal:', e); }
+    try { await ws.revealInOs(node.path); } catch (e) { window.alert(describeRevealError(e)); }
     return;
   }
   if (action === 'new-file') {
@@ -245,14 +246,17 @@ async function onConfirmDelete() {
     return;
   }
   if (a.kind === 'delete-many') {
+    const failures: string[] = [];
     for (const p of a.paths) {
       try {
         await ws.deletePath(p);
       } catch (e) {
         console.error('delete:', p, e);
+        failures.push(`${p}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     ws.clearSelection();
+    if (failures.length > 0) window.alert(failures.join('\n'));
   }
 }
 
@@ -718,6 +722,7 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="ws-body" ref="sidebarEl" @mousedown="onBodyMouseDown">
+      <p v-if="ws.lastOpenError.value" class="ws-open-error" role="alert">{{ ws.lastOpenError.value }}</p>
       <div v-if="!hasOpen" class="ws-empty">
         <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
@@ -849,6 +854,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.ws-open-error {
+  margin: 8px;
+  padding: 8px;
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .workspace-sidebar {
   position: relative;
   display: flex;

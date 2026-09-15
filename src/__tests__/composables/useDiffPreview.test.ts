@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computed, ref } from 'vue';
-import { useDiffPreview, generateDiff } from '../../composables/useDiffPreview';
+import { useDiffPreview, generateDiff, splitIntoHunks, applyHunkSelections } from '../../composables/useDiffPreview';
 
 describe('useDiffPreview', () => {
   const createOptions = (opts: {
@@ -129,7 +129,7 @@ describe('useDiffPreview', () => {
       expect(addedLine?.newLineNumber).toBeGreaterThan(0);
     });
 
-    it('normalizes CRLF line endings before diffing', () => {
+    it('makes line ending changes selectable without changing display text', () => {
       const opts = createOptions({
         originalMarkdown: 'line1\r\nline2\r\n',
         currentMarkdown: 'line1\nline2\n',
@@ -139,10 +139,8 @@ describe('useDiffPreview', () => {
 
       openDiffPreview();
 
-      // Should be identical after normalization
-      expect(diffStats.value.additions).toBe(0);
-      expect(diffStats.value.deletions).toBe(0);
-      expect(diffPreviewLines.value.every(l => l.type === 'unchanged')).toBe(true);
+      expect(diffStats.value).toEqual({ additions: 2, deletions: 2 });
+      expect(diffPreviewLines.value.map(l => l.content)).toEqual(['line1', 'line2', 'line1', 'line2']);
     });
 
     it('sets showDiffPreview to true', () => {
@@ -180,14 +178,12 @@ describe('useDiffPreview', () => {
   });
 
   describe('generateDiff', () => {
-    it('reports no changes when only trailing whitespace differs', () => {
-      // The serializer used to emit stray trailing spaces, flooding the diff.
+    it('reports trailing whitespace differences so a merge can preserve either source', () => {
       const original = 'line one\nline two\nline three';
       const current = 'line one   \nline two\t\nline three  ';
       const { lines, stats } = generateDiff(original, current);
-      expect(stats.additions).toBe(0);
-      expect(stats.deletions).toBe(0);
-      expect(lines.every((l) => l.type === 'unchanged')).toBe(true);
+      expect(stats).toEqual({ additions: 3, deletions: 3 });
+      expect(lines.filter(l => l.type === 'added').map(l => l.raw).join('')).toBe(current);
     });
 
     it('only marks the actually-edited line when one line changes mid-file', () => {
@@ -212,6 +208,36 @@ describe('useDiffPreview', () => {
       const { stats } = generateDiff('a\nb', 'a\nNEW\nb');
       expect(stats.additions).toBe(1);
       expect(stats.deletions).toBe(0);
+    });
+  });
+
+  describe('applyHunkSelections', () => {
+    it.each([
+      ['', ''],
+      ['', '\uFEFFnew  \r\n\r\n'],
+      ['\uFEFFold\t\r\n', ''],
+      ['same', 'same\n'],
+      ['same\r\n\r\n', 'same'],
+      ['\uFEFF日本語 😀  \r\nanchor\r\nold\t', '\uFEFF日本語 😀\nanchor\r\nnew  \n\n'],
+      ['first\rsecond\r', 'first\nsecond\r\n'],
+      ['line  \nlast\t', 'line\nlast'],
+    ])('reconstructs both exact sources (%j → %j)', (oldText, newText) => {
+      const hunks = splitIntoHunks(generateDiff(oldText, newText).lines);
+      const allChanges = new Set(hunks.filter(h => h.type === 'change').map(h => h.id));
+      expect(applyHunkSelections(hunks, new Set())).toBe(oldText);
+      expect(applyHunkSelections(hunks, allChanges)).toBe(newText);
+    });
+
+    it('preserves each selected source slice in a mixed merge', () => {
+      const oldText = '\uFEFFold first  \r\nanchor\r\nold last\t';
+      const newText = '\uFEFFnew first\nanchor\r\nnew last  \r\n\r\n';
+      const hunks = splitIntoHunks(generateDiff(oldText, newText).lines);
+      const changes = hunks.filter(h => h.type === 'change');
+      expect(changes).toHaveLength(2);
+      expect(applyHunkSelections(hunks, new Set([changes[0].id])))
+        .toBe('\uFEFFnew first\nanchor\r\nold last\t');
+      expect(applyHunkSelections(hunks, new Set([changes[1].id])))
+        .toBe('\uFEFFold first  \r\nanchor\r\nnew last  \r\n\r\n');
     });
   });
 });

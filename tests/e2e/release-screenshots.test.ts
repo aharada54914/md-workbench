@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
+import { startEditing } from './helpers/code-editor';
 
 test.skip(process.env.RELEASE_SCREENSHOTS !== '1', 'Run explicitly to refresh release screenshots');
 
@@ -55,6 +56,7 @@ test('capture syntax highlighting and safe HTML rendering', async ({ page }) => 
 
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto('/');
+  await startEditing(page);
   await expect(page.locator('.safe-html-block').first()).toBeVisible({ timeout: 10_000 });
   await page.addStyleTag({ content: '.workspace-sidebar { display: none !important; }' });
   await page.screenshot({

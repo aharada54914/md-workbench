@@ -7,6 +7,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { nativeFs } from './nativeFs';
 
 export interface WorkspaceNode {
   name: string;
@@ -15,13 +16,6 @@ export interface WorkspaceNode {
   children?: WorkspaceNode[];
   /** Last-modified time in ms since epoch (0 if unavailable). For sort-by-modified. */
   modified?: number;
-}
-
-export type PathKind = 'file' | 'folder' | 'missing';
-
-export interface ClassifiedPath {
-  path: string;
-  kind: PathKind;
 }
 
 export interface ContentSearchHit {
@@ -35,8 +29,11 @@ export interface ContentSearchHit {
 
 export const workspaceFs = {
   /** Read the full markdown-only tree rooted at `root`. May be slow for large folders. */
-  readTree: (root: string): Promise<WorkspaceNode> =>
-    invoke<WorkspaceNode>('read_workspace_tree', { root }),
+  readTree: (root: string, expectedGrantId?: string): Promise<WorkspaceNode> =>
+    invoke<WorkspaceNode>('read_workspace_tree', {
+      root,
+      ...(expectedGrantId !== undefined ? { expectedGrantId } : {}),
+    }),
 
   /** Create an empty .md file under `parent`. Auto-appends `.md` if missing. */
   createFile: (parent: string, name: string): Promise<string> =>
@@ -54,19 +51,14 @@ export const workspaceFs = {
   remove: (path: string): Promise<void> =>
     invoke<void>('delete_path', { path }),
 
-  /** Tell whether each path is a file, a folder, or gone. Order matches the input. */
-  classifyPaths: (paths: string[]): Promise<ClassifiedPath[]> =>
-    invoke<ClassifiedPath[]>('classify_paths', { paths }),
-
   /** Reveal a file/folder in the host OS file manager. */
   reveal: (path: string): Promise<void> =>
-    invoke<void>('reveal_in_os', { path }),
+    nativeFs.revealPath(path),
 
   /**
-   * Substring-search the markdown contents of every file under any of `roots`.
-   * Case-insensitive. Backend caps the work (5k files, 4 s budget) so the
-   * caller only needs to debounce typing — there's no full-disk-walk failure
-   * mode for the UI to defend against.
+   * Search UTF-8 Markdown files up to 512 KiB using existing native workspace
+   * authority. ASCII case-insensitive. Permission, I/O and work-limit failures
+   * reject the whole request with typed errors; no partial success is returned.
    */
   searchContent: (roots: string[], query: string): Promise<ContentSearchHit[]> =>
     invoke<ContentSearchHit[]>('search_workspace_content', { roots, query }),

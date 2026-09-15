@@ -163,7 +163,7 @@ describe('useWindowManager', () => {
       expect(unlisten).toBe(mockUnlisten);
     });
 
-    it('should call callback with payload when event received', async () => {
+    it('ignores event payload and only announces queued work', async () => {
       const mockUnlisten = vi.fn();
       let eventHandler: (event: any) => void;
 
@@ -183,12 +183,22 @@ describe('useWindowManager', () => {
         },
       });
 
-      expect(callback).toHaveBeenCalledWith({
-        file_path: '/path/to/file.md',
-        source_window: 'main',
-        target_window: 'window-1',
-      });
+      expect(callback).toHaveBeenCalledWith();
     });
+  });
+
+  it('gets transfers through the caller-scoped native queue', async () => {
+    const pending = [{ id: 'transfer-1', file_path: '/docs/a.md', source_window: 'main', target_window: 'window-1' }];
+    vi.mocked(invoke).mockResolvedValueOnce(pending);
+    expect(await windowManager.getPendingTransfers()).toEqual(pending);
+    expect(invoke).toHaveBeenCalledWith('native_get_pending_transfers');
+  });
+
+  it('acknowledges the exact transfer and propagates ACK races', async () => {
+    await windowManager.acknowledgeTabTransfer('transfer-1', false);
+    expect(invoke).toHaveBeenCalledWith('native_ack_tab_transfer', { id: 'transfer-1', success: false });
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('transfer_expired'));
+    await expect(windowManager.acknowledgeTabTransfer('transfer-1', true)).rejects.toThrow('transfer_expired');
   });
 
   describe('closeCurrentWindow', () => {

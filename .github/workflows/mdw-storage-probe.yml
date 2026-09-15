@@ -1,0 +1,45 @@
+name: MDW native storage API probe
+on:
+  pull_request:
+    paths:
+      - 'scripts/native-storage-probe/**'
+      - '.github/workflows/mdw-storage-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-api-support:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      RUSTUP_TOOLCHAIN: '1.93.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
+      - name: Validate the bounded observation schema
+        run: cargo test --locked --manifest-path scripts/native-storage-probe/Cargo.toml
+      - name: Observe real Windows file and directory flush APIs
+        shell: pwsh
+        run: |
+          $report = & cargo run --quiet --locked --manifest-path scripts/native-storage-probe/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'Storage probe did not produce a valid report' }
+          $json = ($report -join "`n") + "`n"
+          $decoded = $json | ConvertFrom-Json
+          if ($decoded.schema_version -ne 1 -or $decoded.scope -ne 'api_support_only' -or $decoded.platform -ne 'windows') {
+            throw 'Unexpected storage probe report contract'
+          }
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'storage-api-probe.json'), $json, [System.Text.UTF8Encoding]::new($false))
+          'This report measures API support. Successful workflow execution does not establish ACL isolation or power-loss durability.' | Add-Content $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mdw-storage-api-${{ matrix.os }}-${{ github.sha }}
+          path: storage-api-probe.json
+          retention-days: 14
+          if-no-files-found: error

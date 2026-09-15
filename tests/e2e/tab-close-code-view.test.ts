@@ -18,16 +18,6 @@ async function waitForTab(page: import('@playwright/test').Page, fileName: strin
   await expect(page.locator('.tab-bar .tab')).toContainText(fileName, { timeout: 8_000 });
 }
 
-/** Open a second file by triggering the open-file event */
-async function openSecondFile(page: import('@playwright/test').Page, filePath: string) {
-  await page.evaluate((path) => {
-    // Simulate Tauri open-file event by dispatching via __TAURI_INTERNALS__
-    // Find the listener callback and invoke it
-    const event = new CustomEvent('open-file', { detail: path });
-    window.dispatchEvent(event);
-  }, filePath);
-}
-
 async function createPlainTab(page: import('@playwright/test').Page) {
   await page.getByRole('button', { name: 'New', exact: true }).click();
   await page.locator('.nf-card:not(.nf-card--marp)').click();
@@ -37,69 +27,24 @@ async function createPlainTab(page: import('@playwright/test').Page) {
 
 test.describe('Tab Close in Code View (#36)', () => {
   test('closing active tab in code view shows new active tab content', async ({ page }) => {
-    await setupTauriMocks(page, {
+    const mock = await setupTauriMocks(page, {
       initialFs: { [PATH_A]: FILE_A_MD, [PATH_B]: FILE_B_MD },
       openFilePath: PATH_A,
     });
-
     await page.goto('/');
-    await page.waitForSelector('.tab-bar', { timeout: 10_000 });
     await waitForTab(page, 'file-a.md');
-
-    // Open second file — use Tauri IPC to simulate opening
-    await page.evaluate((path) => {
-      // Use the internal invoke to open the file
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tauri = (window as any).__TAURI_INTERNALS__;
-      // Emit open-file event to the listener
-      if (tauri) {
-        // Find the event listener and call it with the file path
-        const listeners = tauri._listeners || {};
-        for (const key in listeners) {
-          if (key.includes('open-file')) {
-            listeners[key]({ payload: path });
-          }
-        }
-      }
-    }, PATH_B);
-
-    // Alternative: use keyboard shortcut to create a new tab
-    // Since opening via event might not work in mocks, create a new tab via New button
-    await createPlainTab(page);
-    await page.waitForTimeout(500);
-
-    // Verify we have at least 2 tabs
-    const tabCount = await page.locator('.tab-bar .tab').count();
-    expect(tabCount).toBeGreaterThanOrEqual(2);
-
-    // Switch to code view
+    // Explicit Source intent belongs to A and must be restored after closing B.
     await openCodeView(page);
-    const codeEditorElement = codeEditor(page);
-    await page.waitForTimeout(300);
-
-    // Close the active tab via the close button on it
-    const activeTab = page.locator('.tab-bar .tab.active');
-    const closeButton = activeTab.locator('.close-btn, .tab-close, [class*="close"]');
-
-    if (await closeButton.count() > 0) {
-      await closeButton.first().click();
-      await page.waitForTimeout(500);
-
-      // After closing, we should NOT be in code view anymore (fix exits code view first)
-      // OR we should see the content of the remaining tab
-      // The fix exits code view, so the visual editor should be visible
-      const visualEditorVisible = await page.locator('.editor-container').isVisible().catch(() => false);
-      const codeEditorStillVisible = await codeEditorElement.isVisible().catch(() => false);
-
-      // At least one editor should show content
-      expect(visualEditorVisible || codeEditorStillVisible).toBe(true);
-
-      // If visual editor is shown, it should have content from the remaining tab
-      if (visualEditorVisible) {
-        const editorContent = page.locator('.ProseMirror');
-        await expect(editorContent).toBeVisible({ timeout: 3_000 });
-      }
-    }
+    await mock.triggerOpenFiles([PATH_B]);
+    await expect(page.locator('.tab-bar .tab')).toHaveCount(2);
+    await openCodeView(page);
+    await expect.poll(() => getCodeEditorValue(page)).toBe(FILE_B_MD);
+    await page.locator('.tab-bar .tab.active .tab-close').click();
+    await expect(page.locator('.tab-bar .tab')).toHaveCount(1);
+    await expect(page.locator('.tab-bar .tab.active')).toContainText('file-a.md');
+    await expect(codeEditor(page)).toBeVisible();
+    await expect.poll(() => getCodeEditorValue(page)).toBe(FILE_A_MD);
+    expect(mock.getFs()).toEqual({ [PATH_A]: FILE_A_MD, [PATH_B]: FILE_B_MD });
   });
 
   test('closing non-active tab in code view preserves current content', async ({ page }) => {

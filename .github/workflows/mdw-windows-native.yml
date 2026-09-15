@@ -7,6 +7,8 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'scripts/benchmark/windows_native.mjs'
+      - 'scripts/benchmark/native_authority.mjs'
+      - 'scripts/benchmark/native_preview_boundary.mjs'
       - 'scripts/benchmark/windows_ui.ps1'
       - 'scripts/benchmark/native_memory.py'
       - 'scripts/benchmark/windows_glyphs.py'
@@ -66,6 +68,7 @@ jobs:
       - run: python -m pip install -r scripts/benchmark/requirements.txt
       - run: python -m unittest discover -s scripts/benchmark -p test_windows_glyphs.py
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        id: native_binary
         with:
           name: mdw-native-x64-release-${{ github.sha }}
           path: native-binary
@@ -73,6 +76,7 @@ jobs:
         if: matrix.os == 'windows-2022'
         run: node scripts/benchmark/windows_native.mjs native-binary/md-workbench.exe native-fork MD-Workbench
       - name: Native UI and exact Source save without debugger
+        if: always() && steps.native_binary.outcome == 'success'
         run: powershell.exe -NoProfile -STA -File scripts/benchmark/windows_ui.ps1 -Binary native-binary/md-workbench.exe -Output native-ui-fork -VerifyEditor
       - name: Install pinned upstream on this same disposable machine
         if: always()

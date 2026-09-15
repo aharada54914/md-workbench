@@ -1,4 +1,4 @@
-import { ref, onUnmounted } from 'vue';
+import { ref, onUnmounted, watch } from 'vue';
 import { aiCommands } from '../services/aiCommands';
 
 export interface PendingImage {
@@ -10,14 +10,19 @@ export interface PendingImage {
   ext: string;
 }
 
-export const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] as const;
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
-export function useAiPendingImages() {
+export function useAiPendingImages(context?: () => readonly unknown[]) {
   const pendingImages = ref<PendingImage[]>([]);
   const previewedImage = ref<PendingImage | null>(null);
+  let generation = 0;
+  let disposed = false;
+
+  // Invalidate even a same-tick leave/return or replacement with the same ID.
+  if (context) watch(context, () => { generation += 1; }, { flush: 'sync' });
 
   function addPendingImage(file: Blob, name?: string) {
+    if (disposed) return;
     if (file.size > MAX_IMAGE_BYTES) {
       window.alert(`Image too large (${Math.round(file.size / 1024 / 1024)} MB). Max ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`);
       return;
@@ -39,11 +44,15 @@ export function useAiPendingImages() {
   function removePendingImage(id: string) {
     const idx = pendingImages.value.findIndex(p => p.id === id);
     if (idx < 0) return;
+    generation += 1;
+    if (previewedImage.value?.id === id) previewedImage.value = null;
     URL.revokeObjectURL(pendingImages.value[idx].blobUrl);
     pendingImages.value.splice(idx, 1);
   }
 
   function clearPendingImages() {
+    generation += 1;
+    previewedImage.value = null;
     for (const p of pendingImages.value) URL.revokeObjectURL(p.blobUrl);
     pendingImages.value = [];
   }
@@ -51,6 +60,8 @@ export function useAiPendingImages() {
   /** Pop pending images as chat-attachment descriptors. Empties the strip
    *  WITHOUT revoking — caller (chat history) now owns the blob URLs. */
   function detachForChat(): Array<{ name: string; blobUrl: string }> {
+    generation += 1;
+    previewedImage.value = null;
     const out = pendingImages.value.map(p => ({ name: p.name, blobUrl: p.blobUrl }));
     pendingImages.value = [];
     return out;
@@ -71,25 +82,36 @@ export function useAiPendingImages() {
   }
 
   async function pickImageFile() {
-    const { open } = await import('@tauri-apps/plugin-dialog');
-    const selected = await open({
-      multiple: true,
-      filters: [{ name: 'Images', extensions: [...IMAGE_EXTS] }],
-    });
-    if (!selected) return;
-    const paths = Array.isArray(selected) ? selected : [selected];
-    const { readFile } = await import('@tauri-apps/plugin-fs');
-    for (const p of paths) {
-      try {
-        const bytes = await readFile(p);
-        const ext = (p.split('.').pop() || 'png').toLowerCase();
-        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
-        const blob = new Blob([bytes], { type: mime });
-        const name = p.split(/[/\\]/).pop() || 'image';
-        addPendingImage(blob, name);
-      } catch (e) {
-        console.error('[useAiPendingImages] pickImageFile read failed:', e);
+    const startedGeneration = generation;
+    const isCurrent = () => !disposed && generation === startedGeneration;
+    if (!isCurrent()) return;
+    try {
+      const { nativeFs } = await import('../services/nativeFs');
+      if (!isCurrent()) return;
+      const selected = await nativeFs.pickImages();
+      if (!isCurrent()) return;
+      for (const grant of selected) {
+        if (!isCurrent()) return;
+        try {
+          // Bind the read to this selection, not a later same-path grant.
+          const bytes = await nativeFs.readPathBytes(grant.path, MAX_IMAGE_BYTES, grant.id);
+          if (!isCurrent()) return;
+          const ext = (grant.path.split('.').pop() || 'png').toLowerCase();
+          const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
+          const blob = new Blob([bytes], { type: mime });
+          const name = grant.path.split(/[/\\]/).pop() || 'image';
+          addPendingImage(blob, name);
+        } catch (e) {
+          if (!isCurrent()) return;
+          if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'file_too_large') {
+            window.alert(`Image too large. Max ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`);
+          }
+          console.error('[useAiPendingImages] pickImageFile read failed:', e);
+        }
       }
+    } catch (e) {
+      if (!isCurrent()) return;
+      console.error('[useAiPendingImages] pickImageFile selection failed:', e);
     }
   }
 
@@ -105,6 +127,7 @@ export function useAiPendingImages() {
   }
 
   onUnmounted(() => {
+    disposed = true;
     clearPendingImages();
   });
 

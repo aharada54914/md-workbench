@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { shallowMount } from '@vue/test-utils';
+import { flushPromises, shallowMount } from '@vue/test-utils';
 import { ref } from 'vue';
 
 const mocks = vi.hoisted(() => ({
@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   createNewWindow: vi.fn(),
   closeCurrentWindow: vi.fn(),
   unregisterOpenFile: vi.fn(),
+  registerOpenFile: vi.fn(),
   getAllWindows: vi.fn(),
   getCurrentWindowLabel: vi.fn(),
   transferTabToWindow: vi.fn(),
@@ -100,4 +101,52 @@ describe('cross-window tab transfer preserves source', () => {
     expect(mocks.removeTabWithoutCreate).not.toHaveBeenCalled();
     expect(mocks.state.value.panes[0].tabs[0].hasChanges).toBe(true);
   });
+
+  it('keeps registration and tab until native target ACK resolves, ignoring duplicate drags', async () => {
+    let acknowledge!: () => void;
+    mocks.createNewWindow.mockImplementationOnce(() => new Promise<string>(resolve => {
+      acknowledge = () => resolve('window-1');
+    }));
+    const wrapper = shallowMount(SplitContainer);
+    const transfer = mocks.drop!('a', 'left', '/docs/a.md');
+    await flushPromises();
+    await mocks.drop!('a', 'left', '/docs/a.md');
+    expect(mocks.createNewWindow).toHaveBeenCalledTimes(1);
+    expect(mocks.unregisterOpenFile).not.toHaveBeenCalled();
+    expect(mocks.removeTabWithoutCreate).not.toHaveBeenCalled();
+    acknowledge();
+    await transfer;
+    expect(mocks.unregisterOpenFile).toHaveBeenCalledWith('/docs/a.md');
+    expect(mocks.removeTabWithoutCreate).toHaveBeenCalledWith('left', 'a');
+    wrapper.unmount();
+  });
+
+  it.each(['transfer_timeout', 'target_destroyed', 'transfer_rejected'])('keeps source and reports %s', async reason => {
+    mocks.createNewWindow.mockRejectedValueOnce(new Error(reason));
+    await drop();
+    expect(mocks.unregisterOpenFile).not.toHaveBeenCalled();
+    expect(mocks.removeTabWithoutCreate).not.toHaveBeenCalled();
+    expect(mocks.message).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ kind: 'error' }));
+  });
+
+  it('keeps pending raw changes even before hasChanges has propagated', async () => {
+    mocks.createNewWindow.mockImplementationOnce(async () => {
+      mocks.state.value.panes[0].tabs[0].pendingMarkdown = 'New raw source';
+      return 'window-1';
+    });
+    await drop();
+    expect(mocks.unregisterOpenFile).not.toHaveBeenCalled();
+    expect(mocks.removeTabWithoutCreate).not.toHaveBeenCalled();
+  });
+
+  it('restores source registration when edits arrive during final unregister', async () => {
+    mocks.unregisterOpenFile.mockImplementationOnce(async () => {
+      mocks.state.value.panes[0].tabs[0].pendingMarkdown = 'Edit while unregister awaits';
+    });
+    await drop();
+    expect(mocks.registerOpenFile).toHaveBeenCalledWith('/docs/a.md', 'main');
+    expect(mocks.removeTabWithoutCreate).not.toHaveBeenCalled();
+    expect(mocks.closeCurrentWindow).not.toHaveBeenCalled();
+  });
+
 });

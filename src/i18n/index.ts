@@ -140,6 +140,9 @@ export interface Translations {
   // Dialogs
   unsavedChanges: string;
   autoSavePaused: string;
+  windowTransferTitle: string;
+  windowTransferFailed: string;
+  windowTransferReceiveFailed: string;
   saveBeforeWindowTransfer: string;
   unsavedChangesMessage: string;
   dontSave: string;
@@ -181,6 +184,19 @@ export interface Translations {
   categoryAdvanced: string;
 
   // File dialogs
+  revealPermissionRequired: string;
+  revealFailed: string;
+  workspacePermissionRequired: string;
+  workspaceOpenFailed: string;
+  workspaceInvalidName: string;
+  workspaceCreateFailed: string;
+  workspaceRenameFailed: string;
+  workspaceDeleteFailed: string;
+  workspaceDeletePartial: string;
+  workspaceDestinationExists: string;
+  workspaceMutationUnsupported: string;
+  openPermissionRequired: string;
+  openDocumentFailed: string;
   openFile: string;
   saveFile: string;
   markdownFiles: string;
@@ -538,7 +554,9 @@ export interface Translations {
   qsSectionFiles: string;
   qsSectionContent: string;
   qsContentSearching: string;
-  qsContentTruncated: string;
+  qsContentPermissionRequired: string;
+  qsContentLimitExceeded: string;
+  qsContentFailed: string;
 
   // Mermaid AI assist
   aiAssistMermaidButton: string;

@@ -11,7 +11,8 @@ vi.mock('../../services/documentText', () => ({
   readTextFile: vi.fn(async () => 'disk content'),
 }));
 
-vi.mock('../../utils/markdown-converter', () => ({
+vi.mock('../../utils/markdown-converter', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../utils/markdown-converter')>(),
   markdownToHtml: vi.fn((md: string) => `<p>${md}</p>`),
   htmlToMarkdown: vi.fn((html: string) => html.replace(/<[^>]*>/g, '')),
 }));
@@ -46,6 +47,7 @@ vi.mock('../../i18n', () => ({
 import { useFileReload } from '../../composables/useFileReload';
 import { readTextFile } from '../../services/documentText';
 import { markdownToHtml } from '../../utils/markdown-converter';
+import { generateDiff } from '../../composables/useDiffPreview';
 
 describe('useFileReload', () => {
   let mockActivePaneId: Ref<string>;
@@ -98,6 +100,26 @@ describe('useFileReload', () => {
       setEditorContent: mockSetEditorContent,
       ...extra,
     });
+
+  it('forwards save abort without accepting a new baseline or suppressing later changes', async () => {
+    const { watch: watchFs } = await import('@tauri-apps/plugin-fs');
+    const reload = createReload();
+    await reload.watchFile('/test/file.md', 'old content');
+    const notify = vi.mocked(watchFs).mock.calls[0][1];
+    reload.markSaveStart('/test/file.md');
+    reload.markSaveAbort('/test/file.md');
+    vi.mocked(readTextFile).mockResolvedValueOnce('old content');
+    notify({ type: 'any', paths: ['/test/file.md'], attrs: {} });
+    await vi.runAllTimersAsync();
+    expect(reload.showToast.value).toBe(false);
+    expect(mockTab.originalMarkdown).toBe('old content');
+
+    vi.mocked(readTextFile).mockResolvedValueOnce('external content');
+    notify({ type: 'any', paths: ['/test/file.md'], attrs: {} });
+    await vi.runAllTimersAsync();
+    expect(mockTab.originalMarkdown).toBe('external content');
+    expect(mockTab.pendingMarkdown).toBe('external content');
+  });
 
   describe('initial state', () => {
     it('should have toast hidden initially', () => {
@@ -163,6 +185,23 @@ describe('useFileReload', () => {
 
       expect(showConflictModal.value).toBe(true);
       expect(conflictFileName.value).toBe('file.md');
+    });
+
+    it('checks the requested tab after an asynchronous read even if focus moves to a clean tab', async () => {
+      mockTab.pendingMarkdown = 'unsaved target';
+      mockTab.hasChanges = mockHasChanges.value = true;
+      let resolveRead!: (source: string) => void;
+      vi.mocked(readTextFile).mockReturnValueOnce(new Promise<string>(resolve => { resolveRead = resolve; }));
+      const { manualReload, showConflictModal } = createReload();
+      const reload = manualReload();
+      mockCurrentFile.value = '/test/other.md';
+      mockHasChanges.value = false;
+      resolveRead('external');
+      await reload;
+      expect(showConflictModal.value).toBe(true);
+      expect(mockTab.pendingMarkdown).toBe('unsaved target');
+      expect(mockTab.originalMarkdown).toBe('old content');
+      expect(generateDiff).toHaveBeenCalledWith('unsaved target', 'external');
     });
 
     it('should show warning toast on read error', async () => {
@@ -321,6 +360,83 @@ describe('useFileReload', () => {
       reloadTabContent('/test/file.md', 'converted');
 
       expect(setCodeMarkdown).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('canonical Markdown after reload and conflict resolution', () => {
+    it.each([true, false])('replaces stale raw Markdown in an active=%s ordinary tab', (active) => {
+      mockTab.pendingMarkdown = '\uFEFFprevious Visual edit\r\n';
+      mockPane.activeTabId = active ? mockTab.id : 'other';
+      const source = '\uFEFFexternal\r\n<!-- exact -->  \r\n\t';
+      const setCodeMarkdown = vi.fn();
+      const { reloadTabContent } = createReload({ setCodeMarkdown });
+
+      reloadTabContent('/test/file.md', source);
+
+      expect(mockTab.pendingMarkdown).toBe(source);
+      expect(mockTab.originalMarkdown).toBe(source);
+      expect(mockTab.hasChanges).toBe(false);
+      if (active) expect(setCodeMarkdown).toHaveBeenCalledWith(source);
+      else expect(setCodeMarkdown).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('uses exact pending Markdown for conflict diff, large=%s', async (largeFile) => {
+      mockTab.largeFile = largeFile;
+      mockTab.content = largeFile ? '' : '<p>lossy HTML</p>';
+      mockTab.pendingMarkdown = '\uFEFF[local][ref]  \r\n\r\n[ref]: x\r\n';
+      mockTab.hasChanges = mockHasChanges.value = true;
+      vi.mocked(readTextFile).mockResolvedValueOnce('external');
+      const { manualReload } = createReload();
+      await manualReload();
+      expect(generateDiff).toHaveBeenCalledWith(mockTab.pendingMarkdown, 'external');
+    });
+
+    it('uses an empty canonical buffer instead of obsolete HTML in the conflict diff', async () => {
+      mockTab.pendingMarkdown = '';
+      mockTab.hasChanges = mockHasChanges.value = true;
+      vi.mocked(readTextFile).mockResolvedValueOnce('external');
+      const { manualReload } = createReload();
+      await manualReload();
+      expect(generateDiff).toHaveBeenCalledWith('', 'external');
+    });
+
+    it('preserves the document envelope when a legacy dirty tab has only HTML', async () => {
+      mockTab.content = '<p>local</p>';
+      mockTab.originalMarkdown = '\uFEFF\r\nold  \r\n\t';
+      mockTab.hasChanges = mockHasChanges.value = true;
+      vi.mocked(readTextFile).mockResolvedValueOnce('external');
+      const { manualReload } = createReload();
+      await manualReload();
+      expect(generateDiff).toHaveBeenCalledWith('\uFEFF\r\nlocal  \r\n\t', 'external');
+    });
+
+    it.each([false, true])('keeps an applied merge unsaved against the disk version, large=%s', async (largeFile) => {
+      mockTab.largeFile = largeFile;
+      mockTab.content = largeFile ? '' : '<p>local</p>';
+      mockTab.pendingMarkdown = 'local';
+      mockTab.hasChanges = mockHasChanges.value = true;
+      const disk = '\uFEFFexternal\r\n';
+      const merged = '\uFEFFmerged  \r\n';
+      vi.mocked(readTextFile).mockResolvedValueOnce(disk);
+      const { manualReload, handleConflictMerge, showConflictModal } = createReload();
+      await manualReload();
+      handleConflictMerge(merged);
+      expect(mockTab.pendingMarkdown).toBe(merged);
+      expect(mockTab.originalMarkdown).toBe(disk);
+      expect(mockTab.hasChanges).toBe(true);
+      expect(showConflictModal.value).toBe(false);
+    });
+
+    it('marks a merge equal to disk as clean', async () => {
+      mockTab.pendingMarkdown = 'local';
+      mockTab.hasChanges = mockHasChanges.value = true;
+      vi.mocked(readTextFile).mockResolvedValueOnce('external');
+      const { manualReload, handleConflictMerge } = createReload();
+      await manualReload();
+      handleConflictMerge('external');
+      expect(mockTab.pendingMarkdown).toBe('external');
+      expect(mockTab.originalMarkdown).toBe('external');
+      expect(mockTab.hasChanges).toBe(false);
     });
   });
 

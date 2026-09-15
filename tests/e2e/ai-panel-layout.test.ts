@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
+import { startEditing } from './helpers/code-editor';
 
 const DOC_PATH = '/test/ai-panel-layout.md';
 const DOC_MARKDOWN = '# AI panel layout\n\nThe document should remain centred in the visible editor area.';
@@ -17,6 +18,7 @@ async function openDocument(page: Page, panelSide: 'left' | 'right' = 'right') {
   });
 
   await page.goto('/');
+  await startEditing(page);
   await expect(page.locator('.editor-pane.active .editor-content-wrapper')).toBeVisible({ timeout: 10_000 });
 }
 

@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { nativeFs } from '../services/nativeFs';
+import { useI18n } from '../i18n';
 import {
   useSettings,
   RECENT_WORKSPACES_LIMIT,
@@ -20,6 +21,7 @@ export type { WorkspaceNode } from '../services/workspaceFs';
 const treesById = ref<Record<string, WorkspaceNode | null>>({});
 const loadingById = ref<Record<string, boolean>>({});
 const errorById = ref<Record<string, string | null>>({});
+const lastOpenError = ref<string | null>(null);
 
 /** Set of folder paths the user has expanded in any workspace's tree. */
 const expandedFolders = ref<Set<string>>(new Set());
@@ -63,6 +65,27 @@ function newId(): string {
 }
 
 export function useWorkspace() {
+  const { t } = useI18n();
+  const describeOpenError = (error: unknown): string => {
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+      return error.code === 'permission_required'
+        ? t.value.workspacePermissionRequired : t.value.workspaceOpenFailed;
+    }
+    return error instanceof Error ? error.message : t.value.workspaceOpenFailed;
+  };
+  const describeMutationError = (error: unknown, operation: 'create' | 'rename' | 'delete'): string => {
+    if (operation === 'delete' && typeof error === 'object' && error !== null &&
+        'partial' in error && error.partial === true) return t.value.workspaceDeletePartial;
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+      if (error.code === 'permission_required') return t.value.workspacePermissionRequired;
+      if (error.code === 'invalid_path') return t.value.workspaceInvalidName;
+      if (error.code === 'already_exists') return t.value.workspaceDestinationExists;
+      if (error.code === 'unsupported_operation') return t.value.workspaceMutationUnsupported;
+    }
+    if (operation === 'rename') return t.value.workspaceRenameFailed;
+    if (operation === 'delete') return t.value.workspaceDeleteFailed;
+    return t.value.workspaceCreateFailed;
+  };
   const {
     settings,
     setOpenWorkspaces,
@@ -152,21 +175,35 @@ export function useWorkspace() {
 
   // ===== Tree loading =====
 
-  async function loadTreeFor(entry: OpenWorkspaceEntry): Promise<WorkspaceNode> {
-    loadingById.value[entry.id] = true;
-    errorById.value[entry.id] = null;
+  async function loadTreeFor(entry: OpenWorkspaceEntry, isCurrent?: () => boolean): Promise<WorkspaceNode> {
+    const assertCurrent = () => {
+      if (isCurrent && (!isCurrent() || !openWorkspaces.value.some((w) => w.id === entry.id))) {
+        throw new DOMException('Workspace refresh cancelled', 'AbortError');
+      }
+    };
+    assertCurrent();
+    // A drop refresh stages its result so stopping it leaves no loading/error
+    // state behind. Existing interactive refresh callers retain their spinner.
+    if (!isCurrent) {
+      loadingById.value[entry.id] = true;
+      errorById.value[entry.id] = null;
+    }
     try {
       const node = await workspaceFs.readTree(entry.rootPath);
+      assertCurrent();
       treesById.value[entry.id] = node;
+      errorById.value[entry.id] = null;
       autoExpandTopLevel(node);
       return node;
     } catch (e) {
-      const msg = String(e);
+      assertCurrent();
+      const msg = describeOpenError(e);
       errorById.value[entry.id] = msg;
+      lastOpenError.value = msg;
       treesById.value[entry.id] = null;
       throw new Error(msg);
     } finally {
-      loadingById.value[entry.id] = false;
+      if (!isCurrent) loadingById.value[entry.id] = false;
     }
   }
 
@@ -177,31 +214,45 @@ export function useWorkspace() {
 
   // ===== Public API: workspace lifecycle =====
 
-  /** Open a workspace by path. If already open, switch to it instead. */
-  async function openWorkspace(rootPath: string): Promise<OpenWorkspaceEntry> {
+  /** Open using existing authority; a supplied grant ID must still match in the host. */
+  async function openWorkspace(
+    rootPath: string, expectedGrantId?: string, isCurrent: () => boolean = () => true,
+  ): Promise<OpenWorkspaceEntry> {
+    const assertCurrent = () => {
+      if (!isCurrent()) throw new DOMException('Workspace open cancelled', 'AbortError');
+    };
+    assertCurrent();
     const existing = findOpenByPath(rootPath);
-    if (existing) {
-      setActiveWorkspaceId(existing.id);
-      if (!treesById.value[existing.id]) {
-        await loadTreeFor(existing).catch(() => null);
-      }
-      return existing;
-    }
-
-    const entry: OpenWorkspaceEntry = {
+    const entry: OpenWorkspaceEntry = existing ?? {
       id: newId(),
       rootPath,
       name: basenameOf(rootPath) || rootPath,
     };
 
-    treesById.value[entry.id] = null;
-    try {
-      await loadTreeFor(entry);
-    } catch (e) {
-      delete treesById.value[entry.id];
-      delete loadingById.value[entry.id];
-      delete errorById.value[entry.id];
-      throw e;
+    // Stage the result before touching visible state. Even a cached workspace
+    // must validate the dropped/picked grant under the host's read lock.
+    if (expectedGrantId !== undefined || !treesById.value[entry.id]) {
+      let node: WorkspaceNode;
+      try {
+        node = await workspaceFs.readTree(rootPath, expectedGrantId);
+      } catch (e) {
+        assertCurrent();
+        const msg = describeOpenError(e);
+        lastOpenError.value = msg;
+        throw new Error(msg);
+      }
+      assertCurrent();
+      if (existing && !openWorkspaces.value.some((w) => w.id === existing.id)) {
+        throw new DOMException('Workspace closed during open', 'AbortError');
+      }
+      treesById.value[entry.id] = node;
+      errorById.value[entry.id] = null;
+      autoExpandTopLevel(node);
+    }
+    lastOpenError.value = null;
+    if (existing) {
+      setActiveWorkspaceId(existing.id);
+      return existing;
     }
 
     const next = [...openWorkspaces.value, entry];
@@ -218,10 +269,17 @@ export function useWorkspace() {
   }
 
   async function openWorkspaceDialog(): Promise<string | null> {
-    const picked = await openDialog({ directory: true, multiple: false });
-    if (!picked || typeof picked !== 'string') return null;
-    await openWorkspace(picked);
-    return picked;
+    try {
+      const picked = await nativeFs.pickWorkspace();
+      if (!picked) return null;
+      // A new native selection can refer to a changed directory at the same
+      // spelling. Refresh cached entries using the newly selected authority.
+      await openWorkspace(picked.path, picked.id);
+      return picked.path;
+    } catch (error) {
+      lastOpenError.value = describeOpenError(error);
+      throw error;
+    }
   }
 
   function setActive(id: string) {
@@ -261,7 +319,15 @@ export function useWorkspace() {
     await loadTreeFor(entry);
   }
 
-  async function refreshAll(): Promise<void> {
+  async function refreshAll(isCurrent?: () => boolean): Promise<void> {
+    if (isCurrent) {
+      // Serialize a drop's refresh work so stop prevents starting another root.
+      for (const entry of [...openWorkspaces.value]) {
+        if (!isCurrent()) return;
+        await loadTreeFor(entry, isCurrent).catch(() => null);
+      }
+      return;
+    }
     await Promise.all(
       openWorkspaces.value.map((w) => loadTreeFor(w).catch(() => null)),
     );
@@ -319,24 +385,45 @@ export function useWorkspace() {
   // ===== Public API: file operations =====
 
   async function createFile(parent: string, name: string): Promise<string> {
-    const created = await workspaceFs.createFile(parent, name);
+    let created: string;
+    try {
+      created = await workspaceFs.createFile(parent, name);
+    } catch (error) {
+      throw new Error(describeMutationError(error, 'create'));
+    }
     await refreshAll();
     return created;
   }
 
   async function createFolder(parent: string, name: string): Promise<string> {
-    const created = await workspaceFs.createFolder(parent, name);
+    let created: string;
+    try {
+      created = await workspaceFs.createFolder(parent, name);
+    } catch (error) {
+      throw new Error(describeMutationError(error, 'create'));
+    }
     await refreshAll();
     return created;
   }
 
   async function renamePath(from: string, to: string): Promise<void> {
-    await workspaceFs.rename(from, to);
+    try {
+      await workspaceFs.rename(from, to);
+    } catch (error) {
+      throw new Error(describeMutationError(error, 'rename'));
+    }
     await refreshAll();
   }
 
   async function deletePath(path: string): Promise<void> {
-    await workspaceFs.remove(path);
+    try {
+      await workspaceFs.remove(path);
+    } catch (error) {
+      // Native recursive deletion can stop after removing some entries.
+      // Refresh even after failure so the tree does not show the old contents.
+      await refreshAll();
+      throw new Error(describeMutationError(error, 'delete'));
+    }
     await refreshAll();
   }
 
@@ -578,6 +665,7 @@ export function useWorkspace() {
     tree,
     isLoading,
     error,
+    lastOpenError,
     treesById,
     expandedFolders,
     collapsedWorkspaceIds,

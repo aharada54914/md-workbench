@@ -1,17 +1,34 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
-import { open, save } from '@tauri-apps/plugin-dialog';
+import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, rename, remove, exists } from '@tauri-apps/plugin-fs';
 import { readTextFile } from '../services/documentText';
+import { nativeFs } from '../services/nativeFs';
+import { resolveDocumentLinkPath } from '../utils/document-link-path';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
-import { htmlToMarkdown, markdownToHtml, detectLineEnding, applyLineEnding, generateSlug } from '../utils/markdown-converter';
+import { generateSlug } from '../utils/markdown-converter';
+import { serializeVisualMarkdown } from '../utils/visual-source';
 import { aiCommands } from '../services/aiCommands';
 import type { Tab } from './useTabs';
 import { EMPTY_TAB_CONTENT, DEFAULT_FILE_NAME, DOM_SELECTORS, LARGE_FILE_CHAR_THRESHOLD } from '../constants';
+
+export interface OpenDocumentSelection {
+  expectedGrantId?: string;
+  isCurrent?: () => boolean;
+}
+
+export interface SavedDocument {
+  tab: Tab;
+  oldPath: string | null;
+  filePath: string;
+  content: string;
+}
 
 export interface UseFileOperationsOptions {
   tabs: Ref<Tab[]>;
   activeTabId: Ref<string>;
   activeTab: ComputedRef<Tab>;
+  /** Hosts with split panes must check object identity across every pane. */
+  isTabOpen?: (tab: Tab) => boolean;
   findTabByFilePath: (filePath: string) => Tab | undefined;
   createNewTab: (filePath?: string | null, fileContent?: string, fileName?: string) => string;
   switchToTab: (tabId: string, preserveHasChanges?: boolean) => Promise<void>;
@@ -22,18 +39,20 @@ export interface UseFileOperationsOptions {
   setEditorContent: (content: string) => void;
   markSaveStart?: (filePath: string) => void;
   markSaveEnd?: (filePath: string, content: string) => void;
+  markSaveAbort?: (filePath: string) => void;
+  /** Reports native permission/read failures without mutating tabs or falling back. */
+  onOpenError?: (error: unknown, filePath: string | null) => void;
   onFileOpened?: (filePath: string, content: string) => void;
-  /** Fired when a file above LARGE_FILE_CHAR_THRESHOLD was opened markdown-first
-   *  (tab.pendingMarkdown set, no HTML generated) — the host must present it in
-   *  code view because the visual editor has nothing to show. */
+  /** Notifies hosts of a large raw document. Opening does not activate an editor;
+   *  the host can page its source until the user chooses an editing mode. */
   onLargeFileOpened?: (filePath: string, markdown: string) => void;
   /** Called after a successful save / save-as so the host can register a
    *  file watcher for new paths. Safe to call repeatedly — the watcher
    *  layer ignores already-watched files. */
-  onAfterSave?: (filePath: string, content: string) => void;
+  onAfterSave?: (saved: SavedDocument) => void;
   /** Returns 'save' | 'cancel' | mergedMarkdownString (to save the merged version).
    *  localMarkdown is the current editor content (used to compute a local→disk diff). */
-  onPreSaveConflict?: (filePath: string, diskContent: string, localMarkdown: string) => Promise<'save' | 'cancel' | string>;
+  onPreSaveConflict?: (filePath: string, diskContent: string, localMarkdown: string, tab: Tab) => Promise<'save' | 'cancel' | string>;
   /** Called when a `#anchor` link matches no heading, so the host can tell the
    *  user instead of leaving the click looking like a no-op. */
   onAnchorNotFound?: (anchor: string) => void;
@@ -45,7 +64,7 @@ export interface UseFileOperationsReturn {
   showExternalLinkDialog: Ref<boolean>;
   pendingExternalUrl: Ref<string>;
   openFile: () => Promise<void>;
-  openFileFromPath: (filePath: string) => Promise<void>;
+  openFileFromPath: (filePath: string, selection?: OpenDocumentSelection) => Promise<void>;
   saveFile: () => Promise<boolean>;
   saveExistingTab: (tab: Tab, snapshot: { markdown: string | null; html: string }) => Promise<boolean>;
   saveFileAs: () => Promise<void>;
@@ -65,11 +84,12 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     switchToTab,
     getEditorHtml,
     getMarkdownOverride,
-    setEditorContent,
     markSaveStart,
     markSaveEnd,
+    markSaveAbort,
     onAfterSave,
     onFileOpened,
+    onOpenError,
     onLargeFileOpened,
     onPreSaveConflict,
     onAnchorNotFound,
@@ -82,12 +102,6 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
   const showExternalLinkDialog = ref(false);
   const pendingExternalUrl = ref('');
 
-  // Get directory from file path
-  const getDirectoryFromPath = (filePath: string): string => {
-    const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
-    return lastSlash > 0 ? filePath.substring(0, lastSlash) : '';
-  };
-
   const extractFileName = (filePath: string): string =>
     filePath.split(/[/\\]/).pop() || DEFAULT_FILE_NAME;
 
@@ -97,20 +111,34 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
   const findActiveTabIndex = (): number =>
     tabs.value.findIndex(t => t.id === activeTabId.value);
 
-  const loadFileIntoTab = async (filePath: string): Promise<void> => {
+  const loadFileIntoTab = async (filePath: string, selection?: OpenDocumentSelection): Promise<void> => {
+    if (selection?.isCurrent?.() === false) return;
     // Check if file is already open
     const existingTab = findTabByFilePath(filePath);
     if (existingTab) {
+      if (selection?.isCurrent?.() === false) return;
       await switchToTab(existingTab.id);
       return;
     }
 
-    const fileContent = await readTextFile(filePath);
+    const fileContent = selection?.expectedGrantId
+      ? await nativeFs.readPathText(filePath, undefined, selection.expectedGrantId)
+      : await nativeFs.readPathText(filePath);
+    if (selection?.isCurrent?.() === false) return;
+    // Another open may have completed during the native read.
+    const openedDuringRead = findTabByFilePath(filePath);
+    if (openedDuringRead) {
+      if (selection?.isCurrent?.() === false) return;
+      await switchToTab(openedDuringRead.id);
+      return;
+    }
     const isLarge = fileContent.length > LARGE_FILE_CHAR_THRESHOLD;
-    const htmlContent = isLarge ? '' : markdownToHtml(fileContent);
+    // Keep disk source inert until an explicit edit action.
+    const htmlContent = '';
     const fileName = extractFileName(filePath);
 
     const activeIdx = findActiveTabIndex();
+    if (selection?.isCurrent?.() === false) return;
     if (isActiveTabEmpty() && activeIdx !== -1) {
       tabs.value[activeIdx].filePath = filePath;
       tabs.value[activeIdx].fileName = fileName;
@@ -118,47 +146,48 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       tabs.value[activeIdx].hasChanges = false;
       tabs.value[activeIdx].originalMarkdown = fileContent;
       tabs.value[activeIdx].largeFile = isLarge || undefined;
-      tabs.value[activeIdx].pendingMarkdown = isLarge ? fileContent : undefined;
-      if (!isLarge) setEditorContent(htmlContent);
+      tabs.value[activeIdx].pendingMarkdown = fileContent;
+      tabs.value[activeIdx].editorMode = null;
+      tabs.value[activeIdx].readOnly = true;
     } else {
       const newTabId = createNewTab(filePath, htmlContent, fileName);
       if (!newTabId) return;
       const newTab = tabs.value.find(t => t.id === newTabId);
-      if (newTab) {
-        newTab.originalMarkdown = fileContent;
-        newTab.largeFile = isLarge || undefined;
-        newTab.pendingMarkdown = isLarge ? fileContent : undefined;
-      }
+      if (!newTab) return;
+      newTab.originalMarkdown = fileContent;
+      newTab.largeFile = isLarge || undefined;
+      newTab.pendingMarkdown = fileContent;
+      newTab.editorMode = null;
+      newTab.readOnly = true;
+      if (selection?.isCurrent?.() === false) return;
       await switchToTab(newTabId);
     }
 
+    if (selection?.isCurrent?.() === false) return;
     if (isLarge) onLargeFileOpened?.(filePath, fileContent);
     onFileOpened?.(filePath, fileContent);
   };
 
-  const openFile = async (): Promise<void> => {
-    try {
-      const selected = await open({
-        multiple: false,
-        filters: [
-          { name: 'Markdown', extensions: ['md', 'markdown'] },
-          { name: 'Wszystkie pliki', extensions: ['*'] },
-        ],
-      });
+  const reportOpenError = (error: unknown, filePath: string | null): void => {
+    console.error('Error opening document:', error);
+    onOpenError?.(error, filePath);
+  };
 
-      if (selected) {
-        await loadFileIntoTab(selected as string);
-      }
+  const openFileFromPath = async (filePath: string, selection?: OpenDocumentSelection): Promise<void> => {
+    try {
+      await loadFileIntoTab(filePath, selection);
     } catch (error) {
-      console.error('Error opening file:', error);
+      if (selection?.isCurrent?.() !== false) reportOpenError(error, filePath);
     }
   };
 
-  const openFileFromPath = async (filePath: string): Promise<void> => {
+  const openFile = async (): Promise<void> => {
     try {
-      await loadFileIntoTab(filePath);
+      const selected = await nativeFs.pickDocuments();
+      // A failed selection must not prevent the remaining selected files opening.
+      for (const grant of selected) await openFileFromPath(grant.path);
     } catch (error) {
-      console.error('Error opening file from path:', error);
+      reportOpenError(error, null);
     }
   };
 
@@ -190,214 +219,191 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       await rename(tmpPath, filePath);
       markSaveEnd?.(filePath, content);
     } catch (error) {
-      markSaveEnd?.(filePath, content); // release watcher guard even on failure
+      markSaveAbort?.(filePath); // Release suppression without accepting unwritten bytes.
       try { await remove(tmpPath); } catch { /* temp file may not exist */ }
       throw error;
     }
   };
 
-  type BackgroundSnapshot = { tab: Tab; markdown: string | null; html: string };
-  const performWriteAndUpdateTab = async (filePath: string, background?: BackgroundSnapshot): Promise<boolean> => {
-    const tabIndex = findActiveTabIndex();
-    const tab = background?.tab ?? (tabIndex === -1 ? undefined : tabs.value[tabIndex]);
-    const initialContent = tab?.content;
-    const initialPending = tab?.pendingMarkdown;
-    // Save As of an untouched document is a byte-preserving copy, including
-    // empty source, BOM, mixed newlines, unknown syntax and trailing whitespace.
-    const unchangedSource = tab && !tab.hasChanges ? tab.originalMarkdown : null;
-    // When in code view, getMarkdownOverride() returns the raw markdown directly —
-    // avoids the empty-content bug caused by SplitContainer being unmounted.
-    const markdownOverride = unchangedSource ?? (background ? background.markdown : getMarkdownOverride?.()) ?? null;
-    const html = markdownOverride === null ? (background ? background.html : getEditorHtml()) : null;
-    let markdown = markdownOverride ?? htmlToMarkdown(html!);
-
-    // Preserve original line endings if we have the original content
-    if (markdownOverride === null && tab?.originalMarkdown) {
-      const originalLineEnding = detectLineEnding(tab.originalMarkdown);
-      markdown = applyLineEnding(markdown, originalLineEnding);
-    }
-
-    // Pre-save conflict check
-    let mergedContentApplied = false;
-    if (tab && (background || onPreSaveConflict)) {
-      const diskContent = await checkPreSaveConflict(filePath, tab.originalMarkdown, tab.filePath, !!background);
-      if (diskContent !== null) {
-        // Background saving never resolves a conflict on the user's behalf.
-        if (background || !onPreSaveConflict) return false;
-        const decision = await onPreSaveConflict(filePath, diskContent, markdown);
-        if (decision === 'cancel') return false;
-        // If user applied a manual merge, use the merged content instead.
-        // The conflict handler already called reloadTabContent to update the editor —
-        // skip the tab.content = html overwrite below so the merged view isn't reverted.
-        if (decision !== 'save') {
-          markdown = decision;
-          mergedContentApplied = true;
-        }
-      }
-    }
-
-    await atomicWriteFile(filePath, markdown);
-
-    if (tab) {
-      const liveRaw = tab.id === activeTabId.value ? getMarkdownOverride?.() ?? null : markdownOverride;
-      const unchangedDuringSave = tab.content === initialContent && tab.pendingMarkdown === initialPending
-        && (markdownOverride === null || liveRaw === markdownOverride);
-      tab.filePath = filePath;
-      tab.fileName = extractFileName(filePath);
-      if (unchangedDuringSave || mergedContentApplied) tab.hasChanges = false;
-      // Only update cached HTML when saving from visual mode — in code view the HTML
-      // will be regenerated from the saved markdown when switching back to visual mode.
-      // Skip when merged content was applied: the conflict handler already set tab.content
-      // via reloadTabContent; overwriting it here with pre-dialog html would revert the editor.
-      if (html !== null && !mergedContentApplied && unchangedDuringSave) {
-        tab.content = html;
-      }
-      tab.originalMarkdown = markdown;
-    }
-
-    // Tell host to start watching this path (no-op if already watched).
-    onAfterSave?.(filePath, markdown);
-    return true;
+  type EditorSnapshot = { markdown: string | null; html: string };
+  type SaveSnapshot = {
+    tab: Tab;
+    oldPath: string | null;
+    original: string | null;
+    markdown: string;
+    html: string | null;
+    content: string;
+    pending: Tab['pendingMarkdown'];
+    raw: string | null;
+    background: boolean;
   };
+  const isTabOpen = (tab: Tab): boolean => options.isTabOpen?.(tab) ?? tabs.value.includes(tab);
+  const captureSave = (tab: Tab, background?: EditorSnapshot): SaveSnapshot => {
+    const raw = background ? background.markdown : getMarkdownOverride?.() ?? null;
+    const unchangedSource = !tab.hasChanges ? tab.originalMarkdown : null;
+    const markdownOverride = unchangedSource ?? raw;
+    const html = markdownOverride === null ? (background ? background.html : getEditorHtml()) : null;
+    return {
+      tab, oldPath: tab.filePath, original: tab.originalMarkdown,
+      markdown: markdownOverride ?? serializeVisualMarkdown(html!, tab.originalMarkdown),
+      html, content: tab.content, pending: tab.pendingMarkdown, raw,
+      background: !!background,
+    };
+  };
+  const stillOwned = (snapshot: SaveSnapshot): boolean =>
+    isTabOpen(snapshot.tab) && snapshot.tab.filePath === snapshot.oldPath;
+  const stillCurrent = (snapshot: SaveSnapshot): boolean =>
+    stillOwned(snapshot) && snapshot.tab.originalMarkdown === snapshot.original;
 
+  const savingTabs = new WeakSet<Tab>();
   const savingPaths = new Set<string>();
-  const writeAndUpdateTab = async (filePath: string, background?: BackgroundSnapshot): Promise<boolean> => {
-    // Autosave, explicit Save and close Save share this instance and temp path.
-    // Refuse overlapping writes instead of racing the verification/rename.
-    if (savingPaths.has(filePath)) return false;
+  const writeAndUpdateTab = async (filePath: string, snapshot: SaveSnapshot): Promise<boolean> => {
+    // Both the document and destination stay reserved through every async step.
+    if (!stillCurrent(snapshot) || savingPaths.has(filePath)) return false;
     savingPaths.add(filePath);
     try {
-      return await performWriteAndUpdateTab(filePath, background);
+      let markdown = snapshot.markdown;
+      let merged = false;
+      if (snapshot.background || onPreSaveConflict) {
+        const diskContent = await checkPreSaveConflict(filePath, snapshot.original, snapshot.oldPath, snapshot.background);
+        if (!stillCurrent(snapshot)) return false;
+        if (diskContent !== null) {
+          if (snapshot.background || !onPreSaveConflict) return false;
+          const decision = await onPreSaveConflict(filePath, diskContent, markdown, snapshot.tab);
+          if (decision === 'cancel' || !stillOwned(snapshot)) return false;
+          if (decision !== 'save') {
+            // A merge callback may install its accepted source in the captured tab.
+            // Only that accepted baseline may replace the original revision.
+            if (snapshot.tab.originalMarkdown !== snapshot.original && snapshot.tab.originalMarkdown !== decision) return false;
+            markdown = decision;
+            merged = true;
+            snapshot.original = snapshot.tab.originalMarkdown;
+            snapshot.content = snapshot.tab.content;
+            snapshot.pending = snapshot.tab.pendingMarkdown;
+            snapshot.raw = activeTab.value === snapshot.tab ? getMarkdownOverride?.() ?? null : snapshot.tab.pendingMarkdown ?? null;
+            snapshot.html = snapshot.raw === null && activeTab.value === snapshot.tab ? getEditorHtml() : null;
+          }
+        }
+      }
+      if (!stillCurrent(snapshot)) return false;
+      await atomicWriteFile(filePath, markdown);
+      // A completed disk write cannot be rolled back safely. A closed/rebound tab
+      // must nevertheless never be resurrected or adopt that completion.
+      if (!stillCurrent(snapshot)) return false;
+
+      const { tab } = snapshot;
+      const active = activeTab.value === tab;
+      const rawUnchanged = !active || (getMarkdownOverride?.() ?? null) === snapshot.raw;
+      const htmlUnchanged = !active || snapshot.background || snapshot.html === null || getEditorHtml() === snapshot.html;
+      const mergeMatchesSource = !merged || snapshot.raw === null || snapshot.raw === markdown;
+      const unchanged = tab.content === snapshot.content && tab.pendingMarkdown === snapshot.pending
+        && rawUnchanged && htmlUnchanged && mergeMatchesSource;
+      tab.filePath = filePath;
+      tab.fileName = extractFileName(filePath);
+      tab.hasChanges = !unchanged;
+      if (snapshot.html !== null && !merged && unchanged) tab.content = snapshot.html;
+      tab.originalMarkdown = markdown;
+      onAfterSave?.({ tab, oldPath: snapshot.oldPath, filePath, content: markdown });
+      return true;
     } finally {
       savingPaths.delete(filePath);
     }
   };
 
-  const saveExistingTab = async (tab: Tab, snapshot: { markdown: string | null; html: string }): Promise<boolean> => {
-    if (!tab.filePath || tab.originalMarkdown === null) return false;
+  const saveExistingTab = async (tab: Tab, editor: EditorSnapshot): Promise<boolean> => {
+    if (!isTabOpen(tab) || !tab.filePath || tab.originalMarkdown === null || savingTabs.has(tab)) return false;
     if (!tab.hasChanges) return true;
+    savingTabs.add(tab);
     try {
-      return await writeAndUpdateTab(tab.filePath, { tab, ...snapshot });
+      return await writeAndUpdateTab(tab.filePath, captureSave(tab, editor));
     } catch (error) {
       console.error('Background save stopped:', error);
       return false;
+    } finally {
+      savingTabs.delete(tab);
     }
   };
 
-  const saveFile = async (): Promise<boolean> => {
+  const saveInteractive = async (saveAs: boolean): Promise<boolean> => {
+    const tab = activeTab.value;
+    if (!tab || !isTabOpen(tab) || savingTabs.has(tab)) return false;
+    if (!saveAs && tab.filePath && !tab.hasChanges) return true;
+    savingTabs.add(tab);
     try {
-      let filePath = currentFile.value;
-      const tabIndex = findActiveTabIndex();
-
-      // Skip save if file exists and has no changes
-      if (filePath && tabIndex !== -1 && !tabs.value[tabIndex].hasChanges) {
-        return true;
-      }
-
-      if (!filePath) {
+      // Capture bytes and identity before opening a dialog or awaiting disk I/O.
+      const snapshot = captureSave(tab);
+      let filePath = snapshot.oldPath;
+      if (saveAs || !filePath) {
         filePath = await save({
           filters: [{ name: 'Markdown', extensions: ['md'] }],
-          defaultPath: 'dokument.md',
+          defaultPath: saveAs ? snapshot.oldPath?.split(/[/\\]/).pop() || 'dokument.md' : 'dokument.md',
         });
       }
-
-      if (filePath) {
-        return await writeAndUpdateTab(filePath);
+      if (!filePath || !await writeAndUpdateTab(filePath, snapshot)) return false;
+      if (saveAs && snapshot.oldPath && snapshot.oldPath !== filePath) {
+        await Promise.all([
+          aiCommands.sessionMigrate(snapshot.oldPath, filePath),
+          aiCommands.accessMigrate(snapshot.oldPath, filePath),
+          aiCommands.snapshotMigrate(snapshot.oldPath, filePath),
+        ]).catch(() => {}); // Metadata migration remains best-effort after adoption.
       }
-      return false;
+      return true;
     } catch (error) {
       console.error('Error saving file:', error);
       return false;
+    } finally {
+      savingTabs.delete(tab);
     }
   };
-
-  const saveFileAs = async (): Promise<void> => {
-    try {
-      const oldPath = currentFile.value;
-      const filePath = await save({
-        filters: [{ name: 'Markdown', extensions: ['md'] }],
-        defaultPath: oldPath?.split(/[/\\]/).pop() || 'dokument.md',
-      });
-
-      if (filePath) {
-        if (!await writeAndUpdateTab(filePath)) return;
-        // Migrate AI metadata (sessions, access map, snapshots) to the new path.
-        if (oldPath && oldPath !== filePath) {
-          await Promise.all([
-            aiCommands.sessionMigrate(oldPath, filePath),
-            aiCommands.accessMigrate(oldPath, filePath),
-            aiCommands.snapshotMigrate(oldPath, filePath),
-          ]).catch(() => {}); // best-effort; don't fail save on AI metadata errors
-        }
-      }
-    } catch (error) {
-      console.error('Error saving file:', error);
-    }
-  };
+  const saveFile = (): Promise<boolean> => saveInteractive(false);
+  const saveFileAs = async (): Promise<void> => { await saveInteractive(true); };
 
   const openFileInNewTab = async (relativePath: string): Promise<void> => {
+    const fullPath = resolveDocumentLinkPath(currentFile.value, relativePath);
+    const previousTab = activeTab.value;
+    const scrollTop = document.querySelector(DOM_SELECTORS.ACTIVE_EDITOR_CONTAINER)?.scrollTop;
+    const keepPreviousScroll = (): void => {
+      if (scrollTop !== undefined && tabs.value.includes(previousTab)) previousTab.scrollTop = scrollTop;
+    };
     try {
-      // Save current scroll position before navigating
-      const editorContainer = document.querySelector(DOM_SELECTORS.EDITOR_CONTAINER);
-      if (editorContainer && activeTab.value) {
-        const tabIndex = findActiveTabIndex();
-        if (tabIndex !== -1) {
-          tabs.value[tabIndex].scrollTop = editorContainer.scrollTop;
-        }
-      }
-
       isLoadingFile.value = true;
-
-      // Get current file's directory as base
-      const baseDir = currentFile.value ? getDirectoryFromPath(currentFile.value) : '';
-
-      // Resolve the relative path
-      let fullPath = relativePath;
-      if (baseDir && !relativePath.match(/^[a-zA-Z]:/)) {
-        fullPath = `${baseDir}/${relativePath}`.replace(/\\/g, '/');
-        const parts = fullPath.split('/');
-        const normalized: string[] = [];
-        for (const part of parts) {
-          if (part === '..') {
-            normalized.pop();
-          } else if (part !== '.' && part !== '') {
-            normalized.push(part);
-          }
-        }
-        fullPath = normalized.join('/');
-        if (fullPath.match(/^[a-zA-Z]\//)) {
-          fullPath = fullPath.replace(/^([a-zA-Z])\//, '$1:/');
-        }
-      }
 
       // Check if file is already open
       const existingTab = findTabByFilePath(fullPath);
       if (existingTab) {
+        keepPreviousScroll();
         await switchToTab(existingTab.id);
-        isLoadingFile.value = false;
         return;
       }
 
       // Read the file
-      const fileContent = await readTextFile(fullPath);
+      const fileContent = await nativeFs.readPathText(fullPath);
+      const openedDuringRead = findTabByFilePath(fullPath);
+      if (openedDuringRead) {
+        keepPreviousScroll();
+        await switchToTab(openedDuringRead.id);
+        return;
+      }
       const isLarge = fileContent.length > LARGE_FILE_CHAR_THRESHOLD;
-      const htmlContent = isLarge ? '' : markdownToHtml(fileContent);
+      const htmlContent = '';
       const fileName = extractFileName(fullPath);
 
       // Create new tab and switch to it
       const newTabId = createNewTab(fullPath, htmlContent, fileName);
       const newTab = tabs.value.find(t => t.id === newTabId);
-      if (newTab) {
-        newTab.originalMarkdown = fileContent;
-        newTab.largeFile = isLarge || undefined;
-        newTab.pendingMarkdown = isLarge ? fileContent : undefined;
-      }
+      if (!newTabId || !newTab) return;
+      keepPreviousScroll();
+      newTab.originalMarkdown = fileContent;
+      newTab.largeFile = isLarge || undefined;
+      newTab.pendingMarkdown = fileContent;
+      newTab.editorMode = null;
+      newTab.readOnly = true;
       await switchToTab(newTabId);
       if (isLarge) onLargeFileOpened?.(fullPath, fileContent);
       onFileOpened?.(fullPath, fileContent);
-      isLoadingFile.value = false;
     } catch (error) {
-      console.error('Error opening file in new tab:', error);
+      reportOpenError(error, fullPath);
+    } finally {
       isLoadingFile.value = false;
     }
   };

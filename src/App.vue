@@ -4,11 +4,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { copyFile, exists, remove } from '@tauri-apps/plugin-fs';
+import { writeFile, exists, remove } from '@tauri-apps/plugin-fs';
 import { readTextFile } from './services/documentText';
-import { open } from '@tauri-apps/plugin-dialog';
+import { nativeFs, type NativeGrant } from './services/nativeFs';
 import { htmlToMarkdown, markdownToHtml } from './utils/markdown-converter';
-import { inlineMarkdownImages, getDirectoryFromFilePath } from './utils/image-resolver';
+import { getDirectoryFromFilePath } from './utils/image-resolver';
+import { useMarkdownImageInlining } from './composables/useMarkdownImageInlining';
 import type { Editor as TiptapEditor } from '@tiptap/vue-3';
 
 // Components
@@ -47,10 +48,9 @@ import { useSplitEditor } from './composables/useSplitEditor';
 import { useScrollSync } from './composables/useScrollSync';
 import { useSettings } from './composables/useSettings';
 import { useSplitView } from './composables/useSplitView';
-import { useFileOperations } from './composables/useFileOperations';
+import { useFileOperations, type OpenDocumentSelection } from './composables/useFileOperations';
 import { useCloseConfirmation } from './composables/useCloseConfirmation';
 import { useWindowManager } from './composables/useWindowManager';
-import { useTabDrag } from './composables/useTabDrag';
 import { useEditorZoom } from './composables/useEditorZoom';
 import { useFileReload } from './composables/useFileReload';
 import { useLayoutConfig } from './composables/useLayoutConfig';
@@ -61,6 +61,7 @@ import { useAiMermaidTarget } from './composables/useAiMermaidTarget';
 import { useDocumentSearch, type DocumentSearchMatch, type VisualSearchMatch } from './composables/useDocumentSearch';
 import { useImageDrop } from './composables/useImageDrop';
 import { useFolderDrop } from './composables/useFolderDrop';
+import { useNativeDrops } from './composables/useNativeDrops';
 import { nextAvailableImportPath, workspaceImportDirectoryAt } from './utils/workspace-import';
 import { isImageFile } from './utils/image-file-utils';
 import { t } from './i18n';
@@ -76,6 +77,7 @@ import { useDocxExport } from './composables/useDocxExport';
 import { serializeEditorContent } from './utils/documentSerializer';
 import { DOM_SELECTORS } from './constants';
 import type { CodeEditorHandle } from './types/code-editor';
+import type { Tab } from './composables/useTabs';
 
 // ============ Split View & Tab Management ============
 const {
@@ -112,12 +114,15 @@ const {
 // Compatibility layer for legacy code
 const tabs = computed(() => activePane.value?.tabs || []);
 const activeTabId = computed(() => activePane.value?.activeTabId || '');
-const activeTab = computed(() => {
+const activeTab = computed<Tab>(() => {
   const tab = getActiveTabForPane(activePaneId.value);
   // Return a default tab if none exists (should never happen in practice)
   return tab || { id: '', filePath: null, fileName: t.value.newDocument, content: '<p></p>', hasChanges: false, scrollTop: 0, originalMarkdown: null };
 });
-const isolatedReadMode = ref(false);
+// Wait for URL/native/session opens before creating even the initial blank editor.
+const initialFilesReady = ref(false);
+const isolatedReadMode = computed(() => activeTab.value.readOnly === true);
+const editingEnabled = computed(() => initialFilesReady.value && !isolatedReadMode.value && !!activeTab.value.editorMode);
 const isolatedReadMarkdown = computed(() => {
   if (codeView.value) return codeContent.value;
   if (splitEditorActive.value) return splitMarkdownSource.value;
@@ -138,16 +143,9 @@ const editorInstance = ref<TiptapEditor | null>(null);
 // Use watchEffect to automatically re-run when any reactive dependency changes
 // This handles async editor initialization properly
 watchEffect(() => {
-  if (splitContainerRef.value) {
-    const paneRef = activePaneId.value === 'left'
-      ? splitContainerRef.value.leftPaneRef
-      : splitContainerRef.value.rightPaneRef;
-    // Vue automatically unwraps ComputedRef from defineExpose, so paneRef.editor is already Editor | undefined
-    const editor = paneRef?.editor;
-    if (editor) {
-      editorInstance.value = editor;
-    }
-  }
+  const paneRef = activePaneId.value === 'left'
+    ? splitContainerRef.value?.leftPaneRef : splitContainerRef.value?.rightPaneRef;
+  editorInstance.value = editingEnabled.value ? paneRef?.editor ?? null : null;
 });
 
 provide('editor', editorInstance);
@@ -175,7 +173,7 @@ const getEditorContent = () => {
   if (splitContainerRef.value) {
     return splitContainerRef.value.getActiveEditorContent();
   }
-  return '<p></p>';
+  return activeTab.value.content || '<p></p>';
 };
 
 const setEditorContent = (content: string) => {
@@ -240,8 +238,7 @@ const createDocument = async (kind: 'plain' | 'marp') => {
   if (splitEditorActive.value && activeTab.value) {
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     activeTab.value.content = exitSplitEditor();
-    activeTab.value.pendingMarkdown = null;
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = splitMarkdownSource.value;
   }
   if (kind === 'marp') {
     createNewTab(null, markdownToHtml(buildMarpSeed()));
@@ -261,23 +258,33 @@ const findTabByFilePath = (filePath: string) => {
   return result?.tab;
 };
 
+const isTabOpen = (tab: Tab): boolean => splitState.value.panes.some((pane) => pane.tabs.includes(tab));
+
 // ============ File Watcher & Reload ============
 const {
   showToast, toastMessage, toastType, dismissToast, showToastNotification,
-  showConflictModal, conflictFileName, conflictFilePath, conflictDiffLines, conflictDiffStats,
+  showConflictModal, conflictKey, conflictFileName, conflictFilePath, conflictDiffLines, conflictDiffStats,
   handleConflictKeepLocal, handleConflictLoadExternal, handleConflictMerge,
   manualReload,
   reloadTabContent,
-  watchFile, unwatchFile, unwatchAll, markSaveStart, markSaveEnd,
+  watchFile, unwatchFile, unwatchAll, markSaveStart, markSaveEnd, markSaveAbort,
 } = useFileReload({
   activePaneId,
   currentFile,
+  activeTab,
   hasChanges,
-  findTabByFilePathSplit,
+  findTabsByFilePathSplit: filePath => splitState.value.panes.flatMap(pane =>
+    pane.tabs.filter(tab => tab.filePath === filePath).map(tab => ({ pane, tab }))),
+  findTabByFilePathSplit: (filePath, expectedTab) => {
+    if (!expectedTab) return findTabByFilePathSplit(filePath);
+    const pane = splitState.value.panes.find(pane => pane.tabs.includes(expectedTab));
+    return pane && expectedTab.filePath === filePath ? { pane, tab: expectedTab } : undefined;
+  },
   setEditorContent,
   setCodeMarkdown: (markdown: string) => {
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     if (codeView.value) seedCodeContent(markdown);
+    if (splitEditorActive.value) enterSplitEditorRaw('', markdown);
   },
 });
 
@@ -291,35 +298,53 @@ const preSaveConflictDiffLines = ref<import('./composables/useDiffPreview').Diff
 const preSaveConflictDiffStats = ref<import('./composables/useDiffPreview').DiffStats>({ additions: 0, deletions: 0 });
 const preSaveConflictDiskContent = ref('');
 let preSaveConflictResolver: ((decision: 'save' | 'cancel' | string) => void) | null = null;
+let preSaveSelection: { tab: Tab; oldPath: string | null; original: string | null } | null = null;
 
+const currentPreSaveTab = (): Tab | null => {
+  const selection = preSaveSelection;
+  return selection && isTabOpen(selection.tab) && selection.tab.filePath === selection.oldPath
+    && selection.tab.originalMarkdown === selection.original ? selection.tab : null;
+};
+const finishPreSaveConflict = (decision: 'save' | 'cancel' | string) => {
+  showPreSaveConflictModal.value = false;
+  const resolve = preSaveConflictResolver;
+  preSaveConflictResolver = null;
+  preSaveSelection = null;
+  resolve?.(decision);
+};
+const applyPreSaveBuffer = (tab: Tab, markdown: string): void => {
+  tab.pendingMarkdown = markdown;
+  tab.hasChanges = markdown !== tab.originalMarkdown;
+  // Retain raw source for inactive/read-only tabs without mounting an editor.
+  if (!tab.readOnly && !tab.largeFile) tab.content = markdownToHtml(markdown);
+  if (activeTab.value === tab) {
+    if (codeView.value) seedCodeContent(markdown);
+    if (splitEditorActive.value) enterSplitEditorRaw('', markdown);
+    if (!tab.readOnly && tab.editorMode === 'visual' && !tab.largeFile) setEditorContent(tab.content);
+  }
+};
 const handlePreSaveConflictSaveAnyway = () => {
-  showPreSaveConflictModal.value = false;
-  preSaveConflictResolver?.('save');
-  preSaveConflictResolver = null;
+  finishPreSaveConflict(currentPreSaveTab() ? 'save' : 'cancel');
 };
-
 const handlePreSaveConflictLoadExternal = () => {
-  // eslint-disable-next-line @typescript-eslint/no-use-before-define
-  reloadTabContent(preSaveConflictFilePath.value, preSaveConflictDiskContent.value);
-  showPreSaveConflictModal.value = false;
-  preSaveConflictResolver?.('cancel');
-  preSaveConflictResolver = null;
+  const tab = currentPreSaveTab();
+  if (tab) {
+    if (tab.filePath === preSaveConflictFilePath.value) {
+      reloadTabContent(tab.filePath, preSaveConflictDiskContent.value, tab);
+    } else {
+      // Save As conflict belongs to the chosen destination, not the old file.
+      applyPreSaveBuffer(tab, preSaveConflictDiskContent.value);
+    }
+  }
+  finishPreSaveConflict('cancel');
 };
-
 const handlePreSaveConflictMerge = (mergedContent: string) => {
-  // eslint-disable-next-line @typescript-eslint/no-use-before-define
-  reloadTabContent(preSaveConflictFilePath.value, mergedContent);
-  showPreSaveConflictModal.value = false;
-  // Pass merged content to writeAndUpdateTab — it will use it as the save content
-  preSaveConflictResolver?.(mergedContent);
-  preSaveConflictResolver = null;
+  const tab = currentPreSaveTab();
+  if (tab) applyPreSaveBuffer(tab, mergedContent);
+  // The accepted merge stays dirty until the write actually succeeds.
+  finishPreSaveConflict(tab ? mergedContent : 'cancel');
 };
-
-const handlePreSaveConflictCancel = () => {
-  showPreSaveConflictModal.value = false;
-  preSaveConflictResolver?.('cancel');
-  preSaveConflictResolver = null;
-};
+const handlePreSaveConflictCancel = () => finishPreSaveConflict('cancel');
 
 // ============ Tab Close Confirmation ============
 const showTabCloseDialog = ref(false);
@@ -333,8 +358,8 @@ const closeTabAndCheckWindow = async (paneId: string, tabId: string) => {
 
   closeTabFromSplit(paneId, tabId);
 
-  // Unregister the file from the global registry and stop watching
-  if (filePath) {
+  // Watchers and global registration belong to every tab using this path.
+  if (filePath && !findTabByFilePathSplit(filePath)) {
     unwatchFile(filePath);
     try {
       await unregisterOpenFile(filePath);
@@ -481,7 +506,7 @@ const getMarkdownForSave = () => {
   if (codeView.value) return codeContent.value;
   return largeFileVisualMode.value
     ? lazyMarkdownEditorRef.value?.getMarkdown() ?? activeTab.value?.pendingMarkdown ?? null
-    : null;
+    : activeTab.value?.pendingMarkdown ?? null;
 };
 const {
   isLoadingFile,
@@ -495,6 +520,7 @@ const {
   confirmExternalLink,
   cancelExternalLink,
 } = useFileOperations({
+  isTabOpen,
   tabs,
   activeTabId,
   activeTab,
@@ -506,46 +532,31 @@ const {
   setEditorContent,
   markSaveStart: (filePath: string) => markSaveStart(filePath),
   markSaveEnd: (filePath: string, content: string) => markSaveEnd(filePath, content),
+  markSaveAbort: (filePath: string) => markSaveAbort(filePath),
+  onOpenError: reportDocumentOpenError,
   onFileOpened: (filePath: string, content: string) => {
     watchFile(filePath, content);
     const fileName = filePath.split(/[/\\]/).pop() ?? filePath;
     addRecentFile(filePath, fileName);
-    // Only the same-tab content-replacement case; tab-id changes are seeded by
-    // the activeTabId watch, and this tag guard avoids a double-seed race.
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    if (splitEditorActive.value && splitSourceTabId.value === activeTabId.value) {
-      // eslint-disable-next-line @typescript-eslint/no-use-before-define
-      enterSplitEditor(activeTab.value?.content || '<p></p>');
-    }
-  },
-  onLargeFileOpened: (_filePath: string, markdown: string) => {
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    if (splitEditorActive.value) {
-      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    // Reusing an empty tab does not change its id, so also reset its layout here.
+    if (activeTab.value.filePath === filePath && !activeTab.value.editorMode) {
       scrollSync.detach();
-      // eslint-disable-next-line @typescript-eslint/no-use-before-define
       splitEditorActive.value = false;
+      codeView.value = false;
+      largeFileVisualMode.value = false;
     }
-    // Large files open directly in the editable, section-virtualized visual
-    // mode. Keep the raw Markdown as the source of truth until code mode,
-    // save, or an explicit full-document operation needs it.
-    void markdown;
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    codeView.value = false;
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    largeFileVisualMode.value = true;
   },
-  onAfterSave: (filePath: string, content: string) => {
-    // New file just got a path (Save / Save As on a fresh tab) — ensure
-    // the file watcher is registered so external edits (e.g., AI) are
-    // detected and trigger an editor reload.
+  onAfterSave: ({ tab, oldPath, filePath, content }) => {
+    if (!isTabOpen(tab) || tab.filePath !== filePath) return;
+    if (oldPath && oldPath !== filePath && !findTabByFilePathSplit(oldPath)) unwatchFile(oldPath);
     watchFile(filePath, content);
   },
   onAnchorNotFound: (anchor: string) => {
     showToastNotification(t.value.anchorNotFound(anchor), 'warning');
   },
-  onPreSaveConflict: (filePath: string, diskContent: string, localMarkdown: string) => {
-    const tab = findTabByFilePath(filePath);
+  onPreSaveConflict: (filePath: string, diskContent: string, localMarkdown: string, tab: Tab) => {
+    if (!isTabOpen(tab) || preSaveConflictResolver) return Promise.resolve('cancel');
+    preSaveSelection = { tab, oldPath: tab.filePath, original: tab.originalMarkdown };
     // Diff shows local (current editor) → disk so the user sees their changes vs external changes.
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     const diffResult = generateDiff(localMarkdown, diskContent);
@@ -595,7 +606,7 @@ const marpTitle = ref('deck');
 async function openMarpDialog() {
   const tab = activeTab.value;
   const fileName = tab?.fileName ?? '';
-  marpTitle.value = fileName.replace(/\.(md|markdown)$/i, '') || 'deck';
+  const title = fileName.replace(/\.(md|markdown)$/i, '') || 'deck';
   // In code / split-editor modes the WYSIWYG editor is unmounted and serializes
   // to empty — read the live markdown source instead so Present isn't blank.
   // eslint-disable-next-line @typescript-eslint/no-use-before-define
@@ -608,8 +619,11 @@ async function openMarpDialog() {
   // Inline local images as data URIs: the deck renders inside a sandboxed
   // iframe (srcdoc) with no base URL, so relative/local paths won't load.
   const baseDir = tab?.filePath ? getDirectoryFromFilePath(tab.filePath) : undefined;
-  marpMarkdown.value = await inlineMarkdownImages(raw, baseDir);
-  showMarpDialog.value = true;
+  await marpDialogImages.render(raw, baseDir, rendered => {
+    marpTitle.value = title;
+    marpMarkdown.value = rendered;
+    showMarpDialog.value = true;
+  });
 }
 
 // Marp mode = active doc has a `marp: true` front-matter badge node.
@@ -738,14 +752,15 @@ let marpLiveTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Visible only in the plain WYSIWYG editor mode for a Marp doc.
 const marpPreviewVisible = computed(
-  () => showMarpPreview.value && isMarp.value && !codeView.value && !splitEditorActive.value
+  () => editingEnabled.value && showMarpPreview.value && isMarp.value && !codeView.value && !splitEditorActive.value
 );
 
 async function refreshMarpLive() {
+  if (!marpPreviewVisible.value) return;
   const tab = activeTab.value;
   const raw = htmlToMarkdown(getEditorContent() ?? '');
   const baseDir = tab?.filePath ? getDirectoryFromFilePath(tab.filePath) : undefined;
-  marpLiveMarkdown.value = await inlineMarkdownImages(raw, baseDir);
+  await marpLiveImages.render(raw, baseDir, rendered => { marpLiveMarkdown.value = rendered; });
 }
 
 function scheduleMarpLive() {
@@ -762,6 +777,7 @@ function attachMarpScroll() {
 }
 
 async function toggleMarpPreview() {
+  if (!editingEnabled.value) return;
   showMarpPreview.value = !showMarpPreview.value;
   if (showMarpPreview.value) {
     await refreshMarpLive();
@@ -798,7 +814,7 @@ const lazyMarkdownEditorRef = ref<InstanceType<typeof LazyMarkdownPreview> | nul
 const isMarkdownFirst = (tab: { largeFile?: boolean; pendingMarkdown?: string | null } | null | undefined): boolean =>
   !!tab && tab.largeFile === true && tab.pendingMarkdown != null;
 const largeFileVisualMode = ref(false);
-
+// Only tabs parked before converting their Source buffer have a stale HTML cache.
 const {
   codeView,
   codeContent,
@@ -808,17 +824,20 @@ const {
   enterCodeViewWithMarkdown,
   seedCodeContent,
 } = useCodeView({
-  getUnchangedMarkdown: () => activeTab.value?.hasChanges ? null : activeTab.value?.originalMarkdown ?? null,
+  getUnchangedMarkdown: () => activeTab.value?.pendingMarkdown
+    ?? (!activeTab.value?.hasChanges ? activeTab.value?.originalMarkdown ?? null : null),
+  getMarkdownReference: () => activeTab.value?.originalMarkdown ?? null,
   getActiveContent: () => activeTab.value?.content || '<p></p>',
-  setActiveContent: (content: string) => {
+  setActiveContent: (content: string, markdown: string) => {
     if (activeTab.value) {
       activeTab.value.content = content;
-      activeTab.value.pendingMarkdown = null;
+      activeTab.value.pendingMarkdown = markdown;
     }
   },
   markAsChanged: () => {
     if (activeTab.value) {
-      activeTab.value.hasChanges = true;
+      activeTab.value.pendingMarkdown = codeContent.value;
+      activeTab.value.hasChanges = codeContent.value !== activeTab.value.originalMarkdown;
     }
   },
   forceConvertOnExit: () => activeTab.value.pendingMarkdown != null,
@@ -828,15 +847,33 @@ const {
 watch(
   () => codeEditorComponentRef.value?.editor,
   (editor) => {
-    if (editor) {
-      codeEditorRef.value = editor;
-    }
+    codeEditorRef.value = editor ?? null;
   },
   { immediate: true }
 );
 
 const toggleCodeView = async () => {
+  const tab = activeTab.value;
+  tab.readOnly = false;
+  if (!tab.editorMode) {
+    tab.editorMode = 'source';
+    await enterCodeViewWithMarkdown(tab.pendingMarkdown ?? tab.originalMarkdown ?? '');
+    isLoadingContent.value = false;
+    return;
+  }
+  tab.editorMode = codeView.value ? 'visual' : 'source';
   isLoadingContent.value = true;
+
+  if (splitEditorActive.value) {
+    const markdown = splitMarkdownSource.value;
+    activeTab.value.content = exitSplitEditor();
+    activeTab.value.pendingMarkdown = markdown;
+    scrollSync.detach();
+    splitEditorActive.value = false;
+    await enterCodeViewWithMarkdown(markdown);
+    isLoadingContent.value = false;
+    return;
+  }
 
   if (largeFileVisualMode.value) {
     if (activeTab.value) {
@@ -877,7 +914,6 @@ const {
   markdownSource: splitMarkdownSource,
   previewHtml: splitPreviewHtml,
   onMarkdownInput: onSplitMarkdownInput,
-  syncFromVisual: syncSplitFromVisual,
   enter: enterSplitEditorRaw,
   exit: exitSplitEditor,
 } = useSplitEditor();
@@ -885,13 +921,18 @@ const {
 // Proportional scroll-sync between the split code pane and the live preview.
 const scrollSync = useScrollSync();
 
-// Latest HTML emitted by the read-only preview editor. Committed back to the
-// code source only on a real in-preview edit (see onSplitPreviewChanged).
-const splitPreviewLatestHtml = ref('');
-
 // Tags splitMarkdownSource with the tab it was seeded from so the WRITE paths
 // can refuse to persist a source belonging to a different tab.
 const splitSourceTabId = ref<string | null>(null);
+
+function marpImageContext() {
+  const tab = activeTab.value;
+  return [tab, tab?.id, tab?.filePath, tab?.content, tab?.pendingMarkdown,
+    activePaneId.value, editingEnabled.value, codeView.value, codeContent.value,
+    splitEditorActive.value, splitSourceTabId.value, splitMarkdownSource.value];
+}
+const marpDialogImages = useMarkdownImageInlining(() => [...marpImageContext(), showMarpDialog.value]);
+const marpLiveImages = useMarkdownImageInlining(() => [...marpImageContext(), marpPreviewVisible.value]);
 
 const enterSplitEditor = (html: string): void => {
   const tab = activeTab.value;
@@ -899,67 +940,53 @@ const enterSplitEditor = (html: string): void => {
   splitSourceTabId.value = activeTabId.value;
 };
 
-// Single authoritative commit + re-seed for every active-tab change, covering
-// every open/switch path (cross-window already-open, focus listener, dropped
-// files, normal TabBar) uniformly.
-//
-// TIMING: nothing may overwrite splitMarkdownSource synchronously between the
-// activeTabId change and this flush, or the commit-old step would persist the
-// new edit into the old tab. This is why manual enter/exit seeding was removed
-// from switchToTabFromSplitEditor and onFileOpened.
+// Park buffers under their owning tab before restoring the next tab's chosen mode.
+// An untouched disk tab always returns to isolated reading, regardless of the
+// previous tab's Source/Split/large-file layout.
 watch(activeTabId, (_newId, oldId) => {
-  if (!splitEditorActive.value) return;
-  if (splitSourceTabId.value === oldId) {
-    const oldTab = splitState.value.panes.flatMap(pane => pane.tabs).find(tab => tab.id === oldId);
-    if (oldTab) {
-      oldTab.content = markdownToHtml(splitMarkdownSource.value);
+  const oldTab = splitState.value.panes.flatMap(pane => pane.tabs).find(tab => tab.id === oldId);
+  if (oldTab) {
+    if (splitEditorActive.value && splitSourceTabId.value === oldId) {
       oldTab.pendingMarkdown = splitMarkdownSource.value;
-      oldTab.hasChanges = true;
+      oldTab.content = markdownToHtml(splitMarkdownSource.value);
+    } else if (codeView.value) {
+      oldTab.pendingMarkdown = codeContent.value;
+    } else if (largeFileVisualMode.value) {
+      oldTab.pendingMarkdown = lazyMarkdownEditorRef.value?.getMarkdown() ?? oldTab.pendingMarkdown;
     }
   }
-  enterSplitEditor(activeTab.value?.content || '<p></p>');
-});
-
-// Markdown-first activation rule (issue #129): large tabs keep Markdown as
-// their source of truth and open in the section-virtualized visual editor.
-watch(activeTabId, (_newId, oldId) => {
-  const oldTab = splitState.value.panes.flatMap(pane => pane.tabs).find(t => t.id === oldId);
-  if (largeFileVisualMode.value && oldTab) {
-    oldTab.pendingMarkdown = lazyMarkdownEditorRef.value?.getMarkdown() ?? oldTab.pendingMarkdown;
-  }
-  largeFileVisualMode.value = false;
-  if (codeView.value && oldTab) {
-    oldTab.pendingMarkdown = codeContent.value;
-  }
-
+  scrollSync.detach();
   const tab = activeTab.value;
-  if (isMarkdownFirst(tab)) {
-    if (splitEditorActive.value) {
-      scrollSync.detach();
-      splitEditorActive.value = false;
-    }
-    codeView.value = false;
-    largeFileVisualMode.value = true;
-    return;
-  }
-
-  // A parked Source tab may be selected after another tab switched to Visual.
-  // Its cached HTML is stale: resume Source until an explicit Visual transition
-  // regenerates that cache, rather than displaying or saving the stale copy.
-  if (tab?.pendingMarkdown != null && !splitEditorActive.value) {
-    seedCodeContent(tab.pendingMarkdown);
-    codeView.value = true;
-    return;
-  }
-
-  if (codeView.value) {
-    seedCodeContent(tab?.pendingMarkdown
-      ?? (!tab?.hasChanges ? tab?.originalMarkdown : null)
-      ?? htmlToMarkdown(tab?.content || '<p></p>'));
-  }
+  codeView.value = tab.editorMode === 'source';
+  splitEditorActive.value = tab.editorMode === 'split';
+  largeFileVisualMode.value = tab.editorMode === 'visual' && isMarkdownFirst(tab);
+  if (codeView.value) seedCodeContent(tab.pendingMarkdown ?? tab.originalMarkdown ?? '');
+  if (splitEditorActive.value) enterSplitEditor(tab.content || '<p></p>');
 });
+
+const startVisualEditing = async () => {
+  const tab = activeTab.value;
+  if (!tab.editorMode && !tab.largeFile) tab.content = markdownToHtml(tab.pendingMarkdown ?? tab.originalMarkdown ?? '');
+  tab.editorMode = 'visual';
+  tab.readOnly = false;
+  codeView.value = false;
+  splitEditorActive.value = false;
+  largeFileVisualMode.value = isMarkdownFirst(tab);
+  await nextTick();
+};
+
+const toggleIsolatedPreview = async () => {
+  const tab = activeTab.value;
+  if (!tab.editorMode) {
+    await startVisualEditing();
+    return;
+  }
+  // Keep the mounted instance and its Undo history for this document.
+  tab.readOnly = !tab.readOnly;
+};
 
 const toggleSplitEditor = async () => {
+  activeTab.value.readOnly = false;
   if (!splitEditorActive.value) {
     if (codeView.value) {
       await toggleCodeView();
@@ -972,6 +999,7 @@ const toggleSplitEditor = async () => {
     }
     isLoadingContent.value = true;
     enterSplitEditor(html);
+    activeTab.value.editorMode = 'split';
     splitEditorActive.value = true;
     await nextTick();
     const codeEl = document.querySelector<HTMLElement>('#code-editor-textarea');
@@ -985,11 +1013,11 @@ const toggleSplitEditor = async () => {
   const html = exitSplitEditor();
   if (activeTab.value) {
     activeTab.value.content = html;
-    activeTab.value.pendingMarkdown = null;
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = splitMarkdownSource.value;
   }
   isLoadingContent.value = true;
   splitEditorActive.value = false;
+  activeTab.value.editorMode = 'visual';
   await nextTick();
   isLoadingContent.value = false;
 };
@@ -997,18 +1025,18 @@ const toggleSplitEditor = async () => {
 const handleSplitMarkdownInput = (value: string) => {
   onSplitMarkdownInput(value);
   if (activeTab.value) {
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = value;
+    activeTab.value.hasChanges = value !== activeTab.value.originalMarkdown;
   }
 };
 
-// Fires only for genuine in-preview edits (Mermaid diagram apply, manual node
-// edit) — the preview's setContent push suppresses hasChanges, so this never
-// echoes a code edit. Propagates the diagram change back into the code source.
-const onSplitPreviewChanged = (changed: boolean) => {
-  if (!changed || !splitEditorActive.value) return;
-  syncSplitFromVisual(splitPreviewLatestHtml.value);
+// The editor emits exact Markdown before its HTML/dirty events. Updating only
+// the source avoids echoing a visual edit through the preview's debounce.
+const handleSplitVisualSource = (markdown: string) => {
+  splitMarkdownSource.value = markdown;
   if (activeTab.value) {
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = markdown;
+    activeTab.value.hasChanges = markdown !== activeTab.value.originalMarkdown;
   }
 };
 
@@ -1025,7 +1053,7 @@ const { handleDrop: handleImageDrop } = useImageDrop({
   codeEditor: getCodeEditor,
   activeFilePath: () => activeTab.value?.filePath ?? null,
   findVisualTargetAt: (x, y) => splitContainerRef.value?.findVisualTargetAt?.(x, y) ?? null,
-  onImagesImported: () => { void workspace.refreshAll(); },
+  onImagesImported: (isCurrent) => { void workspace.refreshAll(isCurrent); },
 });
 
 const focusCodeMatch = (match: DocumentSearchMatch) => {
@@ -1033,6 +1061,12 @@ const focusCodeMatch = (match: DocumentSearchMatch) => {
   if (!editor) return;
   editor.focus();
   editor.setSelection(match.start, match.end);
+};
+
+const editInSource = async () => {
+  if (!splitEditorActive.value && !codeView.value) await toggleCodeView();
+  await nextTick();
+  getCodeEditor()?.focus();
 };
 
 const getSelectedTextForDocumentSearch = (): string => {
@@ -1108,23 +1142,17 @@ watch(
   }
 );
 
-// Switch tab while in code view: exit code view first to commit edits, then switch
+// The active-tab watcher parks raw source and restores the target's own mode.
 const switchToTabFromCodeView = async (tabId: string) => {
-  // Markdown-first tabs stay in code view — the activeTabId watcher commits the
-  // leaving tab and reseeds codeContent for the target without any conversion.
-  if (codeView.value && !isMarkdownFirst(activeTab.value)) {
-    await toggleCodeView();
-  }
+  if (tabId === activeTabId.value) return;
   await switchToTab(tabId);
 };
 
-// Close tab while in code view: exit code view first to commit edits if closing the active tab
-const closeTabFromCodeView = async (tabId: string) => {
-  // Markdown-first: no exit-toggle (it would force a multi-MB conversion);
-  // hasChanges is already set by onCodeContentUpdate and save flows through
-  // getMarkdownOverride, so the unsaved-changes dialog keeps working.
-  if (codeView.value && tabId === activeTabId.value && !isMarkdownFirst(activeTab.value)) {
-    await toggleCodeView();
+// Closing a Source tab commits its raw buffer without a mode transition.
+// A pending cursor animation must not decide which mode the next tab opens in.
+const closeTabFromCodeView = (tabId: string) => {
+  if (codeView.value && tabId === activeTabId.value && activeTab.value) {
+    activeTab.value.pendingMarkdown = codeContent.value;
   }
   handleCloseTabRequest(activePaneId.value, tabId);
 };
@@ -1137,8 +1165,7 @@ const switchToTabFromSplitEditor = async (tabId: string) => {
 const closeTabFromSplitEditor = async (tabId: string) => {
   if (tabId === activeTabId.value && activeTab.value && splitSourceTabId.value === tabId) {
     activeTab.value.content = exitSplitEditor();
-    activeTab.value.pendingMarkdown = null;
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = splitMarkdownSource.value;
   }
   handleCloseTabRequest(activePaneId.value, tabId);
   await nextTick();
@@ -1216,6 +1243,7 @@ const aiPanelOpen = ref(false);
 const aiPanelReservedSide = ref<'left' | 'right' | null>(null);
 
 function toggleAiPanel() {
+  if (!editingEnabled.value) return;
   aiPanelOpen.value = !aiPanelOpen.value;
   if (!aiPanelOpen.value) aiPanelReservedSide.value = null;
 }
@@ -1229,14 +1257,19 @@ function closeAiPanel() {
 // The diagram pinning, preamble augmentation, and reply routing live inside
 // AiPanel — App.vue just makes sure the panel is visible when work starts.
 const aiMermaid = useAiMermaidTarget();
+watch([editingEnabled, activeTabId], () => {
+  closeAiPanel();
+  aiMermaid.clear();
+});
 watch(
   () => aiMermaid.target.value,
   (t) => {
-    if (t) aiPanelOpen.value = true;
+    if (t && editingEnabled.value) aiPanelOpen.value = true;
   },
 );
 
 function onAiApplyContent(content: string) {
+  if (!editingEnabled.value) return;
   // Reload-only — no auto-diff (revert flow already matches disk).
   setEditorContent(content);
   // Mark editor state as "saved" so the next file-watcher fire (we just
@@ -1250,6 +1283,7 @@ function onAiApplyContent(content: string) {
 }
 
 function onAiShowDiff(_orig: string, candidate: string) {
+  if (!editingEnabled.value) return;
   // Write the candidate into the editor so the existing change-tracking
   // machinery computes the diff vs the on-disk original, then surface
   // the DiffPreview modal immediately.
@@ -1348,18 +1382,20 @@ const aiWorkspaceRoot = computed<string>(() => {
 // ============ AI Tmp Recovery ============
 const tmpRecovery = ref<{ tmpPath: string; content: string; modifiedAt: string } | null>(null);
 
-watch(() => activeTab.value?.filePath, async (path) => {
-  if (!path) { tmpRecovery.value = null; return; }
+watch([() => activeTab.value?.filePath, editingEnabled], async ([path, enabled], _previous, onCleanup) => {
+  let cancelled = false;
+  onCleanup(() => { cancelled = true; });
+  tmpRecovery.value = null;
+  if (!path || !enabled) return;
   const tmpPath = `${path}.mermark-ai.tmp`;
   try {
     if (await exists(tmpPath)) {
+      if (cancelled) return;
       const content = await readTextFile(tmpPath);
-      tmpRecovery.value = { tmpPath, content, modifiedAt: new Date().toISOString() };
-    } else {
-      tmpRecovery.value = null;
+      if (!cancelled) tmpRecovery.value = { tmpPath, content, modifiedAt: new Date().toISOString() };
     }
   } catch {
-    tmpRecovery.value = null;
+    // A failed/stale recovery lookup cannot change the next document.
   }
 });
 
@@ -1624,8 +1660,15 @@ const triggerAutoSave = () => {
 // Source and split editors do not emit SplitContainer's visual dirty event.
 watch([codeContent, splitMarkdownSource, () => activeTab.value.pendingMarkdown], () => triggerAutoSave());
 
-const handleChangesUpdated = (_paneId: string, _tabId: string, hasChanges: boolean) => {
-  if (hasChanges) {
+const handleChangesUpdated = (_paneId: string, tabId: string, hasChanges: boolean) => {
+  const tab = splitState.value.panes.flatMap(pane => pane.tabs).find(tab => tab.id === tabId);
+  if (tab) {
+    const raw = tabId === activeTabId.value && codeView.value ? codeContent.value
+      : tabId === splitSourceTabId.value && splitEditorActive.value ? splitMarkdownSource.value
+      : tab.pendingMarkdown;
+    if (raw != null) tab.hasChanges = raw !== tab.originalMarkdown;
+  }
+  if (tab?.hasChanges ?? hasChanges) {
     triggerAutoSave();
   }
 };
@@ -1771,13 +1814,12 @@ let unlistenCloseRequest: (() => void) | null = null;
 let unlistenTabTransfer: UnlistenFn | null = null;
 let unlistenFocusFile: UnlistenFn | null = null;
 let unlistenDragEnter: UnlistenFn | null = null;
-let unlistenDragDrop: UnlistenFn | null = null;
+let unlistenDropErrors: UnlistenFn | null = null;
 let unlistenDragLeave: UnlistenFn | null = null;
 let currentWindowLabel = '';
 
 // ============ File Drag & Drop ============
 const isDragOver = ref(false);
-const DROPPABLE_DOC_RE = /\.(md|markdown|txt|mermark)$/i;
 
 // ============ Folder Drag & Drop (adds a workspace, #124) ============
 const workspaceSidebarRef = ref<InstanceType<typeof WorkspaceSidebar> | null>(null);
@@ -1792,11 +1834,10 @@ const folderDrop = useFolderDrop({
   revealWorkspace: workspace.revealWorkspace,
 });
 
-// While a directory is being dragged the sidebar is the drop target, so the
-// full-window overlay would only hide it. With the sidebar closed there is
-// nothing to aim at and the overlay carries the folder hint instead.
+// Hover is generic: paths are classified only by the host after an OS drop.
+// Keep a visible sidebar available as the document/folder drop target.
 const sidebarFolderDropActive = computed(
-  () => isDragOver.value && folderDrop.dragHasFolder.value && workspace.sidebarVisible.value,
+  () => isDragOver.value && workspace.sidebarVisible.value,
 );
 const showDragOverlay = computed(() => isDragOver.value && !sidebarFolderDropActive.value);
 
@@ -1807,19 +1848,70 @@ const workspaceImportTarget = (position: { x: number; y: number } | null | undef
   return workspaceImportDirectoryAt(position.x / dpr, position.y / dpr, sidebar);
 };
 
-const importDocumentsIntoWorkspace = async (paths: string[], directory: string): Promise<string[]> => {
-  const imported: string[] = [];
-  for (const source of paths) {
-    const destination = await nextAvailableImportPath(directory, source, exists);
-    if (destination !== source) await copyFile(source, destination);
-    imported.push(destination);
+const importDocumentsIntoWorkspace = async (
+  grants: NativeGrant[], directory: string, isCurrent: () => boolean,
+): Promise<{ path: string; expectedGrantId?: string }[]> => {
+  const imported: { path: string; expectedGrantId?: string }[] = [];
+  for (const grant of grants) {
+    if (!isCurrent()) return imported;
+    try {
+      const bytes = await nativeFs.readPathBytes(grant.path, undefined, grant.id);
+      if (!isCurrent()) return imported;
+      const destination = await nextAvailableImportPath(directory, grant.path, exists);
+      if (!isCurrent()) return imported;
+      if (destination !== grant.path) {
+        await writeFile(destination, bytes);
+        if (!isCurrent()) return imported;
+        imported.push({ path: destination });
+      } else {
+        imported.push({ path: destination, expectedGrantId: grant.id });
+      }
+    } catch (error) {
+      if (isCurrent()) reportDocumentOpenError(error);
+    }
   }
-  await workspace.refreshAll();
+  if (isCurrent()) await workspace.refreshAll(isCurrent);
   return imported;
 };
 
+const nativeDrops = useNativeDrops({
+  onError: reportDocumentOpenError,
+  handleDrop: async ({ grants, errors, position }, isCurrent) => {
+    if (!isCurrent()) return;
+    isDragOver.value = false;
+    if (errors.length) reportDocumentOpenError({ code: errors[0].error });
+    const dpr = window.devicePixelRatio || 1;
+    const paneId = splitContainerRef.value?.findPaneIdAt?.(position.x / dpr, position.y / dpr);
+    if (paneId) splitState.value.activePaneId = paneId;
+
+    const documents = grants.filter((grant) => grant.kind === 'document');
+    const importTarget = workspaceImportTarget(position);
+    const pathsToOpen = importTarget && documents.length > 0
+      ? await importDocumentsIntoWorkspace(documents, importTarget, isCurrent)
+      : documents.map((grant) => ({ path: grant.path, expectedGrantId: grant.id }));
+    for (const selection of pathsToOpen) {
+      if (!isCurrent()) return;
+      await openFileWithCrossWindowCheck(selection.path, { expectedGrantId: selection.expectedGrantId, isCurrent });
+    }
+
+    if (!isCurrent()) return;
+    const resources = grants.filter((grant) => grant.kind === 'resource');
+    if (resources.length) await handleImageDrop(resources.map((grant) => grant.path), position, { grants: resources, isCurrent });
+    if (!isCurrent()) return;
+    const addedRoots = await folderDrop.handleDrop(grants, position, isCurrent);
+    if (isCurrent() && addedRoots.length > 0 && !workspace.sidebarVisible.value) workspace.setSidebarVisible(true);
+  },
+});
+
+function reportDocumentOpenError(error: unknown): void {
+  const permissionRequired = typeof error === 'object' && error !== null
+    && 'code' in error && error.code === 'permission_required';
+  showToastNotification(permissionRequired ? t.value.openPermissionRequired : t.value.openDocumentFailed, 'warning');
+}
+
 // Wrapper that checks if file is open locally or in another window first
-const openFileWithCrossWindowCheck = async (filePath: string): Promise<void> => {
+const openFileWithCrossWindowCheck = async (filePath: string, selection?: OpenDocumentSelection): Promise<void> => {
+  if (selection?.isCurrent?.() === false) return;
   try {
     // First check if file is already open locally in this window
     const localResult = findTabByFilePathSplit(filePath);
@@ -1832,6 +1924,7 @@ const openFileWithCrossWindowCheck = async (filePath: string): Promise<void> => 
 
     // Check if file is open in another window
     const windowWithFile = await checkFileOpen(filePath);
+    if (selection?.isCurrent?.() === false) return;
     if (windowWithFile && windowWithFile !== currentWindowLabel) {
       // File is open in another window - focus that window
       console.log(`[App] File already open in window ${windowWithFile}, focusing...`);
@@ -1840,36 +1933,28 @@ const openFileWithCrossWindowCheck = async (filePath: string): Promise<void> => 
     }
 
     // File not open anywhere - open it normally
-    await openFileFromPath(filePath);
+    await openFileFromPath(filePath, selection);
 
     // Register the file after successful open
-    if (currentWindowLabel) {
+    if (selection?.isCurrent?.() !== false && currentWindowLabel && findTabByFilePathSplit(filePath)) {
       await registerOpenFile(filePath, currentWindowLabel);
     }
   } catch (error) {
     console.error('[App] Error in cross-window file check:', error);
-    // Fall back to normal open
-    await openFileFromPath(filePath);
+    if (selection?.isCurrent?.() === false) return;
+    // Retry only with the original native selection constraint.
+    await openFileFromPath(filePath, selection);
   }
 };
 
 // Open file dialog with cross-window check
 const openFileWithCrossWindowDialog = async (): Promise<void> => {
   try {
-    const selected = await open({
-      multiple: false,
-      filters: [
-        { name: 'Markdown', extensions: ['md', 'markdown'] },
-        { name: 'Wszystkie pliki', extensions: ['*'] },
-      ],
-    });
-
-    if (selected) {
-      const filePath = selected as string;
-      await openFileWithCrossWindowCheck(filePath);
-    }
+    const selected = await nativeFs.pickDocuments();
+    for (const grant of selected) await openFileWithCrossWindowCheck(grant.path);
   } catch (error) {
     console.error('[App] Error opening file dialog:', error);
+    reportDocumentOpenError(error);
   }
 };
 
@@ -1906,81 +1991,119 @@ onMounted(async () => {
     console.error('[App] Błąd konfiguracji obsługi zamknięcia:', error);
   }
 
-  // Check for file path from URL query parameters (for new windows created via drag)
-  const { getFilePathFromUrl } = useWindowManager();
+  // Retain explicit URL opens; transferred windows receive host-owned pending work.
+  const { getFilePathFromUrl, getPendingTransfers, acknowledgeTabTransfer, onTabTransfer } = useWindowManager();
   const urlFilePath = getFilePathFromUrl();
   let hasExplicitFile = false;
 
-  // Register before reading pending open state so macOS open-document events
-  // cannot race past the frontend during cold start.
-  try {
-    unlistenOpenFile = await listen<string>('open-file', (event) => {
-      hasExplicitFile = true;
-      openFileWithCrossWindowCheck(event.payload);
+  // Register first, then drain. Native events only announce pending work; the
+  // host queue owns paths until a getter consumes them. Serialize drains and
+  // opens so bursts cannot race the active tab or open one entry twice.
+  let pendingOpens = Promise.resolve();
+  const drainNativeOpens = (): Promise<void> => {
+    pendingOpens = pendingOpens.then(async () => {
+      const paths = await invoke<string[]>('get_open_file_paths');
+      if (paths.length > 0) hasExplicitFile = true;
+      for (const path of paths) {
+        try {
+          await openFileWithCrossWindowCheck(path);
+        } catch (error) {
+          console.error('[App] Could not open native file:', path, error);
+        }
+      }
+    }).catch(error => console.error('[App] Could not drain native open queue:', error));
+    return pendingOpens;
+  };
+  const drainTabTransfers = (): Promise<void> => {
+    pendingOpens = pendingOpens.then(async () => {
+      const transfers = await getPendingTransfers();
+      if (transfers.length > 0) hasExplicitFile = true;
+      for (const transfer of transfers) {
+        let success = false;
+        try {
+          // The source remains registered until ACK. The normal cross-window
+          // opener would therefore focus the source instead of receiving it.
+          let result = findTabByFilePathSplit(transfer.file_path);
+          if (!result) {
+            await openFileFromPath(transfer.file_path);
+            result = findTabByFilePathSplit(transfer.file_path);
+          }
+          // openFileFromPath reports read failures itself and can resolve with
+          // no tab. Confirm a real, clean document before acknowledging it.
+          if (result && !result.tab.hasChanges && typeof result.tab.originalMarkdown === 'string') {
+            splitState.value.activePaneId = result.pane.id;
+            switchTab(result.pane.id, result.tab.id);
+            const received = result.tab;
+            const content = received.content;
+            const source = received.originalMarkdown;
+            const pending = received.pendingMarkdown;
+            await registerOpenFile(transfer.file_path, currentWindowLabel);
+            success = findTabByFilePathSplit(transfer.file_path)?.tab === received
+              && !received.hasChanges && received.content === content
+              && received.originalMarkdown === source && received.pendingMarkdown === pending;
+          }
+        } catch (error) {
+          console.error('[App] Could not receive transferred file:', error);
+        }
+        try {
+          await acknowledgeTabTransfer(transfer.id, success);
+        } catch (error) {
+          success = false;
+          console.error('[App] Could not acknowledge tab transfer:', error);
+        }
+        if (!success) showToastNotification(t.value.windowTransferReceiveFailed, 'warning');
+      }
+    }).catch(error => {
+      console.error('[App] Could not drain tab transfers:', error);
+      showToastNotification(t.value.windowTransferReceiveFailed, 'warning');
     });
+    return pendingOpens;
+  };
+  try {
+    unlistenTabTransfer = await onTabTransfer(() => { void drainTabTransfers(); });
+  } catch (error) {
+    console.error('[App] Could not listen for tab transfers:', error);
+  }
+  try {
+    unlistenOpenFile = await listen('open-files-pending', () => { void drainNativeOpens(); });
   } catch (error) {
     console.error('Błąd nasłuchiwania zdarzeń:', error);
   }
 
-  if (urlFilePath) {
-    hasExplicitFile = true;
-    console.log('[App] Opening file from URL:', urlFilePath);
-    await nextTick();
-    setTimeout(() => openFileWithCrossWindowCheck(urlFilePath), 100);
-  } else {
-    // Check for file path from CLI arguments (for main window / file associations)
-    try {
-      const filePath = await invoke<string | null>('get_open_file_path');
-      if (filePath) {
-        hasExplicitFile = true;
-        await nextTick();
-        setTimeout(() => openFileWithCrossWindowCheck(filePath), 100);
-      }
-    } catch (error) {
-      console.error('Błąd pobierania ścieżki pliku:', error);
-    }
-  }
-
-  // Restore previous session if no explicit file was provided
-  if (!hasExplicitFile) {
-    const session = getSavedSession();
-    if (session) {
+  try {
+    await drainTabTransfers();
+    if (urlFilePath) {
+      hasExplicitFile = true;
       await nextTick();
-      for (const pane of session.panes) {
-        for (const tab of pane.tabs) {
-          try {
-            await openFileWithCrossWindowCheck(tab.filePath);
-          } catch {
-            // File may have been deleted since last session
+      await openFileWithCrossWindowCheck(urlFilePath);
+    }
+    await drainNativeOpens();
+
+    // Restore previous session if no explicit file was provided
+    if (!hasExplicitFile) {
+      const session = getSavedSession();
+      if (session) {
+        await nextTick();
+        for (const pane of session.panes) {
+          for (const tab of pane.tabs) {
+            try {
+              await openFileWithCrossWindowCheck(tab.filePath);
+            } catch {
+              // File may have been deleted since last session
+            }
           }
         }
       }
     }
+
+  } catch (error) {
+    console.error('[App] Could not restore initial document:', error);
+  } finally {
+    initialFilesReady.value = true;
   }
 
   // Start persisting session state
   startSessionWatching();
-
-  // Listen for tab transfer events (from other windows)
-  try {
-    const { onTabTransfer } = useWindowManager();
-    const { isRecentlyTransferred, markAsTransferred } = useTabDrag();
-    unlistenTabTransfer = await onTabTransfer((payload) => {
-      console.log('[App] Received tab transfer:', payload);
-
-      // Check debounce to prevent transfer loops
-      if (isRecentlyTransferred(payload.file_path)) {
-        console.log('[App] Skipping transfer - file was recently transferred:', payload.file_path);
-        return;
-      }
-
-      // Mark as transferred to prevent loops
-      markAsTransferred(payload.file_path);
-      openFileWithCrossWindowCheck(payload.file_path);
-    });
-  } catch (error) {
-    console.error('Błąd nasłuchiwania transferu kart:', error);
-  }
 
   // Listen for focus-file events (when another window asks us to focus a file)
   try {
@@ -1997,52 +2120,22 @@ onMounted(async () => {
     console.error('Błąd nasłuchiwania focus-file:', error);
   }
 
-  // Listen for file drag & drop onto the window
+  // Hover does not read or classify renderer-provided paths.
   try {
-    unlistenDragEnter = await listen<{ paths: string[] }>('tauri://drag-enter', (event) => {
+    unlistenDragEnter = await listen('tauri://drag-enter', () => {
       isDragOver.value = true;
-      void folderDrop.beginDrag(event.payload?.paths ?? []);
     });
     unlistenDragLeave = await listen('tauri://drag-leave', () => {
       isDragOver.value = false;
-      folderDrop.endDrag();
     });
-    unlistenDragDrop = await listen<{ paths: string[]; position: { x: number; y: number } }>(
-      'tauri://drag-drop',
-      async (event) => {
-        isDragOver.value = false;
-        const { paths, position } = event.payload;
-
-        // Route the drop to the pane it landed on before opening anything —
-        // both the tab and the image insert target the active pane.
-        if (position) {
-          const dpr = window.devicePixelRatio || 1;
-          const paneId = splitContainerRef.value?.findPaneIdAt?.(position.x / dpr, position.y / dpr);
-          if (paneId) splitState.value.activePaneId = paneId;
-        }
-
-        const docPaths = paths.filter((p) => DROPPABLE_DOC_RE.test(p));
-        const importTarget = workspaceImportTarget(position);
-        const pathsToOpen = importTarget && docPaths.length > 0
-          ? await importDocumentsIntoWorkspace(docPaths, importTarget)
-          : docPaths;
-        for (const filePath of pathsToOpen) {
-          await openFileWithCrossWindowCheck(filePath);
-        }
-
-        if (position) {
-          await handleImageDrop(paths, position);
-        }
-
-        const addedRoots = await folderDrop.handleDrop(paths, position);
-        if (addedRoots.length > 0 && !workspace.sidebarVisible.value) {
-          workspace.setSidebarVisible(true);
-        }
-      },
-    );
+    unlistenDropErrors = await listen('native-file-errors', () => {
+      isDragOver.value = false;
+      reportDocumentOpenError(new Error('Native file selection failed'));
+    });
   } catch (error) {
-    console.error('Błąd nasłuchiwania drag-drop:', error);
+    console.error('[App] Could not listen for native drop status:', error);
   }
+  await nativeDrops.start();
 
   // Enable change detection after editor stabilizes
   setTimeout(() => {
@@ -2078,9 +2171,8 @@ onUnmounted(async () => {
   if (unlistenDragLeave) {
     unlistenDragLeave();
   }
-  if (unlistenDragDrop) {
-    unlistenDragDrop();
-  }
+  nativeDrops.stop();
+  unlistenDropErrors?.();
 
   // Unregister all files for this window
   if (currentWindowLabel) {
@@ -2127,7 +2219,7 @@ onUnmounted(async () => {
 
     <!-- Marp strip: extra deck actions, only when the active doc is a Marp deck -->
     <MarpToolbar
-      v-if="isMarp && !codeView && !splitEditorActive"
+      v-if="editingEnabled && isMarp && !codeView && !splitEditorActive"
       :preview-active="showMarpPreview"
       @new-slide="marpNewSlide"
       @set-theme="(v) => marpUpdateFrontmatter('theme', v)"
@@ -2140,8 +2232,8 @@ onUnmounted(async () => {
       @toggle-preview="toggleMarpPreview"
     />
 
-    <button type="button" class="isolated-preview-toggle" :aria-pressed="isolatedReadMode" @click="isolatedReadMode = !isolatedReadMode">
-      {{ isolatedReadMode ? 'Return to editor' : 'Isolated read-only preview' }}
+    <button v-if="initialFilesReady" type="button" class="isolated-preview-toggle" :aria-pressed="isolatedReadMode" @click="toggleIsolatedPreview">
+      {{ isolatedReadMode ? (activeTab.editorMode ? 'Return to editor' : 'Edit') : 'Isolated read-only preview' }}
     </button>
 
     <!-- Main content area with optional left bar -->
@@ -2195,9 +2287,14 @@ onUnmounted(async () => {
         @toggle-ai="toggleAiPanel"
       />
 
-      <IsolatedPreview v-if="isolatedReadMode" :markdown="isolatedReadMarkdown" />
+      <template v-if="initialFilesReady">
+      <div v-if="isolatedReadMode && (codeView || splitEditorActive || largeFileVisualMode)" class="code-view-area">
+        <TabBar :tabs="tabs" :active-tab-id="activeTabId" :pane-id="activePaneId"
+          @switch-tab="switchToTab" @close-tab="handleCloseTabRequest(activePaneId, $event)" />
+        <IsolatedPreview :markdown="isolatedReadMarkdown" />
+      </div>
 
-      <div v-show="!isolatedReadMode" style="display: contents">
+      <div v-show="!(isolatedReadMode && (codeView || splitEditorActive || largeFileVisualMode))" style="display: contents">
       <!-- Code + Preview split: raw markdown (left) -> live WYSIWYG render (right) -->
       <div v-if="splitEditorActive && !codeView" class="split-editor-area" :class="{ 'is-marp': isMarp }">
         <TabBar
@@ -2210,17 +2307,23 @@ onUnmounted(async () => {
         <div class="split-editor-panes">
           <div class="split-editor-code">
             <CodeEditor
+            :key="activeTab.id"
+              ref="codeEditorComponentRef"
+              :read-only="isolatedReadMode"
               :model-value="splitMarkdownSource"
               @update:model-value="handleSplitMarkdownInput"
             />
           </div>
           <div class="split-editor-preview">
             <Editor
+              :key="activeTab?.id"
               :model-value="splitPreviewHtml"
+              :document-id="activeTab?.id"
+              :source-markdown="splitMarkdownSource"
               :file-path="activeTab?.filePath || null"
               :editable="false"
-              @update:model-value="(h: string) => (splitPreviewLatestHtml = h)"
-              @update:has-changes="onSplitPreviewChanged"
+              @update:source-markdown="handleSplitVisualSource"
+              @edit-source="editInSource"
             />
           </div>
         </div>
@@ -2243,11 +2346,15 @@ onUnmounted(async () => {
             @close="showTocPanel = false"
           />
           <LazyMarkdownPreview
+            :key="activeTab?.id"
             ref="lazyMarkdownEditorRef"
+            :document-id="activeTab?.id"
+            :read-only="isolatedReadMode"
             :markdown="activeTab?.pendingMarkdown ?? ''"
             :file-path="activeTab?.filePath ?? null"
             @update:markdown="(markdown: string) => { if (activeTab) activeTab.pendingMarkdown = markdown; }"
             @update:has-changes="(changed: boolean) => { if (changed && activeTab) activeTab.hasChanges = true; }"
+            @edit-source="editInSource"
             @editor-focus="(editor: TiptapEditor) => (editorInstance = editor)"
             @link-click="handleLinkClick"
           />
@@ -2272,6 +2379,7 @@ onUnmounted(async () => {
           @link-click="handleLinkClick"
           @close-tab-request="handleCloseTabRequest"
           @changes-updated="handleChangesUpdated"
+          @edit-source="editInSource"
           @toggle-pin="handleTabTogglePin"
           @close-others="handleTabCloseOthers"
           @close-all="handleTabCloseAll"
@@ -2299,13 +2407,16 @@ onUnmounted(async () => {
             @close-tab="closeTabFromCodeView"
           />
           <CodeEditor
+            :key="activeTab.id"
             ref="codeEditorComponentRef"
+            :read-only="isolatedReadMode"
             v-model="codeContent"
             @update:model-value="onCodeContentUpdate"
           />
         </div>
       </template>
       </div>
+      </template>
     </div>
 
     <!-- Status Bar (configurable) -->
@@ -2453,8 +2564,9 @@ onUnmounted(async () => {
     <!-- AI Assistant Panel (fixed overlay; reports whether main content should
          reserve its width while the panel is neither minimized nor fullscreen) -->
     <AiPanel
-      v-if="aiPanelOpen"
+      v-if="editingEnabled && aiPanelOpen"
       :open="aiPanelOpen"
+      :document-id="activeTab?.id || ''"
       :doc-path="aiDocPath"
       :doc-content="aiDocContent"
       :selection-range="aiSelectionRange"
@@ -2470,11 +2582,11 @@ onUnmounted(async () => {
     />
 
     <!-- AI First-run tooltip (auto-shows once) -->
-    <AiFirstRunTooltip @open-settings="showSettingsModal = true" />
+    <AiFirstRunTooltip v-if="editingEnabled" @open-settings="showSettingsModal = true" />
 
     <!-- AI Tmp Recovery Modal -->
     <AiTmpRecoveryModal
-      v-if="tmpRecovery"
+      v-if="editingEnabled && tmpRecovery"
       :tmp-path="tmpRecovery.tmpPath"
       :modified-at="tmpRecovery.modifiedAt"
       @restore="onTmpRestore"
@@ -2513,6 +2625,7 @@ onUnmounted(async () => {
     <!-- File Conflict Modal (watcher-based external change) -->
     <FileConflictModal
       v-if="showConflictModal"
+      :key="conflictKey"
       :file-name="conflictFileName"
       :file-path="conflictFilePath"
       :diff-lines="conflictDiffLines"
@@ -2534,18 +2647,13 @@ onUnmounted(async () => {
     <!-- File Drag & Drop Overlay -->
     <div v-if="showDragOverlay" class="drag-drop-overlay">
       <div class="drag-drop-box">
-        <svg v-if="folderDrop.dragHasFolder.value" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
-          <line x1="12" y1="11" x2="12" y2="17"/>
-          <line x1="9" y1="14" x2="15" y2="14"/>
-        </svg>
-        <svg v-else width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
           <polyline points="14,2 14,8 20,8"/>
           <line x1="12" y1="12" x2="12" y2="18"/>
           <line x1="9" y1="15" x2="15" y2="15"/>
         </svg>
-        <span>{{ folderDrop.dragHasFolder.value ? t.dropFolderHere : t.dropFilesHere }}</span>
+        <span>{{ t.dropFilesHere }}</span>
       </div>
     </div>
   </div>

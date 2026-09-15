@@ -1,4 +1,6 @@
-import { escapeHtml, decodeHtmlEntities } from './html-entities';
+import { escapeHtml } from './html-entities';
+import { protectMathHtml } from './math';
+import { createSerializationContext } from './serialization-placeholder';
 
 export interface FootnoteDefinition {
   label: string;
@@ -155,16 +157,22 @@ export function extractHtmlFootnoteSection(html: string): {
   }
 
   // Fallback: parse from <li data-footnote-id> elements
+  // Keep math source opaque through the fallback entity decoder. JSON above
+  // remains outside this context, including any authored token-looking text.
+  const tokens = createSerializationContext();
+  const hasMath = /data-type=["']katex-(?:block|inline)/.test(sectionHtml);
+  let fallbackHtml = protectMathHtml(sectionHtml, source => tokens.protect(source));
+  if (!hasMath) fallbackHtml = tokens.protectNuls(fallbackHtml);
   const liRegex = /<li[^>]*data-footnote-id="([^"]*)"[^>]*>\s*<p>([\s\S]*?)<\/p>\s*<\/li>/gi;
   const defs: string[] = [];
   let liMatch;
-  while ((liMatch = liRegex.exec(sectionHtml)) !== null) {
+  while ((liMatch = liRegex.exec(fallbackHtml)) !== null) {
     const label = liMatch[1];
     let content = liMatch[2];
     content = content.replace(/<[^>]+>/g, '');
-    content = decodeHtmlEntities(content);
+    content = tokens.decode(content);
     defs.push(formatDefinitionAsMd(label, content));
   }
 
-  return { html: cleanedHtml, definitions: defs.join('\n') };
+  return { html: cleanedHtml, definitions: tokens.restore(defs.join('\n')) };
 }

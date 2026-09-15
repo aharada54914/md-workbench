@@ -4,8 +4,13 @@ import {
   isPointInRect,
   acceptsFolderDrop,
   droppedFolders,
-  droppedFiles,
 } from '../../utils/folder-drop';
+
+import type { NativeGrant } from '../../services/nativeFs';
+
+function grant(path: string, kind: NativeGrant['kind']): NativeGrant {
+  return { id: `grant-${path}`, path, kind, read: true, write: false };
+}
 
 const sidebar = { left: 0, top: 32, right: 240, bottom: 800 };
 
@@ -51,36 +56,25 @@ describe('acceptsFolderDrop', () => {
 describe('droppedFolders', () => {
   it('keeps only folders, in drop order', () => {
     const folders = droppedFolders([
-      { path: '/a/note.md', kind: 'file' },
-      { path: '/b', kind: 'folder' },
-      { path: '/gone', kind: 'missing' },
-      { path: '/a', kind: 'folder' },
+      grant('/a/note.md', 'document'),
+      grant('/b', 'workspace'),
+      grant('/gone', 'resource'),
+      grant('/output', 'export'),
+      grant('/a', 'workspace'),
     ]);
     expect(folders).toEqual(['/b', '/a']);
   });
 
   it('drops duplicates that differ only by separator style or trailing slash', () => {
     const folders = droppedFolders([
-      { path: 'C:\\Notes', kind: 'folder' },
-      { path: 'C:\\Notes\\', kind: 'folder' },
-      { path: 'C:/Notes', kind: 'folder' },
+      grant('C:\\Notes', 'workspace'),
+      grant('C:\\Notes\\', 'workspace'),
+      grant('C:/Notes', 'workspace'),
     ]);
     expect(folders).toEqual(['C:\\Notes']);
   });
 
   it('returns an empty list for a file-only drop', () => {
-    expect(droppedFolders([{ path: '/a/note.md', kind: 'file' }])).toEqual([]);
-  });
-});
-
-describe('droppedFiles', () => {
-  it('keeps only files', () => {
-    expect(
-      droppedFiles([
-        { path: '/a/note.md', kind: 'file' },
-        { path: '/b', kind: 'folder' },
-        { path: '/gone', kind: 'missing' },
-      ]),
-    ).toEqual(['/a/note.md']);
+    expect(droppedFolders([grant('/a/note.md', 'document')])).toEqual([]);
   });
 });

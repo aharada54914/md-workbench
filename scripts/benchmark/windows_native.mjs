@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import sharp from 'sharp';
 import os from 'node:os';
 import { summarizeNative } from './native_summary.mjs';
+import { exerciseNativeAuthority } from './native_authority.mjs';
 
 if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') {
   throw new Error('Restricted to disposable GitHub-hosted Windows runners');
@@ -36,7 +37,7 @@ const report = {
     'CDP plus screenshot observation includes protocol/polling overhead; diagnostic upper bounds, not production benchmark acceptance.',
     'Cold means application process restart, not reboot or flushed OS cache.',
     'Warm means second-instance file forwarding to an existing application.',
-    'Default visual editor; AI and diagram editors are not invoked.',
+    'Default document view (fork isolated reading; upstream Visual); AI and diagram editors are not invoked.',
   ],
 };
 const fixtures = [];
@@ -84,14 +85,17 @@ async function connect() {
 async function observe(browser, fixture, imagePath) {
   const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
-    for (const context of browser.contexts()) for (const page of context.pages()) {
-      const heading = page.getByRole('heading', { name: fixture.marker, exact: true });
+    for (const context of browser.contexts()) for (const page of context.pages()) for (const frame of page.frames()) {
+      const heading = frame.getByRole('heading', { name: fixture.marker, exact: true });
       if (!await heading.isVisible().catch(() => false)) continue;
-      await page.getByText('MDW-END-本文末尾', { exact: true }).first().waitFor({ state: 'visible', timeout: 10000 });
+      await frame.getByText('MDW-END-本文末尾', { exact: true }).first().waitFor({ state: 'visible', timeout: 10000 });
+      // Animation callbacks in the script-disabled preview are not usable as
+      // a clock. Wait on the owning page, then read the frame's font status.
       await page.evaluate(async () => {
         await document.fonts.ready;
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       });
+      if (await frame.evaluate(() => document.fonts.status) !== 'loaded') continue;
       const unobscured = await heading.evaluate(element => {
         const box = element.getBoundingClientRect();
         const x = box.left + box.width / 2, y = box.top + box.height / 2;
@@ -99,13 +103,37 @@ async function observe(browser, fixture, imagePath) {
         return box.width > 0 && box.height > 0 && box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight && !!top && element.contains(top);
       });
       if (!unobscured) throw new Error('Heading is clipped or obscured');
+      // Also verify the embedding frame is visible in the top-level viewport.
+      // An unobscured node inside an off-screen iframe is not a display witness.
+      const box = await heading.boundingBox();
+      let topVisible = box && await page.evaluate(box =>
+        box.x >= 0 && box.y >= 0 && box.x + box.width <= innerWidth && box.y + box.height <= innerHeight, box);
+      if (topVisible && frame !== page.mainFrame()) {
+        if (frame.parentFrame() !== page.mainFrame()) throw new Error('Unexpected nested document frame');
+        const embedding = await frame.frameElement();
+        try {
+          topVisible = await embedding.evaluate((element, box) =>
+            document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === element, box);
+        } finally { await embedding.dispose(); }
+      }
+      if (!topVisible) throw new Error('Heading embedding frame is clipped or obscured');
       const session = await context.newCDPSession(page);
       let fonts;
       try {
         await session.send('DOM.enable'); await session.send('CSS.enable');
-        await session.send('DOM.getDocument');
-        const object = await session.send('Runtime.evaluate', { expression: `Array.from(document.querySelectorAll('h1')).find(e => e.textContent === ${JSON.stringify(fixture.marker)})` });
-        const { nodeId } = await session.send('DOM.requestNode', { objectId: object.result.objectId });
+        // pierce includes the sandboxed srcdoc document without enabling script
+        // or same-origin access in the product's preview sandbox.
+        const { root } = await session.send('DOM.getDocument', { depth: -1, pierce: true });
+        const matches = [];
+        const textContent = node => node.nodeType === 3 ? node.nodeValue : (node.children ?? []).map(textContent).join('');
+        const visit = node => {
+          if (node.nodeName === 'H1' && textContent(node) === fixture.marker) matches.push(node);
+          for (const child of node.children ?? []) visit(child);
+          if (node.contentDocument) visit(node.contentDocument);
+        };
+        visit(root);
+        if (matches.length !== 1) throw new Error(`Expected one native heading font witness, found ${matches.length}`);
+        const { nodeId } = matches[0];
         ({ fonts } = await session.send('CSS.getPlatformFontsForNode', { nodeId }));
         // The mixed ASCII/Japanese heading must use a CJK-capable platform font,
         // not merely contain Japanese DOM text rendered as missing-glyph boxes.
@@ -177,6 +205,14 @@ try {
     currentTrial = null;
     await verifyInputs();
     await writeFile(join(out, 'native-results.json'), JSON.stringify(report, null, 2));
+  }
+  if (appName === 'MD-Workbench') {
+    // Keep authority/window exercises out of the measured process lifecycle.
+    const unselectedPath = join(out, 'unselected-private.md');
+    await writeFile(unselectedPath, 'Never selected by OS ingress or a picker.\n', { flag: 'wx' });
+    report.native_authority = await exerciseNativeAuthority(browser, fixtures[0], unselectedPath);
+    await writeFile(join(out, 'native-authority.json'), JSON.stringify(report.native_authority, null, 2));
+    await verifyInputs();
   }
   await browser.close();
   await killOwned(child.pid);

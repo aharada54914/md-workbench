@@ -3,6 +3,7 @@ import { ref, computed } from 'vue';
 import type { Pane } from '../types/pane';
 import TabBar from './TabBar.vue';
 import Editor from './Editor.vue';
+import IsolatedPreview from './IsolatedPreview.vue';
 import { useTabDrag } from '../composables/useTabDrag';
 import { useWorkspace } from '../composables/useWorkspace';
 import { useI18n } from '../i18n';
@@ -27,6 +28,7 @@ const emit = defineEmits<{
   updateChanges: [tabId: string, hasChanges: boolean];
   linkClick: [href: string];
   focus: [];
+  editSource: [];
 }>();
 
 const isFileDragOver = computed(() => ws.dropTargetPaneId.value === props.pane.id);
@@ -42,6 +44,15 @@ const activeTab = computed(() => {
 
 const editorContent = computed(() => activeTab.value?.content || '<p></p>');
 const editorFilePath = computed(() => activeTab.value?.filePath || null);
+const editorSource = computed(() => activeTab.value?.pendingMarkdown
+  ?? (!activeTab.value?.hasChanges ? activeTab.value?.originalMarkdown : null));
+
+const handleSourceUpdate = (markdown: string) => {
+  const tab = activeTab.value;
+  if (!tab) return;
+  tab.pendingMarkdown = markdown;
+  emit('updateChanges', tab.id, markdown !== tab.originalMarkdown);
+};
 
 const isValidDropTarget = computed(() => {
   return isDragging.value && draggedTab.value?.paneId !== props.pane.id;
@@ -55,7 +66,9 @@ const handleContentUpdate = (content: string) => {
 
 const handleChangesUpdate = (hasChanges: boolean) => {
   if (activeTab.value) {
-    emit('updateChanges', activeTab.value.id, hasChanges);
+    const tab = activeTab.value;
+    emit('updateChanges', tab.id, tab.pendingMarkdown != null
+      ? tab.pendingMarkdown !== tab.originalMarkdown : hasChanges);
   }
 };
 
@@ -88,14 +101,14 @@ const handlePaneMouseLeave = () => {
 };
 
 defineExpose({
-  editor: computed(() => editorRef.value?.editor),
+  editor: computed(() => activeTab.value?.readOnly ? undefined : editorRef.value?.editor),
   paneId: computed(() => props.pane.id),
   getFilePath: () => activeTab.value?.filePath ?? null,
   insertImagesByPath: (items: { path: string; alt: string }[]) =>
-    editorRef.value?.insertImagesByPath?.(items),
-  getEditorContent: () => editorRef.value?.editor?.getHTML() || '',
+    !activeTab.value?.readOnly && editorRef.value?.insertImagesByPath?.(items),
+  getEditorContent: () => editorRef.value?.editor?.getHTML() ?? activeTab.value?.content ?? '',
   setEditorContent: (_content: string) => { /* handled reactively via modelValue prop */ },
-  getSearchTextMap: () => editorRef.value?.getSearchTextMap?.() ?? null,
+  getSearchTextMap: () => activeTab.value?.readOnly ? null : editorRef.value?.getSearchTextMap?.() ?? null,
   setSearchHighlights: (...args: Parameters<NonNullable<InstanceType<typeof Editor>['setSearchHighlights']>>) =>
     editorRef.value?.setSearchHighlights?.(...args),
   clearSearchHighlights: () => editorRef.value?.clearSearchHighlights?.(),
@@ -135,18 +148,29 @@ defineExpose({
 
     <!-- Editor content or empty state -->
     <div class="editor-wrapper">
+      <IsolatedPreview
+        v-if="activeTab && (activeTab.readOnly || activeTab.editorMode !== 'visual')"
+        :markdown="editorSource ?? ''"
+      />
       <Editor
-        v-if="!isEmpty"
+        v-if="!isEmpty && activeTab?.editorMode === 'visual'"
+        v-show="!activeTab?.readOnly"
+        :editable="!activeTab?.readOnly"
+        :key="activeTab?.id"
         ref="editorRef"
         :model-value="editorContent"
+        :document-id="activeTab?.id"
         :file-path="editorFilePath"
+        :source-markdown="editorSource"
+        @update:source-markdown="handleSourceUpdate"
+        @edit-source="emit('focus'); emit('editSource')"
         @update:model-value="handleContentUpdate"
         @update:has-changes="handleChangesUpdate"
         @link-click="handleLinkClick"
       />
 
       <!-- Empty state - shown when no tabs -->
-      <div v-else class="empty-pane">
+      <div v-if="isEmpty" class="empty-pane">
         <div class="empty-icon">📄</div>
         <div class="empty-title">{{ t.dragTabHere }}</div>
         <div class="empty-subtitle">{{ t.orOpenFileInPane }}</div>

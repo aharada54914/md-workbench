@@ -2,7 +2,8 @@ import { ref, nextTick, type Ref } from 'vue';
 import type { Editor } from '@tiptap/vue-3';
 import { NodeSelection } from '@tiptap/pm/state';
 import type { CodeEditorHandle } from '../types/code-editor';
-import { htmlToMarkdown, markdownToHtml } from '../utils/markdown-converter';
+import { markdownToHtml } from '../utils/markdown-converter';
+import { serializeVisualMarkdown } from '../utils/visual-source';
 import { getCurrentMermaidReadFormats, type MermaidFormat } from '../utils/mermaid-formats';
 import { targetScrollTop } from '../utils/scroll';
 import { isStandaloneSafeHtmlBlock, safeHtmlSourceKey, safeHtmlTagTokens } from '../utils/safe-html';
@@ -15,10 +16,12 @@ import {
 } from '../constants';
 
 export interface UseCodeViewOptions {
-  /** Exact source while Visual has not changed; avoids a lossy no-op round trip. */
+  /** Authoritative source for the current Visual content, when available. */
   getUnchangedMarkdown?: () => string | null;
+  /** Envelope to retain when only HTML is available. */
+  getMarkdownReference?: () => string | null;
   getActiveContent: () => string;
-  setActiveContent: (content: string) => void;
+  setActiveContent: (content: string, markdown: string) => void;
   markAsChanged: () => void;
   /** When true at CODE→VISUAL time, convert even if the snapshot is unchanged —
    *  used for markdown-first tabs whose HTML was never generated (issue #129). */
@@ -629,7 +632,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
       if (editor) {
         const { from } = editor.state.selection;
 
-        codeContent.value = options.getUnchangedMarkdown?.() ?? htmlToMarkdown(editor.getHTML());
+        codeContent.value = options.getUnchangedMarkdown?.() ?? serializeVisualMarkdown(editor.getHTML(), options.getMarkdownReference?.());
 
         try {
           const $pos = editor.state.doc.resolve(from);
@@ -708,7 +711,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
         }
       } else {
         const html = getActiveContent();
-        codeContent.value = options.getUnchangedMarkdown?.() ?? htmlToMarkdown(html);
+        codeContent.value = options.getUnchangedMarkdown?.() ?? serializeVisualMarkdown(html, options.getMarkdownReference?.());
       }
 
       codeContentSnapshot = codeContent.value;
@@ -781,7 +784,7 @@ export function useCodeView(options: UseCodeViewOptions): UseCodeViewReturn {
 
       if (contentChanged) {
         const html = markdownToHtml(codeContent.value);
-        setActiveContent(html);
+        setActiveContent(html, codeContent.value);
         if (editedInCode) markAsChanged();
       }
 

@@ -63,18 +63,34 @@ $jp = -join ((0x65E5,0x672C,0x8A9E) | ForEach-Object { [char]$_ })
 $suffix = ' Added-' + $jp + [char]::ConvertFromUtf32(0x1F600)
 $results = @()
 
-function Find-Name($root, [string]$name) {
-  $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)
-  return $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
-}
 function Wait-Name($root, [string]$name) {
+  $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)
   $until = [DateTime]::UtcNow.AddSeconds(20)
   do {
-    $element = Find-Name $root $name
-    if ($element -and -not $element.Current.IsOffscreen) { return $element }
+    # A retained editor and its preview can contain the same text. An earlier
+    # hidden match must not mask a later visible element with that exact name.
+    $elements = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    foreach ($element in $elements) {
+      if (-not $element.Current.IsOffscreen) { return $element }
+    }
     Start-Sleep -Milliseconds 100
   } while ([DateTime]::UtcNow -lt $until)
   throw "No visible native UI element: $name"
+}
+function Save-OwnedUiDiagnostic([IntPtr]$handle, [string]$format) {
+  # Keep the failure evidence scoped to the process launched by this test.
+  if ($handle -eq [IntPtr]::Zero -or [OwnedWindowInput]::Owner($handle) -ne $child.Id) { return }
+  $ownedRoot = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+  $elements = $ownedRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+  $rows = @()
+  for ($index=0; $index -lt [Math]::Min($elements.Count, 3000); $index++) {
+    try {
+      $current = $elements[$index].Current
+      $rows += @{ name=$current.Name; type=$current.ControlType.ProgrammaticName; offscreen=$current.IsOffscreen; bounds=$current.BoundingRectangle.ToString() }
+    } catch { $rows += @{ unavailable=$_.Exception.Message } }
+  }
+  $diagnostic = @{ title=[OwnedWindowInput]::Title($handle); foreground=([OwnedWindowInput]::GetForegroundWindow() -eq $handle); elements=$rows }
+  [IO.File]::WriteAllText((Join-Path $out ($format+'-uia-failure.json')), ($diagnostic | ConvertTo-Json -Depth 6), $utf8)
 }
 function Assert-Foreground([IntPtr]$handle) {
   [void][OwnedWindowInput]::ShowWindow($handle, 9)
@@ -151,6 +167,7 @@ function Invoke-Button($root, [string]$name) {
 
 foreach ($format in @('lf','crlf','bom-crlf')) {
   $child = $null
+  $handle = [IntPtr]::Zero
   $result = @{ format=$format; status='running' }
   try {
     $newline = if ($format -eq 'lf') { "`n" } else { "`r`n" }
@@ -169,6 +186,9 @@ foreach ($format in @('lf','crlf','bom-crlf')) {
     if ($handle -eq [IntPtr]::Zero) { throw 'No visible native document window (hidden single-instance window excluded)' }
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
     Write-Output "Owned app pid=$($child.Id) title=$([OwnedWindowInput]::Title($handle)) handle=$handle"
+    # Foreground activation precedes visibility checks: an occluded startup
+    # window can report iframe descendants as offscreen in WebView2's UIA tree.
+    Assert-Foreground $handle
     $heading = Wait-Name $root $marker
     [void](Wait-Name $root 'MDW-END')
     Assert-Foreground $handle
@@ -186,6 +206,10 @@ foreach ($format in @('lf','crlf','bom-crlf')) {
     if ((Get-FileHash $document -Algorithm SHA256).Hash -ne $originalHash) { throw 'Viewing changed source bytes' }
     $result.render = 'native UIA heading/end text plus nonblank OS heading capture; not glyph or IME acceptance'
     if ($VerifyEditor) {
+      # Disk documents initially show the isolated preview. Activate Visual
+      # explicitly before exercising the return-to-editor lifecycle.
+      Invoke-Button $root 'Edit'
+      [void](Wait-Name $root $marker)
       Invoke-Button $root 'Isolated read-only preview'
       [void](Wait-Name $root $marker)
       Invoke-Button $root 'Return to editor'
@@ -210,7 +234,11 @@ foreach ($format in @('lf','crlf','bom-crlf')) {
     }
     if ((Get-FileHash $original -Algorithm SHA256).Hash -ne $originalHash) { throw 'Original fixture was changed' }
     $result.status = 'passed'
-  } catch { $result.status='failed'; $result.error=$_.Exception.Message; throw }
+  } catch {
+    $result.status='failed'; $result.error=$_.Exception.Message
+    try { Save-OwnedUiDiagnostic $handle $format } catch { $result.diagnostic_error=$_.Exception.Message }
+    throw
+  }
   finally {
     if ($child) { $child.Refresh(); if (-not $child.HasExited) { & taskkill.exe /PID $child.Id /T /F | Out-Host; if ($LASTEXITCODE -ne 0) { $result.status='failed'; $result.cleanup_error='Owned process tree did not terminate' } } }
     $results += $result

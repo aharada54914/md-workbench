@@ -13,6 +13,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = { version = "2", features = ["watch"] }
@@ -32,3 +34,9 @@ which = "7"
 base64 = "0.22"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
 futures-util = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Wdk_Storage_FileSystem", "Win32_System_IO"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "=1.1.4", features = ["fs"] }

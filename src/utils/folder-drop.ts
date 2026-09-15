@@ -6,7 +6,7 @@
  * through `toCssPoint` first.
  */
 
-import type { ClassifiedPath } from '../services/workspaceFs';
+import type { NativeGrant } from '../services/nativeFs';
 import { trimTrailingSep } from './path-utils';
 
 export interface DropPoint {
@@ -49,20 +49,16 @@ function dedupeKey(path: string): string {
   return trimTrailingSep(path.replace(/\\/g, '/'));
 }
 
-/** Directories of a drop, in drop order, without separator-only duplicates. */
-export function droppedFolders(classified: ClassifiedPath[]): string[] {
+/** Host-confirmed workspaces, in drop order, without separator-only duplicates. */
+export function droppedFolders(grants: NativeGrant[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const entry of classified) {
-    if (entry.kind !== 'folder') continue;
+  for (const entry of grants) {
+    if (entry.kind !== 'workspace') continue;
     const key = dedupeKey(entry.path);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(entry.path);
   }
   return out;
-}
-
-export function droppedFiles(classified: ClassifiedPath[]): string[] {
-  return classified.filter((entry) => entry.kind === 'file').map((entry) => entry.path);
 }

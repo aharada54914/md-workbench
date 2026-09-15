@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
-import { openCodeView, openVisualView } from './helpers/code-editor';
+import { openCodeView, openVisualView, startEditing } from './helpers/code-editor';
 
 const PATH = '/test/safe-links.md';
 const MARKDOWN = [
@@ -48,6 +48,7 @@ test.describe('safe HTML external links', () => {
       openFilePath: PATH,
     });
     await page.goto('/');
+    await startEditing(page);
     await expect(page.locator('.safe-html-block').first()).toBeVisible({ timeout: 10_000 });
   });
 

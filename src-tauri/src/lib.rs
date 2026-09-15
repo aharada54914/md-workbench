@@ -1,124 +1,93 @@
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::collections::{HashMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::Path;
 use tauri::{Manager, Emitter, WebviewUrl, WebviewWindowBuilder, RunEvent, WindowEvent};
-use tauri_plugin_fs::FsExt;
-use serde::{Deserialize, Serialize};
 use font_kit::source::SystemSource;
 
 mod ai;
+mod file_access;
+mod native_files;
+mod open_files;
+mod resources;
+mod window_files;
+use window_files::*;
 
-// Store the file path to be opened (from CLI args or file association)
-pub struct OpenFileState(pub Mutex<Option<String>>);
+use open_files::{OpenFileState, paths_from_args, document_window_owner};
 
-// Global registry of open files: file_path -> window_label
-pub struct OpenFilesRegistry(pub Mutex<HashMap<String, String>>);
+// Serialize queue mutation with retained native authority acknowledgement.
+static NATIVE_OPEN_DELIVERY_LOCK: Mutex<()> = Mutex::new(());
 
-impl OpenFilesRegistry {
-    fn remove_window(&self, window_label: &str) {
-        let mut files = self.0.lock().unwrap();
-        files.retain(|_, label| label != window_label);
+fn native_open_owner(app: &tauri::AppHandle, closing_label: Option<&str>) -> Option<tauri::WebviewWindow> {
+    let windows = app.webview_windows();
+    let label = document_window_owner(windows.keys().map(String::as_str)
+        .filter(|label| Some(*label) != closing_label && native_files::is_registered(app, label)))?;
+    windows.get(label).cloned()
+}
+
+fn is_native_open_owner(window: &tauri::Window) -> bool {
+    native_open_owner(window.app_handle(), None)
+        .is_some_and(|owner| owner.label() == window.label())
+}
+
+#[tauri::command]
+fn get_open_file_path(window: tauri::Window, state: tauri::State<'_, OpenFileState>) -> Option<String> {
+    let _delivery = NATIVE_OPEN_DELIVERY_LOCK.lock().ok()?;
+    if !is_native_open_owner(&window)
+        || native_files::distribute_pending(window.app_handle(), window.label()).is_err() {
+        return None;
+    }
+    let path = state.pop();
+    if let Some(path) = &path {
+        native_files::acknowledge_delivery(window.app_handle(), std::slice::from_ref(path));
+    }
+    path
+}
+
+#[tauri::command]
+fn get_open_file_paths(window: tauri::Window, state: tauri::State<'_, OpenFileState>) -> Vec<String> {
+    let Ok(_delivery) = NATIVE_OPEN_DELIVERY_LOCK.lock() else { return Vec::new(); };
+    // One live document window owns delivery. Print/preview webviews never do.
+    if !is_native_open_owner(&window)
+        || native_files::distribute_pending(window.app_handle(), window.label()).is_err() {
+        return Vec::new();
+    }
+    let paths = state.drain();
+    native_files::acknowledge_delivery(window.app_handle(), &paths);
+    paths
+}
+
+fn notify_pending_open_files(app: &tauri::AppHandle, closing_label: Option<&str>) {
+    if !app.state::<OpenFileState>().has_pending() {
+        return;
+    }
+    if let Some(window) = native_open_owner(app, closing_label) {
+        if native_files::distribute_pending(app, window.label()).is_err() { return; }
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("open-files-pending", ());
     }
 }
 
-// Counter for unique window IDs
-static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
-
-fn is_supported_markdown_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
-        .unwrap_or(false)
-}
-
-// Payload for transferring tabs between windows
-#[derive(Clone, Serialize, Deserialize)]
-pub struct TabTransferPayload {
-    pub file_path: String,
-    pub source_window: String,
-    pub target_window: String,
-}
-
-#[tauri::command]
-fn get_open_file_path(state: tauri::State<'_, OpenFileState>) -> Option<String> {
-    let mut path = state.0.lock().unwrap();
-    path.take()
-}
-
-// Register a file as open in a specific window
-#[tauri::command]
-fn register_open_file(
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    file_path: String,
-    window_label: String,
-) {
-    let mut files = registry.0.lock().unwrap();
-    files.insert(file_path, window_label);
-}
-
-// Unregister a file when it's closed
-#[tauri::command]
-fn unregister_open_file(
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    file_path: String,
-) {
-    let mut files = registry.0.lock().unwrap();
-    files.remove(&file_path);
-}
-
-// Unregister all files for a specific window (when window closes)
-#[tauri::command]
-fn unregister_window_files(
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    window_label: String,
-) {
-    registry.remove_window(&window_label);
-}
-
-// Check if a file is already open and return the window label if so
-#[tauri::command]
-fn check_file_open(
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    file_path: String,
-) -> Option<String> {
-    let files = registry.0.lock().unwrap();
-    files.get(&file_path).cloned()
-}
-
-// Focus the window that has a specific file open
-#[tauri::command]
-async fn focus_window_with_file(
-    app: tauri::AppHandle,
-    registry: tauri::State<'_, OpenFilesRegistry>,
-    file_path: String,
-) -> Result<bool, String> {
-    let window_label = {
-        let files = registry.0.lock().unwrap();
-        files.get(&file_path).cloned()
-    };
-
-    if let Some(label) = window_label {
-        if let Some(window) = app.get_webview_window(&label) {
-            // Bring window to front even if minimized (#49)
-            if window.is_minimized().unwrap_or(false) {
-                let _ = window.unminimize();
-            }
-            if !window.is_visible().unwrap_or(true) {
-                let _ = window.show();
-            }
-            window.set_focus().map_err(|e| e.to_string())?;
-            // Emit event to switch to the tab with this file
-            window.emit("focus-file", file_path).map_err(|e| e.to_string())?;
-            return Ok(true);
+fn queue_open_files(app: &tauri::AppHandle, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    let Ok(delivery) = NATIVE_OPEN_DELIVERY_LOCK.lock() else { return; };
+    let errors = native_files::capture_os_open(app, &paths);
+    app.state::<OpenFileState>().enqueue(paths);
+    if !errors.is_empty() {
+        if let Some(window) = native_open_owner(app, None) {
+            let _ = window.emit("native-file-errors", errors);
         }
     }
-    Ok(false)
+    drop(delivery);
+    // If no consumer is ready, its startup getter will drain the retained queue.
+    notify_pending_open_files(app, None);
 }
 
 // Dedicated window that renders the print-ready document for native printing.
-const PRINT_WINDOW_LABEL: &str = "window-print";
+const PRINT_WINDOW_LABEL: &str = "print-preview";
 // Custom URI scheme that serves the print-ready HTML from memory.
 const PRINT_SCHEME: &str = "mermarkprint";
 
@@ -129,7 +98,7 @@ pub struct PrintHtmlState(pub Mutex<Option<String>>);
 fn get_all_windows(app: tauri::AppHandle) -> Vec<String> {
     app.webview_windows()
         .keys()
-        .filter(|label| *label != PRINT_WINDOW_LABEL)
+        .filter(|label| native_files::is_registered(&app, label))
         .cloned()
         .collect()
 }
@@ -180,29 +149,6 @@ async fn print_document(app: tauri::AppHandle, html: String) -> Result<(), Strin
 #[tauri::command]
 fn get_current_window_label(window: tauri::Window) -> String {
     window.label().to_string()
-}
-
-#[tauri::command]
-async fn transfer_tab_to_window(
-    app: tauri::AppHandle,
-    file_path: String,
-    source_window: String,
-    target_window: String,
-) -> Result<(), String> {
-    let payload = TabTransferPayload {
-        file_path,
-        source_window,
-        target_window: target_window.clone(),
-    };
-
-    if let Some(target) = app.get_webview_window(&target_window) {
-        target.emit("tab-transfer", payload).map_err(|e| e.to_string())?;
-        target.set_focus().map_err(|e| e.to_string())?;
-    } else {
-        return Err(format!("Window {} not found", target_window));
-    }
-
-    Ok(())
 }
 
 // ============== AI commands (storage + health) ==============
@@ -363,390 +309,13 @@ fn ai_image_save(
 
 // ============== Workspace (folder browser) commands ==============
 
-#[derive(Serialize)]
-struct WorkspaceNode {
-    name: String,
-    path: String,
-    /// "file" or "folder"
-    kind: &'static str,
-    /// None for files; Some for folders (may be empty).
-    children: Option<Vec<WorkspaceNode>>,
-    /// Last-modified time in milliseconds since the Unix epoch (0 if unavailable).
-    /// Used by the frontend to offer "sort by modified" in the workspace tree.
-    modified: u64,
-}
-
-const WORKSPACE_TREE_MAX_DEPTH: usize = 50;
-
 fn is_workspace_markdown(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".mdx")
 }
 
-fn is_workspace_image(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    [".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp"]
-        .iter()
-        .any(|ext| lower.ends_with(ext))
-}
-
-fn is_workspace_visible(name: &str) -> bool {
-    is_workspace_markdown(name) || is_workspace_image(name)
-}
-
 fn is_workspace_hidden(name: &str) -> bool {
     name.starts_with('.') || name == "node_modules"
-}
-
-fn read_workspace_subtree(path: &Path, depth: usize) -> Result<WorkspaceNode, String> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|e| format!("read metadata for {}: {}", path.display(), e))?;
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned());
-    let path_str = path.to_string_lossy().into_owned();
-    let modified_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-
-    if metadata.is_file() {
-        return Ok(WorkspaceNode {
-            name,
-            path: path_str,
-            kind: "file",
-            children: None,
-            modified: modified_ms,
-        });
-    }
-
-    if !metadata.is_dir() {
-        return Err(format!("path is neither file nor directory: {}", path.display()));
-    }
-
-    let mut children: Vec<WorkspaceNode> = Vec::new();
-    if depth < WORKSPACE_TREE_MAX_DEPTH {
-        let entries = std::fs::read_dir(path)
-            .map_err(|e| format!("read_dir {}: {}", path.display(), e))?;
-        let mut folders: Vec<PathBuf> = Vec::new();
-        let mut files: Vec<PathBuf> = Vec::new();
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            let entry_name = entry.file_name().to_string_lossy().into_owned();
-            if is_workspace_hidden(&entry_name) {
-                continue;
-            }
-            let entry_type = match entry.file_type() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if entry_type.is_dir() {
-                folders.push(entry_path);
-            } else if entry_type.is_file() {
-                if is_workspace_visible(&entry_name) {
-                    files.push(entry_path);
-                }
-            }
-        }
-        // Folders first then files, both alphabetical (case-insensitive).
-        folders.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default());
-        files.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default());
-
-        for folder in folders {
-            match read_workspace_subtree(&folder, depth + 1) {
-                Ok(node) => children.push(node),
-                Err(_) => {
-                    // Skip folders we cannot read (perms, broken symlinks, etc.)
-                    continue;
-                }
-            }
-        }
-        for file in files {
-            if let Ok(node) = read_workspace_subtree(&file, depth + 1) {
-                children.push(node);
-            }
-        }
-    }
-
-    Ok(WorkspaceNode {
-        name,
-        path: path_str,
-        kind: "folder",
-        children: Some(children),
-        modified: modified_ms,
-    })
-}
-
-#[tauri::command]
-async fn read_workspace_tree(app: tauri::AppHandle, root: String) -> Result<WorkspaceNode, String> {
-    let requested_path = PathBuf::from(&root);
-    if !requested_path.exists() {
-        return Err(format!("workspace path does not exist: {}", root));
-    }
-    if !requested_path.is_dir() {
-        return Err(format!("workspace path is not a directory: {}", root));
-    }
-
-    // The dialog plugin grants a selected folder to the fs plugin only for the
-    // current process. Restored workspaces do not pass through the dialog, and
-    // on Unix the generic `**` capability deliberately excludes dot-prefixed
-    // path segments. Re-grant the persisted workspace root on every tree load.
-    // Canonicalization matters for visible symlinks pointing into hidden dirs:
-    // plugin-fs canonicalizes a file before checking its runtime scope too.
-    let scoped_path = std::fs::canonicalize(&requested_path)
-        .map_err(|e| format!("canonicalize workspace {}: {}", root, e))?;
-    app.fs_scope()
-        .allow_directory(&scoped_path, true)
-        .map_err(|e| format!("allow workspace {}: {}", root, e))?;
-
-    // Walking a large folder is CPU/IO bound and can take seconds. Run it on
-    // tokio's blocking pool so the Tauri command thread (and the renderer
-    // IPC) stays responsive — the UI shows its loading state in the meantime.
-    tokio::task::spawn_blocking(move || {
-        read_workspace_subtree(&requested_path, 0)
-    })
-    .await
-    .map_err(|e| format!("worker join: {}", e))?
-}
-
-#[tauri::command]
-fn create_md_file(parent: String, name: String) -> Result<String, String> {
-    let parent_path = Path::new(&parent);
-    if !parent_path.is_dir() {
-        return Err(format!("parent is not a directory: {}", parent));
-    }
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err("file name cannot be empty".into());
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err("file name cannot contain path separators".into());
-    }
-    let final_name = if is_workspace_markdown(trimmed) {
-        trimmed.to_string()
-    } else {
-        format!("{}.md", trimmed)
-    };
-    let full = parent_path.join(&final_name);
-    if full.exists() {
-        return Err(format!("file already exists: {}", full.display()));
-    }
-    std::fs::write(&full, "").map_err(|e| format!("create file: {}", e))?;
-    Ok(full.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-fn create_folder(parent: String, name: String) -> Result<String, String> {
-    let parent_path = Path::new(&parent);
-    if !parent_path.is_dir() {
-        return Err(format!("parent is not a directory: {}", parent));
-    }
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err("folder name cannot be empty".into());
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err("folder name cannot contain path separators".into());
-    }
-    let full = parent_path.join(trimmed);
-    if full.exists() {
-        return Err(format!("folder already exists: {}", full.display()));
-    }
-    std::fs::create_dir(&full).map_err(|e| format!("create folder: {}", e))?;
-    Ok(full.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-fn rename_path(from: String, to: String) -> Result<(), String> {
-    let from_path = Path::new(&from);
-    let to_path = Path::new(&to);
-    if !from_path.exists() {
-        return Err(format!("source does not exist: {}", from));
-    }
-    if to_path.exists() {
-        return Err(format!("destination already exists: {}", to));
-    }
-    std::fs::rename(from_path, to_path).map_err(|e| format!("rename: {}", e))?;
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct ClassifiedPath {
-    path: String,
-    /// "file", "folder" or "missing"
-    kind: &'static str,
-}
-
-fn path_kind(path: &Path) -> &'static str {
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => "folder",
-        Ok(meta) if meta.is_file() => "file",
-        _ => "missing",
-    }
-}
-
-/// Classify dropped OS paths so the frontend can tell a folder drop (add a
-/// workspace) from a file drop (open a tab / insert an image).
-#[tauri::command]
-fn classify_paths(paths: Vec<String>) -> Vec<ClassifiedPath> {
-    paths
-        .into_iter()
-        .map(|p| {
-            let kind = path_kind(Path::new(&p));
-            ClassifiedPath { path: p, kind }
-        })
-        .collect()
-}
-
-#[tauri::command]
-fn delete_path(path: String) -> Result<(), String> {
-    let target = Path::new(&path);
-    if !target.exists() {
-        return Err(format!("path does not exist: {}", path));
-    }
-    let metadata = std::fs::metadata(target).map_err(|e| format!("stat: {}", e))?;
-    if metadata.is_dir() {
-        std::fs::remove_dir_all(target).map_err(|e| format!("remove dir: {}", e))?;
-    } else {
-        std::fs::remove_file(target).map_err(|e| format!("remove file: {}", e))?;
-    }
-    Ok(())
-}
-
-// ============== Content search across open workspaces ==============
-
-#[derive(Serialize)]
-struct ContentSearchHit {
-    path: String,
-    /// 1-based line number where the match was found.
-    line: usize,
-    /// The matching line, trimmed and capped to 240 chars for display.
-    snippet: String,
-}
-
-/// Substring-search the content of every `.md/.markdown/.mdx` file under any
-/// of the supplied roots. Case-insensitive. Async + multi-threaded so a
-/// 5000-file workspace stays interactive.
-///
-/// Hard limits to keep the worst case bounded:
-///   - Max 5_000 files visited per call (early-stops; UI explains via `truncated`).
-///   - Max 500 KB read per file (markdown is text — bigger means binary garbage).
-///   - Max 200 hit lines returned overall.
-///   - Total wall-clock budget: 4 s, then early-stop with whatever we have.
-#[tauri::command]
-async fn search_workspace_content(
-    roots: Vec<String>,
-    query: String,
-) -> Result<Vec<ContentSearchHit>, String> {
-    let q = query.trim().to_string();
-    if q.is_empty() {
-        return Ok(Vec::new());
-    }
-    let q_lower = q.to_ascii_lowercase();
-
-    tokio::task::spawn_blocking(move || -> Result<Vec<ContentSearchHit>, String> {
-        let start = std::time::Instant::now();
-        let budget = std::time::Duration::from_secs(4);
-        const MAX_FILES: usize = 5_000;
-        const MAX_FILE_BYTES: usize = 512 * 1024;
-        const MAX_HITS: usize = 200;
-
-        let mut files_visited: usize = 0;
-        let mut hits: Vec<ContentSearchHit> = Vec::new();
-
-        // Iterative DFS so we can early-stop cleanly.
-        let mut stack: Vec<PathBuf> = roots
-            .into_iter()
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .collect();
-
-        while let Some(dir) = stack.pop() {
-            if start.elapsed() > budget || hits.len() >= MAX_HITS || files_visited >= MAX_FILES {
-                break;
-            }
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(rd) => rd,
-                Err(_) => continue,
-            };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if is_workspace_hidden(&name) {
-                    continue;
-                }
-                let path = entry.path();
-                let file_type = match entry.file_type() {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
-                if file_type.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if !file_type.is_file() || !is_workspace_markdown(&name) {
-                    continue;
-                }
-                files_visited += 1;
-                if files_visited > MAX_FILES {
-                    break;
-                }
-                // Read up to MAX_FILE_BYTES — markdown files are text, bigger
-                // is almost certainly bad data we don't want to scan.
-                let bytes = match read_file_capped(&path, MAX_FILE_BYTES) {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                };
-                let text = match std::str::from_utf8(&bytes) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                for (idx, line) in text.lines().enumerate() {
-                    if line.to_ascii_lowercase().contains(&q_lower) {
-                        let trimmed = line.trim();
-                        let snippet = if trimmed.len() > 240 {
-                            format!("{}…", &trimmed.chars().take(240).collect::<String>())
-                        } else {
-                            trimmed.to_string()
-                        };
-                        hits.push(ContentSearchHit {
-                            path: path.to_string_lossy().into_owned(),
-                            line: idx + 1,
-                            snippet,
-                        });
-                        if hits.len() >= MAX_HITS {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(hits)
-    })
-    .await
-    .map_err(|e| format!("worker join: {}", e))?
-}
-
-fn read_file_capped(path: &Path, max_bytes: usize) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut buf = Vec::with_capacity(max_bytes.min(64 * 1024));
-    let mut chunk = [0u8; 8192];
-    while buf.len() < max_bytes {
-        let n = f.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        let take = n.min(max_bytes - buf.len());
-        buf.extend_from_slice(&chunk[..take]);
-        if take < n {
-            break;
-        }
-    }
-    Ok(buf)
 }
 
 /// `Some(open target)` when `path` is a filesystem root — a drive (`C:`) or a UNC
@@ -790,52 +359,6 @@ fn windows_reveal_arg(path: &str) -> String {
     }
 }
 
-/// Reveal a file or folder in the host OS file manager.
-/// On Windows uses `explorer /select,"<path>"`; on macOS uses `open -R <path>`;
-/// on Linux falls back to opening the parent folder via xdg-open.
-#[tauri::command]
-fn reveal_in_os(path: String) -> Result<(), String> {
-    let target = Path::new(&path);
-    if !target.exists() {
-        return Err(format!("path does not exist: {}", path));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("explorer.exe")
-            .raw_arg(windows_reveal_arg(&path))
-            .spawn()
-            .map_err(|e| format!("explorer: {}", e))?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .args(["-R", &path])
-            .spawn()
-            .map_err(|e| format!("open: {}", e))?;
-        return Ok(());
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let parent = target
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.clone());
-        std::process::Command::new("xdg-open")
-            .arg(&parent)
-            .spawn()
-            .map_err(|e| format!("xdg-open: {}", e))?;
-        return Ok(());
-    }
-
-    #[allow(unreachable_code)]
-    Err("reveal_in_os: unsupported platform".into())
-}
-
 /// List all font family names installed on the system.
 /// Returns a sorted, deduplicated list of font family names.
 #[tauri::command]
@@ -853,36 +376,6 @@ fn list_system_fonts() -> Vec<String> {
     }
 
     families.into_iter().collect()
-}
-
-#[tauri::command]
-async fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Result<String, String> {
-    let window_id = WINDOW_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let window_label = format!("window-{}", window_id);
-
-    let url = match &file_path {
-        Some(path) => {
-            let encoded_path = urlencoding::encode(path);
-            format!("index.html?file={}", encoded_path)
-        }
-        None => "index.html".to_string()
-    };
-
-    let window = WebviewWindowBuilder::new(
-        &app,
-        &window_label,
-        WebviewUrl::App(url.into())
-    )
-    .title("MD Workbench")
-    .inner_size(1200.0, 800.0)
-    .resizable(true)
-    .center()
-    .build()
-    .map_err(|e| e.to_string())?;
-
-    window.set_focus().map_err(|e| e.to_string())?;
-
-    Ok(window_label)
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -995,9 +488,8 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            // When another instance is launched with arguments (file association)
-            // Send the file path to the existing window
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            // A second instance can contain several file-association paths.
             if let Some(window) = app.get_webview_window("main") {
                 // Bring window to front even if minimized (#49)
                 if window.is_minimized().unwrap_or(false) {
@@ -1007,21 +499,42 @@ pub fn run() {
                     let _ = window.show();
                 }
                 let _ = window.set_focus();
-
-                if args.len() > 1 {
-                    let file_path = &args[1];
-                    if is_supported_markdown_path(file_path) {
-                        let _ = window.emit("open-file", file_path.clone());
-                    }
-                }
             }
+            queue_open_files(app, paths_from_args(args, Some(Path::new(&cwd))));
         }))
-        .manage(OpenFileState(Mutex::new(None)))
-        .manage(OpenFilesRegistry(Mutex::new(HashMap::new())))
+        .manage(OpenFileState::default())
+        .manage(native_files::NativeFiles::default())
+        .manage(OpenFilesRegistry::default())
         .manage(PrintHtmlState(Mutex::new(None)))
         .manage(ai::process::ChildRegistry::new())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(move |invoke| {
+            let webview = invoke.message.webview_ref();
+            if !native_files::allows_custom_ipc(webview.app_handle(), webview.label(), webview.window().label()) {
+                invoke.resolver.reject(serde_json::json!({
+                    "code": "permission_required", "message": "Editor window required"
+                }));
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            native_files::native_get_pending_transfers,
+            native_files::native_ack_tab_transfer,
+            native_files::native_get_grant,
+            native_files::native_take_drops,
+            native_files::native_read_grant,
+            native_files::native_read_path,
+            native_files::native_resolve_image_document,
+            native_files::native_read_document_image,
+            native_files::native_watch_subscribe,
+            native_files::native_watch_read,
+            native_files::native_watch_unsubscribe,
+            native_files::native_list_directory,
+            native_files::native_pick_documents,
+            native_files::native_pick_save_destination,
+            native_files::native_pick_workspace,
+            native_files::native_pick_resource,
+            native_files::native_pick_images,
             get_open_file_path,
+            get_open_file_paths,
             create_new_window,
             get_all_windows,
             get_current_window_label,
@@ -1033,14 +546,13 @@ pub fn run() {
             check_file_open,
             focus_window_with_file,
             list_system_fonts,
-            read_workspace_tree,
-            create_md_file,
-            create_folder,
-            rename_path,
-            delete_path,
-            classify_paths,
-            reveal_in_os,
-            search_workspace_content,
+            native_files::read_workspace_tree,
+            native_files::create_md_file,
+            native_files::create_folder,
+            native_files::rename_path,
+            native_files::delete_path,
+            native_files::reveal_in_os,
+            native_files::search_workspace_content,
             ai_health_check,
             ai_ollama_models,
             ai_openai_models,
@@ -1066,18 +578,17 @@ pub fn run() {
             ai_send,
             ai_cancel,
             ai_image_save
-        ])
+            ];
+            handler(invoke)
+        })
         .setup(|app| {
-            // Check for CLI arguments (file association on first launch)
-            let args: Vec<String> = std::env::args().collect();
-            if args.len() > 1 {
-                let file_path = &args[1];
-                if is_supported_markdown_path(file_path) {
-                    // Store the file path to be retrieved by frontend
-                    let state = app.state::<OpenFileState>();
-                    *state.0.lock().unwrap() = Some(file_path.clone());
-                }
+            if app.get_webview_window("main").is_some() {
+                native_files::register_editor(app.handle(), "main")?;
             }
+            // Check for CLI arguments (file association on first launch)
+            let cwd = std::env::current_dir().ok();
+            let args = std::env::args_os().map(|argument| argument.into_string().unwrap_or_default());
+            queue_open_files(app.handle(), paths_from_args(args, cwd.as_deref()));
 
             #[cfg(debug_assertions)]
             {
@@ -1103,19 +614,18 @@ pub fn run() {
                     let file_paths: Vec<String> = urls
                         .into_iter()
                         .filter_map(|url| url.to_file_path().ok())
-                        .map(|path| path.to_string_lossy().to_string())
-                        .filter(|path| is_supported_markdown_path(path))
+                        .filter(|path| open_files::is_supported_markdown_path(path))
+                        .filter_map(|path| path.into_os_string().into_string().ok())
                         .collect();
 
                     if file_paths.is_empty() {
                         return;
                     }
 
-                    // Always persist the pending file before touching the window.
+                    // Always queue every pending file before touching the window.
                     // On cold start macOS can deliver Opened before the webview is
-                    // ready, and the frontend later retrieves this value.
-                    let state = app.state::<OpenFileState>();
-                    *state.0.lock().unwrap() = file_paths.last().cloned();
+                    // ready, and the frontend later drains these requests.
+                    queue_open_files(app, file_paths);
 
                     if let Some(window) = app.get_webview_window("main") {
                         if window.is_minimized().unwrap_or(false) {
@@ -1125,16 +635,19 @@ pub fn run() {
                             let _ = window.show();
                         }
                         let _ = window.set_focus();
-
-                        for path in file_paths {
-                            let _ = window.emit("open-file", path);
-                        }
                     }
                 }
+                RunEvent::WindowEvent { label, event: WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }), .. } => {
+                    native_files::native_drop(app, &label, &paths, position);
+                }
                 RunEvent::WindowEvent { label, event: WindowEvent::Destroyed, .. } => {
+                    native_files::revoke_editor(app, &label);
                     // Webview destruction does not guarantee Vue unmount hooks.
                     // Keep remaining windows able to reopen these documents.
                     app.state::<OpenFilesRegistry>().remove_window(&label);
+                    // The old owner may have closed before handling its wakeup.
+                    // Exclude it even if Tauri has not removed its registry entry yet.
+                    notify_pending_open_files(app, Some(&label));
                 }
                 _ => {}
             }
@@ -1147,21 +660,6 @@ mod tests {
     use std::ffi::OsStr;
 
     #[test]
-    fn destroyed_window_releases_only_its_current_file_registrations() {
-        let registry = OpenFilesRegistry(Mutex::new(HashMap::from([
-            ("closed.md".to_string(), "window-1".to_string()),
-            ("remaining.md".to_string(), "main".to_string()),
-            ("transferred.md".to_string(), "main".to_string()),
-        ])));
-        registry.remove_window("window-1");
-        registry.remove_window("window-1"); // destruction cleanup is idempotent
-        let files = registry.0.lock().unwrap();
-        assert!(!files.contains_key("closed.md"));
-        assert_eq!(files.get("remaining.md").map(String::as_str), Some("main"));
-        assert_eq!(files.get("transferred.md").map(String::as_str), Some("main"));
-    }
-
-    #[test]
     fn webkit_override_applies_when_unset_or_blank() {
         assert!(should_apply_webkit_override(None));
         assert!(should_apply_webkit_override(Some(OsStr::new(""))));
@@ -1172,34 +670,6 @@ mod tests {
     fn webkit_override_respects_explicit_user_value() {
         assert!(!should_apply_webkit_override(Some(OsStr::new("1"))));
         assert!(!should_apply_webkit_override(Some(OsStr::new("0"))));
-    }
-
-    #[test]
-    fn classify_paths_separates_folders_files_and_missing() {
-        let dir = std::env::temp_dir().join(format!("mermark-classify-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("note.md");
-        std::fs::write(&file, "x").unwrap();
-        let missing = dir.join("gone.md");
-
-        let out = classify_paths(vec![
-            dir.to_string_lossy().into_owned(),
-            file.to_string_lossy().into_owned(),
-            missing.to_string_lossy().into_owned(),
-        ]);
-
-        let kinds: Vec<&str> = out.iter().map(|e| e.kind).collect();
-        assert_eq!(kinds, ["folder", "file", "missing"]);
-        assert_eq!(out[1].path, file.to_string_lossy());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn classify_paths_preserves_input_order_and_length() {
-        let out = classify_paths(vec!["/definitely/not/here".into(), "/nor/here".into()]);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].path, "/definitely/not/here");
-        assert!(out.iter().all(|e| e.kind == "missing"));
     }
 
     #[test]

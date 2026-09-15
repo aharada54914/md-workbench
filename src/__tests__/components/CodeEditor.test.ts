@@ -14,6 +14,7 @@ beforeAll(() => {
 });
 
 import CodeEditor from '../../components/CodeEditor.vue';
+import type { CodeEditorHandle } from '../../types/code-editor';
 
 vi.mock('../../composables/useSettings', () => ({
   useSettings: () => ({
@@ -61,4 +62,48 @@ describe('CodeEditor virtualization (issue #129)', () => {
     expect(wrapper.find('.cm-line span').exists()).toBe(true);
     expect(wrapper.find('.cm-content').text()).toContain('Heading');
   });
+
+  it('synchronizes source arriving between setup and mounting before the first edit', async () => {
+    const raw = '\uFEFF# Loaded\r\n\r\nbody\r\n';
+    const wrapper = mount(CodeEditor, { props: {
+      modelValue: '',
+      onVnodeBeforeMount: (vnode: any) => { vnode.component.props.modelValue = raw; },
+    } });
+    await nextTick();
+    const handle = (wrapper.vm as unknown as { editor: CodeEditorHandle }).editor;
+    expect(handle.getValue()).toBe(raw);
+    handle.setSelection(raw.length);
+    handle.replaceSelection('appended');
+    expect(handle.getValue()).toBe(raw + 'appended');
+    expect(wrapper.emitted('update:modelValue')?.slice(-1)[0]).toEqual([raw + 'appended']);
+    wrapper.unmount();
+  });
+
+  it('preserves CRLF when replacing the whole document with multiline editor input', async () => {
+    const raw = '\uFEFF# Original\r\n\r\nbody\r\n';
+    const replacement = '\uFEFF# Changed\n\nline one\nline two\n';
+    const wrapper = mount(CodeEditor, { props: { modelValue: raw } });
+    const handle = (wrapper.vm as unknown as { editor: CodeEditorHandle }).editor;
+    handle.setSelection(0, raw.length);
+    handle.replaceSelection(replacement);
+    expect(handle.getValue()).toBe(replacement.replace(/\n/g, '\r\n'));
+    wrapper.unmount();
+  });
+
+  it('rejects programmatic edits while reading and accepts external source updates', async () => {
+    const wrapper = mount(CodeEditor, { props: { modelValue: 'original' } });
+    const handle = (wrapper.vm as unknown as { editor: CodeEditorHandle }).editor;
+    handle.setSelection(8);
+    await wrapper.setProps({ readOnly: true });
+    handle.replaceSelection(' blocked');
+    expect(handle.getValue()).toBe('original');
+    await wrapper.setProps({ modelValue: 'external\r\n' });
+    expect(handle.getValue()).toBe('external\r\n');
+    await wrapper.setProps({ readOnly: false });
+    handle.setSelection(handle.getValue().length);
+    handle.replaceSelection('allowed');
+    expect(handle.getValue()).toBe('external\r\nallowed');
+    wrapper.unmount();
+  });
+
 });

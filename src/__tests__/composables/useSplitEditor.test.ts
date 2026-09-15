@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { nextTick } from 'vue';
 
-vi.mock('../../utils/markdown-converter', () => ({
+vi.mock('../../utils/markdown-converter', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../utils/markdown-converter')>(),
   markdownToHtml: (md: string) => `<p>HTML:${md}</p>`,
   htmlToMarkdown: (html: string) => `MD:${html}`,
 }));
@@ -107,6 +108,13 @@ describe('useSplitEditor', () => {
 
       expect(markdownSource.value).toBe('MD:<p>edited diagram</p>');
       expect(previewHtml.value).toBe(seededPreview);
+    });
+
+    it('retains the source BOM and whitespace envelope after a visual edit', () => {
+      const { enter, syncFromVisual, markdownSource } = useSplitEditor();
+      enter('<p>seed</p>', '\uFEFF\r\nMD:<p>seed</p>  \r\n');
+      syncFromVisual('<p>edited</p>');
+      expect(markdownSource.value).toBe('\uFEFF\r\nMD:<p>edited</p>  \r\n');
     });
 
     it('skips when converted markdown equals the current source (echo guard)', () => {
