@@ -178,6 +178,10 @@ const en: Translations = {
   categoryAdvanced: 'Advanced',
 
   // File dialogs
+  workspacePermissionRequired: "Choose this folder again with Open Folder to grant access.",
+  workspaceOpenFailed: "Could not open the workspace.",
+  openPermissionRequired: "Access to this document is required. Select it again using Open File.",
+  openDocumentFailed: "Could not open the document.",
   openFile: 'Open Markdown file',
   saveFile: 'Save Markdown file',
   markdownFiles: 'Markdown Files',

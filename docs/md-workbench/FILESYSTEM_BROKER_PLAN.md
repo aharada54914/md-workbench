@@ -4,6 +4,21 @@ Design handoff, 2026-09-15. This is not a security completion claim. The approve
 v0.2 SECURITY.md requires native authorization for traversal, symlinks, junctions,
 UNC and check/use races; preview must not receive filesystem IPC.
 
+## Progress on 2026-09-16
+
+The inventory below records the original migration targets; its old line numbers
+are not a description of the current implementation. The retained-handle core,
+native authority ingress, acknowledged window transfers, owned path reads and
+bounded workspace trees are implemented. Document and workspace Open actions
+now use native pickers. See [FILESYSTEM_BROKER_API.md](FILESYSTEM_BROKER_API.md)
+and [NATIVE_DOCUMENT_OPEN.md](NATIVE_DOCUMENT_OPEN.md) for their exact scope.
+
+Search, mutation, classification/reveal, subscriptions/reload, images, exports,
+AI writes, recovery and app-private grant restoration still need migration.
+Broad plugin-fs permissions remain until those callers have moved. Native Windows
+validation and the real packaged preview IPC probes are separate from browser
+mock coverage; this progress does not satisfy the full T04 acceptance gate.
+
 ## Current entry points and impact
 
 | Boundary | Current evidence | Required migration |

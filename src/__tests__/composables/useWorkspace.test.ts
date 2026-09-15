@@ -5,11 +5,6 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-const openDialogMock = vi.fn();
-vi.mock('@tauri-apps/plugin-dialog', () => ({
-  open: (...args: unknown[]) => openDialogMock(...args),
-}));
-
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({ setTheme: vi.fn() }),
 }));
@@ -35,6 +30,7 @@ function resetWorkspaceState() {
   ws.collapsedWorkspaceIds.value = new Set();
   ws.highlightedPath.value = null;
   ws.revealSignal.value = null;
+  ws.lastOpenError.value = null;
   ws.clearSelection();
   ws.setDropTargetPane(null);
 }
@@ -42,7 +38,6 @@ function resetWorkspaceState() {
 describe('useWorkspace', () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    openDialogMock.mockReset();
     resetWorkspaceState();
   });
 
@@ -96,6 +91,19 @@ describe('useWorkspace', () => {
       await expect(ws.openWorkspace('/bad')).rejects.toThrow('boom');
       expect(ws.openWorkspaces.value).toHaveLength(0);
       expect(ws.activeWorkspace.value).toBeNull();
+    });
+
+    it('reports a denied recent path without picking automatically or widening authority', async () => {
+      const ws = useWorkspace();
+      const { settings } = useSettings();
+      settings.value.workspace.recentRoots = ['/unselected'];
+      invokeMock.mockRejectedValueOnce({ code: 'permission_required', message: 'permission_required' });
+      await expect(ws.openWorkspace('/unselected')).rejects.toThrow();
+      expect(ws.lastOpenError.value).toBeTruthy();
+      expect(ws.lastOpenError.value).not.toContain('[object Object]');
+      expect(ws.openWorkspaces.value).toEqual([]);
+      expect(ws.recentWorkspaces.value).toEqual(['/unselected']);
+      expect(invokeMock.mock.calls).toEqual([['read_workspace_tree', { root: '/unselected' }]]);
     });
 
     it('removes path from recents when opened', async () => {
@@ -351,21 +359,51 @@ describe('useWorkspace', () => {
   });
 
   describe('openWorkspaceDialog', () => {
+    it('refreshes a cached tree after native re-selection of the same path', async () => {
+      const ws = useWorkspace();
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/picked'));
+      const previous = await ws.openWorkspace('/picked');
+      invokeMock.mockResolvedValueOnce({ id: 'new-selection', path: '/picked', kind: 'workspace', read: true, write: true });
+      const next = { ...makeFolderNode('/picked'), children: [{ name: 'new.md', path: '/picked/new.md', kind: 'file' as const }] };
+      invokeMock.mockResolvedValueOnce(next);
+      await ws.openWorkspaceDialog();
+      expect(ws.openWorkspaces.value).toHaveLength(1);
+      expect(ws.activeWorkspaceId.value).toBe(previous.id);
+      expect(ws.tree.value).toEqual(next);
+    });
+
     it('opens picker, then loads picked path', async () => {
       const ws = useWorkspace();
-      openDialogMock.mockResolvedValueOnce('/picked');
+      invokeMock.mockResolvedValueOnce({ id: 'native-workspace', path: '/picked', kind: 'workspace', read: true, write: true });
       invokeMock.mockResolvedValueOnce(makeFolderNode('/picked'));
       const picked = await ws.openWorkspaceDialog();
       expect(picked).toBe('/picked');
       expect(ws.activeWorkspace.value?.rootPath).toBe('/picked');
+      expect(invokeMock.mock.calls).toEqual([
+        ['native_pick_workspace'], ['read_workspace_tree', { root: '/picked' }],
+      ]);
     });
 
     it('returns null when user cancels', async () => {
       const ws = useWorkspace();
-      openDialogMock.mockResolvedValueOnce(null);
+      invokeMock.mockResolvedValueOnce(null);
       const picked = await ws.openWorkspaceDialog();
       expect(picked).toBeNull();
-      expect(invokeMock).not.toHaveBeenCalled();
+      expect(invokeMock.mock.calls).toEqual([['native_pick_workspace']]);
+      expect(ws.openWorkspaces.value).toEqual([]);
+    });
+
+    it('cancelling re-selection keeps an existing workspace and its denial message', async () => {
+      const ws = useWorkspace();
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/existing'));
+      await ws.openWorkspace('/existing');
+      const id = ws.activeWorkspaceId.value;
+      ws.lastOpenError.value = 'Select the folder again';
+      invokeMock.mockResolvedValueOnce(null);
+      await ws.openWorkspaceDialog();
+      expect(ws.activeWorkspaceId.value).toBe(id);
+      expect(ws.tree.value?.path).toBe('/existing');
+      expect(ws.lastOpenError.value).toBe('Select the folder again');
     });
   });
 

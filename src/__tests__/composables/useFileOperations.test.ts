@@ -7,6 +7,11 @@ import type { Tab } from '../../composables/useTabs';
 // ============================================================
 
 const mockReadTextFile = vi.fn();
+const mockNativeRead = vi.fn();
+const mockPickDocuments = vi.fn();
+vi.mock('../../services/nativeFs', () => ({
+  nativeFs: { readPathText: (...args: unknown[]) => mockNativeRead(...args), pickDocuments: () => mockPickDocuments() },
+}));
 const mockWriteTextFile = vi.fn();
 const mockRename = vi.fn();
 const mockRemove = vi.fn();
@@ -133,6 +138,8 @@ describe('useFileOperations', () => {
     mockRename.mockResolvedValue(undefined);
     mockRemove.mockResolvedValue(undefined);
     mockReadTextFile.mockResolvedValue('# hello');
+    mockNativeRead.mockReset().mockResolvedValue('# hello');
+    mockPickDocuments.mockReset().mockResolvedValue([]);
     mockExists.mockResolvedValue(true);
   });
 
@@ -571,6 +578,109 @@ describe('useFileOperations', () => {
   // openFileFromPath
   // ----------------------------------------------------------
 
+  describe('native document authority', () => {
+    it.each(['recent', 'session', 'link'])('rejects an ungranted %s path without changing tabs or using legacy reads', async (entry) => {
+      const denied = { code: 'permission_required', message: 'Select again' };
+      mockNativeRead.mockRejectedValue(denied);
+      const onOpenError = vi.fn();
+      const { options, tabs, createNewTab, switchToTab } = makeOptions({}, { onOpenError });
+      const before = JSON.stringify(tabs.value);
+      const operations = useFileOperations(options);
+      if (entry === 'link') await operations.openFileInNewTab('../private.md');
+      else await operations.openFileFromPath('/private.md');
+      expect(onOpenError).toHaveBeenCalledWith(denied, '/private.md');
+      expect(JSON.stringify(tabs.value)).toBe(before);
+      expect(createNewTab).not.toHaveBeenCalled();
+      expect(switchToTab).not.toHaveBeenCalled();
+      expect(mockReadTextFile).not.toHaveBeenCalled();
+      expect(mockOpenDialog).not.toHaveBeenCalled();
+      expect(operations.isLoadingFile.value).toBe(false);
+    });
+
+    it('native picker cancellation preserves the active document', async () => {
+      const { options, tabs } = makeOptions();
+      const before = JSON.stringify(tabs.value);
+      await useFileOperations(options).openFile();
+      expect(mockPickDocuments).toHaveBeenCalledOnce();
+      expect(mockNativeRead).not.toHaveBeenCalled();
+      expect(mockOpenDialog).not.toHaveBeenCalled();
+      expect(JSON.stringify(tabs.value)).toBe(before);
+    });
+
+    it('opens native selections sequentially and continues after a failed selected read', async () => {
+      const sources = ['\uFEFF# A\r\n\r\n', '# B\n'];
+      mockPickDocuments.mockResolvedValue([{ path: '/a.md' }, { path: '/denied.md' }, { path: '/b.md' }]);
+      let release!: (value: string) => void;
+      mockNativeRead.mockImplementationOnce(() => new Promise<string>(resolve => { release = resolve; }))
+        .mockRejectedValueOnce({ code: 'permission_required' }).mockResolvedValueOnce(sources[1]);
+      const onFileOpened = vi.fn();
+      const onOpenError = vi.fn();
+      const { options, tabs, createNewTab } = makeOptions({ filePath: null, hasChanges: false, content: '<p></p>' }, { onFileOpened, onOpenError });
+      createNewTab.mockImplementation((...args: unknown[]) => {
+        tabs.value.push(makeTab({ id: 'new-tab-id', filePath: args[0] as string, hasChanges: false }));
+        return 'new-tab-id';
+      });
+      const pending = useFileOperations(options).openFile();
+      await vi.waitFor(() => expect(mockNativeRead).toHaveBeenCalledOnce());
+      release(sources[0]);
+      await pending;
+      expect(mockNativeRead.mock.calls.map(call => call[0])).toEqual(['/a.md', '/denied.md', '/b.md']);
+      expect(tabs.value.map(tab => [tab.filePath, tab.pendingMarkdown])).toEqual([['/a.md', sources[0]], ['/b.md', sources[1]]]);
+      expect(onFileOpened.mock.calls.map(call => call[0])).toEqual(['/a.md', '/b.md']);
+      expect(onOpenError).toHaveBeenCalledWith({ code: 'permission_required' }, '/denied.md');
+      expect(mockReadTextFile).not.toHaveBeenCalled();
+    });
+
+    it('does not replace new edits made in an empty tab while a native read is pending', async () => {
+      let release!: (value: string) => void;
+      mockNativeRead.mockImplementationOnce(() => new Promise<string>(resolve => { release = resolve; }));
+      const { options, tabs, createNewTab } = makeOptions({ filePath: null, hasChanges: false, content: '<p></p>' });
+      const pending = useFileOperations(options).openFileFromPath('/selected.md');
+      tabs.value[0].content = '<p>New draft</p>';
+      tabs.value[0].hasChanges = true;
+      release('# Selected\r\n');
+      await pending;
+      expect(tabs.value[0].content).toBe('<p>New draft</p>');
+      expect(tabs.value[0].filePath).toBeNull();
+      expect(createNewTab).toHaveBeenCalledWith('/selected.md', '', 'selected.md');
+    });
+
+    it.each(['path', 'link'])('does not report a successful %s open when tab creation fails', async (entry) => {
+      const onFileOpened = vi.fn();
+      const { options, createNewTab, switchToTab, tabs } = makeOptions({}, { onFileOpened });
+      createNewTab.mockReturnValue('');
+      const before = JSON.stringify(tabs.value);
+      const operations = useFileOperations(options);
+      if (entry === 'path') await operations.openFileFromPath('/test/next.md');
+      else await operations.openFileInNewTab('next.md');
+      expect(switchToTab).not.toHaveBeenCalled();
+      expect(onFileOpened).not.toHaveBeenCalled();
+      expect(JSON.stringify(tabs.value)).toBe(before);
+      expect(operations.isLoadingFile.value).toBe(false);
+    });
+
+    it.each(['path', 'link'])('reuses a tab created by another %s open during the pending read', async (entry) => {
+      const onFileOpened = vi.fn();
+      const { options, createNewTab, switchToTab, findTabByFilePath } = makeOptions({}, { onFileOpened });
+      findTabByFilePath.mockReturnValueOnce(undefined).mockReturnValue(makeTab({ id: 'concurrently-opened' }) as never);
+      const operations = useFileOperations(options);
+      if (entry === 'path') await operations.openFileFromPath('/test/next.md');
+      else await operations.openFileInNewTab('next.md');
+      expect(createNewTab).not.toHaveBeenCalled();
+      expect(switchToTab).toHaveBeenCalledWith('concurrently-opened');
+      expect(onFileOpened).not.toHaveBeenCalled();
+    });
+
+    it('reports native picker failure and does not invoke the legacy picker', async () => {
+      const failure = { code: 'dialog_unavailable' };
+      mockPickDocuments.mockRejectedValueOnce(failure);
+      const onOpenError = vi.fn();
+      await useFileOperations(makeOptions({}, { onOpenError }).options).openFile();
+      expect(onOpenError).toHaveBeenCalledWith(failure, null);
+      expect(mockOpenDialog).not.toHaveBeenCalled();
+    });
+  });
+
   describe('openFileFromPath', () => {
     it('switches to existing tab if file already open', async () => {
       const existingTab = makeTab({ id: 'existing-tab' });
@@ -581,11 +691,11 @@ describe('useFileOperations', () => {
       await openFileFromPath('/test/file.md');
 
       expect(switchToTab).toHaveBeenCalledWith('existing-tab');
-      expect(mockReadTextFile).not.toHaveBeenCalled();
+      expect(mockNativeRead).not.toHaveBeenCalled();
     });
 
     it('loads file content and calls onFileOpened callback', async () => {
-      mockReadTextFile.mockResolvedValue('# new file content');
+      mockNativeRead.mockResolvedValue('# new file content');
       const onFileOpened = vi.fn();
 
       const { options } = makeOptions({ filePath: null, hasChanges: false, content: '<p></p>' });
@@ -593,7 +703,7 @@ describe('useFileOperations', () => {
 
       await openFileFromPath('/other/file.md');
 
-      expect(mockReadTextFile).toHaveBeenCalledWith('/other/file.md');
+      expect(mockNativeRead).toHaveBeenCalledWith('/other/file.md');
       expect(onFileOpened).toHaveBeenCalledWith('/other/file.md', '# new file content');
     });
   });
@@ -605,7 +715,7 @@ describe('useFileOperations', () => {
   describe('large file open', () => {
     it('opens a file above the threshold as markdown-first without converting', async () => {
       const bigContent = 'x'.repeat(1_000_001);
-      mockReadTextFile.mockResolvedValue(bigContent);
+      mockNativeRead.mockResolvedValue(bigContent);
       const onLargeFileOpened = vi.fn();
 
       const { options, tabs, setEditorContent } = makeOptions(
@@ -627,7 +737,7 @@ describe('useFileOperations', () => {
 
     it('opens a large file into a new tab as markdown-first when active tab is not empty', async () => {
       const bigContent = 'y'.repeat(1_000_001);
-      mockReadTextFile.mockResolvedValue(bigContent);
+      mockNativeRead.mockResolvedValue(bigContent);
       const onLargeFileOpened = vi.fn();
 
       const { options, createNewTab, tabs } = makeOptions();
@@ -645,7 +755,7 @@ describe('useFileOperations', () => {
     });
 
     it('opens an ordinary file inertly with exact source and no editor conversion', async () => {
-      mockReadTextFile.mockResolvedValue('# small');
+      mockNativeRead.mockResolvedValue('# small');
       const onLargeFileOpened = vi.fn();
 
       const { options, tabs } = makeOptions({ filePath: null, hasChanges: false, content: '<p></p>' });
@@ -666,7 +776,7 @@ describe('useFileOperations', () => {
 
     it('opens a large file via openFileInNewTab (relative link) as markdown-first', async () => {
       const bigContent = 'z'.repeat(1_000_001);
-      mockReadTextFile.mockResolvedValue(bigContent);
+      mockNativeRead.mockResolvedValue(bigContent);
       const onLargeFileOpened = vi.fn();
 
       const { options, createNewTab, tabs } = makeOptions();
@@ -675,12 +785,12 @@ describe('useFileOperations', () => {
 
       await openFileInNewTab('big.md');
 
-      expect(createNewTab).toHaveBeenCalledWith('test/big.md', '', 'big.md');
+      expect(createNewTab).toHaveBeenCalledWith('/test/big.md', '', 'big.md');
       const newTab = tabs.value.find(t => t.id === 'new-tab-id')!;
       expect(newTab.largeFile).toBe(true);
       expect(newTab.pendingMarkdown).toBe(bigContent);
       expect(markdownToHtml).not.toHaveBeenCalled();
-      expect(onLargeFileOpened).toHaveBeenCalledWith('test/big.md', bigContent);
+      expect(onLargeFileOpened).toHaveBeenCalledWith('/test/big.md', bigContent);
     });
   });
 });

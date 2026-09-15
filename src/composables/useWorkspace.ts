@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { nativeFs } from '../services/nativeFs';
+import { useI18n } from '../i18n';
 import {
   useSettings,
   RECENT_WORKSPACES_LIMIT,
@@ -20,6 +21,7 @@ export type { WorkspaceNode } from '../services/workspaceFs';
 const treesById = ref<Record<string, WorkspaceNode | null>>({});
 const loadingById = ref<Record<string, boolean>>({});
 const errorById = ref<Record<string, string | null>>({});
+const lastOpenError = ref<string | null>(null);
 
 /** Set of folder paths the user has expanded in any workspace's tree. */
 const expandedFolders = ref<Set<string>>(new Set());
@@ -63,6 +65,14 @@ function newId(): string {
 }
 
 export function useWorkspace() {
+  const { t } = useI18n();
+  const describeOpenError = (error: unknown): string => {
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+      return error.code === 'permission_required'
+        ? t.value.workspacePermissionRequired : t.value.workspaceOpenFailed;
+    }
+    return error instanceof Error ? error.message : t.value.workspaceOpenFailed;
+  };
   const {
     settings,
     setOpenWorkspaces,
@@ -161,8 +171,9 @@ export function useWorkspace() {
       autoExpandTopLevel(node);
       return node;
     } catch (e) {
-      const msg = String(e);
+      const msg = describeOpenError(e);
       errorById.value[entry.id] = msg;
+      lastOpenError.value = msg;
       treesById.value[entry.id] = null;
       throw new Error(msg);
     } finally {
@@ -178,12 +189,13 @@ export function useWorkspace() {
   // ===== Public API: workspace lifecycle =====
 
   /** Open a workspace by path. If already open, switch to it instead. */
-  async function openWorkspace(rootPath: string): Promise<OpenWorkspaceEntry> {
+  async function openWorkspace(rootPath: string, refresh = false): Promise<OpenWorkspaceEntry> {
+    lastOpenError.value = null;
     const existing = findOpenByPath(rootPath);
     if (existing) {
       setActiveWorkspaceId(existing.id);
-      if (!treesById.value[existing.id]) {
-        await loadTreeFor(existing).catch(() => null);
+      if (refresh || !treesById.value[existing.id]) {
+        await loadTreeFor(existing);
       }
       return existing;
     }
@@ -218,10 +230,17 @@ export function useWorkspace() {
   }
 
   async function openWorkspaceDialog(): Promise<string | null> {
-    const picked = await openDialog({ directory: true, multiple: false });
-    if (!picked || typeof picked !== 'string') return null;
-    await openWorkspace(picked);
-    return picked;
+    try {
+      const picked = await nativeFs.pickWorkspace();
+      if (!picked) return null;
+      // A new native selection can refer to a changed directory at the same
+      // spelling. Refresh cached entries using the newly selected authority.
+      await openWorkspace(picked.path, true);
+      return picked.path;
+    } catch (error) {
+      lastOpenError.value = describeOpenError(error);
+      throw error;
+    }
   }
 
   function setActive(id: string) {
@@ -578,6 +597,7 @@ export function useWorkspace() {
     tree,
     isLoading,
     error,
+    lastOpenError,
     treesById,
     expandedFolders,
     collapsedWorkspaceIds,

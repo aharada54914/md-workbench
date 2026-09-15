@@ -97,7 +97,7 @@ for (const gate of ['read', 'register'] as const) {
       const original = host.__TAURI_INTERNALS__.invoke;
       host.__transferGateEntered = false;
       host.__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
-        if ((gate === 'read' && command === 'plugin:fs|read_text_file' && args.path === filePath)
+        if ((gate === 'read' && command === 'native_read_path' && args.path === filePath)
           || (gate === 'register' && command === 'register_open_file' && args.filePath === filePath)) {
           host.__transferGateEntered = true;
           await new Promise<void>(resolve => { host.__releaseTransferGate = resolve; });

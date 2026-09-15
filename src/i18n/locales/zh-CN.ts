@@ -178,6 +178,10 @@ const zhCN: Translations = {
   categoryAdvanced: '高级',
 
   // File dialogs
+  workspacePermissionRequired: "请通过“打开文件夹”重新选择此文件夹以授予访问权限。",
+  workspaceOpenFailed: "无法打开工作区。",
+  openPermissionRequired: "需要文档访问权限。请通过“打开文件”重新选择此文档。",
+  openDocumentFailed: "无法打开文档。",
   openFile: '打开 Markdown 文件',
   saveFile: '保存 Markdown 文件',
   markdownFiles: 'Markdown 文件',

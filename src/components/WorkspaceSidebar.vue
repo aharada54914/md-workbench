@@ -718,6 +718,7 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="ws-body" ref="sidebarEl" @mousedown="onBodyMouseDown">
+      <p v-if="ws.lastOpenError.value" class="ws-open-error" role="alert">{{ ws.lastOpenError.value }}</p>
       <div v-if="!hasOpen" class="ws-empty">
         <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
@@ -849,6 +850,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.ws-open-error {
+  margin: 8px;
+  padding: 8px;
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .workspace-sidebar {
   position: relative;
   display: flex;

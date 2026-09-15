@@ -178,6 +178,10 @@ const pl: Translations = {
   categoryAdvanced: 'Zaawansowane',
 
   // File dialogs
+  workspacePermissionRequired: "Wybierz ponownie ten folder przez Otwórz folder, aby udzielić dostępu.",
+  workspaceOpenFailed: "Nie udało się otworzyć obszaru roboczego.",
+  openPermissionRequired: "Wymagany jest dostęp do dokumentu. Wybierz go ponownie przez Otwórz plik.",
+  openDocumentFailed: "Nie udało się otworzyć dokumentu.",
   openFile: 'Otwórz plik Markdown',
   saveFile: 'Zapisz plik Markdown',
   markdownFiles: 'Pliki Markdown',

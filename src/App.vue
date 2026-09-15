@@ -6,7 +6,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { copyFile, exists, remove } from '@tauri-apps/plugin-fs';
 import { readTextFile } from './services/documentText';
-import { open } from '@tauri-apps/plugin-dialog';
+import { nativeFs } from './services/nativeFs';
 import { htmlToMarkdown, markdownToHtml } from './utils/markdown-converter';
 import { inlineMarkdownImages, getDirectoryFromFilePath } from './utils/image-resolver';
 import type { Editor as TiptapEditor } from '@tiptap/vue-3';
@@ -502,6 +502,7 @@ const {
   setEditorContent,
   markSaveStart: (filePath: string) => markSaveStart(filePath),
   markSaveEnd: (filePath: string, content: string) => markSaveEnd(filePath, content),
+  onOpenError: reportDocumentOpenError,
   onFileOpened: (filePath: string, content: string) => {
     watchFile(filePath, content);
     const fileName = filePath.split(/[/\\]/).pop() ?? filePath;
@@ -1818,6 +1819,12 @@ const importDocumentsIntoWorkspace = async (paths: string[], directory: string):
   return imported;
 };
 
+function reportDocumentOpenError(error: unknown): void {
+  const permissionRequired = typeof error === 'object' && error !== null
+    && 'code' in error && error.code === 'permission_required';
+  showToastNotification(permissionRequired ? t.value.openPermissionRequired : t.value.openDocumentFailed, 'warning');
+}
+
 // Wrapper that checks if file is open locally or in another window first
 const openFileWithCrossWindowCheck = async (filePath: string): Promise<void> => {
   try {
@@ -1843,7 +1850,7 @@ const openFileWithCrossWindowCheck = async (filePath: string): Promise<void> => 
     await openFileFromPath(filePath);
 
     // Register the file after successful open
-    if (currentWindowLabel) {
+    if (currentWindowLabel && findTabByFilePathSplit(filePath)) {
       await registerOpenFile(filePath, currentWindowLabel);
     }
   } catch (error) {
@@ -1856,20 +1863,11 @@ const openFileWithCrossWindowCheck = async (filePath: string): Promise<void> => 
 // Open file dialog with cross-window check
 const openFileWithCrossWindowDialog = async (): Promise<void> => {
   try {
-    const selected = await open({
-      multiple: false,
-      filters: [
-        { name: 'Markdown', extensions: ['md', 'markdown'] },
-        { name: 'Wszystkie pliki', extensions: ['*'] },
-      ],
-    });
-
-    if (selected) {
-      const filePath = selected as string;
-      await openFileWithCrossWindowCheck(filePath);
-    }
+    const selected = await nativeFs.pickDocuments();
+    for (const grant of selected) await openFileWithCrossWindowCheck(grant.path);
   } catch (error) {
     console.error('[App] Error opening file dialog:', error);
+    reportDocumentOpenError(error);
   }
 };
 

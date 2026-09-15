@@ -184,6 +184,10 @@ export interface Translations {
   categoryAdvanced: string;
 
   // File dialogs
+  workspacePermissionRequired: string;
+  workspaceOpenFailed: string;
+  openPermissionRequired: string;
+  openDocumentFailed: string;
   openFile: string;
   saveFile: string;
   markdownFiles: string;

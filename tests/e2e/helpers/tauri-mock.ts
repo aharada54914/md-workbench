@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import type { WorkspaceNode } from '../../../src/services/workspaceFs';
 
 /**
  * Virtual file system state passed from the test via exposeFunction.
@@ -24,6 +25,8 @@ export async function setupTauriMocks(
   opts: {
     /** Initial file system contents */
     initialFs?: MockFs;
+    /** Tree fixtures contain data only; they never issue workspace authority. */
+    workspaceTrees?: Record<string, WorkspaceNode>;
     /** Initial file path, retained for single-file test compatibility. */
     openFilePath?: string | null;
     /** Ordered native startup queue. Takes precedence over openFilePath. */
@@ -62,6 +65,13 @@ export async function setupTauriMocks(
     calls.push({ cmd: 'read', args: path });
     if (!(path in fs)) throw new Error(`ENOENT: ${path}`);
     return fs[path];
+  });
+
+  await page.exposeFunction('__mockWorkspaceTree', (root: string): WorkspaceNode => {
+    calls.push({ cmd: 'read_tree', args: root });
+    const tree = opts.workspaceTrees?.[root];
+    if (!tree) throw new Error(`ENOENT workspace: ${root}`);
+    return tree;
   });
 
   await page.exposeFunction('__mockFsWrite', (path: string, content: string): void => {
@@ -119,6 +129,22 @@ export async function setupTauriMocks(
       const listeners = new Map<number, { event: string; handler: number }>();
       let nextListener = 1;
       const pendingOpenPaths = [...openFilePaths];
+      // Only host ingress and explicit native picker choices issue authority.
+      // Mere presence in initialFs, session storage or a read request does not.
+      const documentGrants = new Set<string>();
+      const workspaceGrants = new Set<string>();
+      (window as any).__mockWorkspaceSelection = null;
+      const insideWorkspace = (path: string) => {
+        const normalized = path.replace(/\\/g, '/');
+        if (normalized.split('/').some(part => part === '.' || part === '..')) return false;
+        return [...workspaceGrants].some(root => normalized.startsWith(root.replace(/\\/g, '/').replace(/\/+$/, '') + '/'));
+      };
+      (window as any).__mockDocumentSelection = [];
+      (window as any).__mockNativeFsCalls = [];
+      const grantDocument = (path: string) => {
+        documentGrants.add(path);
+        return { id: `document:${path}`, path, kind: 'document', read: true, write: true };
+      };
       const transferQueue = [...pendingTransfers];
       (window as any).__mockTransferAcks = [];
       (window as any).__mockTransferAckError = null;
@@ -154,6 +180,7 @@ export async function setupTauriMocks(
         if (pendingOpenPaths.length > 0) await notifyNativeOwner();
       };
       (window as any).__mockWindowCommands = [];
+      (window as any).__mockDocumentRegistrations = [];
       (window as any).__triggerWindowClose = async () => {
         for (const [id, listener] of listeners) {
           if (listener.event === 'tauri://close-requested') {
@@ -197,6 +224,33 @@ export async function setupTauriMocks(
         },
 
         async invoke(cmd: string, args: Record<string, unknown> | Uint8Array = {}, options: Record<string, unknown> = {}) {
+          if (cmd === 'native_pick_documents') {
+            (window as any).__mockNativeFsCalls.push({ cmd });
+            const selection: string[] = (window as any).__mockDocumentSelection;
+            (window as any).__mockDocumentSelection = [];
+            return selection.map(grantDocument);
+          }
+          if (cmd === 'native_pick_workspace') {
+            (window as any).__mockNativeFsCalls.push({ cmd });
+            const path: string | null = (window as any).__mockWorkspaceSelection;
+            (window as any).__mockWorkspaceSelection = null;
+            if (path === null) return null;
+            workspaceGrants.add(path);
+            return { id: `workspace:${path}`, path, kind: 'workspace', read: true, write: false };
+          }
+          if (cmd === 'read_workspace_tree') {
+            const root = (args as Record<string, unknown>).root as string;
+            (window as any).__mockNativeFsCalls.push({ cmd, root });
+            if (!workspaceGrants.has(root)) throw { code: 'permission_required', message: 'Select this folder again' };
+            return call('__mockWorkspaceTree', root);
+          }
+          if (cmd === 'native_read_path') {
+            const path = (args as Record<string, unknown>).path as string;
+            (window as any).__mockNativeFsCalls.push({ cmd, path });
+            if (!documentGrants.has(path) && !insideWorkspace(path)) throw { code: 'permission_required', message: 'Select this document again' };
+            const content = await call('__mockFsRead', path) as string;
+            return Array.from(new TextEncoder().encode(content));
+          }
           // ── fs plugin ──────────────────────────────────────────────
           if (cmd === 'plugin:fs|read_text_file') {
             const path = (args as Record<string, unknown>).path as string;
@@ -284,7 +338,11 @@ export async function setupTauriMocks(
           if (cmd.startsWith('plugin:deep-link') || cmd.startsWith('plugin:process')) return null;
 
           // ── custom Rust commands ───────────────────────────────────
-          if (cmd === 'native_get_pending_transfers') return transferQueue.filter(item => item.target_window === windowLabel);
+          if (cmd === 'native_get_pending_transfers') {
+            const pending = transferQueue.filter(item => item.target_window === windowLabel);
+            pending.forEach(item => grantDocument(item.file_path));
+            return pending;
+          }
           if (cmd === 'native_ack_tab_transfer') {
             const request = args as { id: string; success: boolean };
             (window as any).__mockTransferAcks.push({ ...request });
@@ -296,10 +354,13 @@ export async function setupTauriMocks(
           }
           if (cmd === 'get_open_file_paths') {
             (window as any).__nativeOpenDrainCalls++;
-            return nativeOwner() === windowLabel ? pendingOpenPaths.splice(0) : [];
+            const pending = nativeOwner() === windowLabel ? pendingOpenPaths.splice(0) : [];
+            pending.forEach(grantDocument);
+            return pending;
           }
           if (cmd === 'get_open_file_path') return nativeOwner() === windowLabel ? pendingOpenPaths.shift() ?? null : null;
           if (cmd === 'get_current_window_label') return windowLabel;
+          if (cmd === 'register_open_file') (window as any).__mockDocumentRegistrations.push({ ...args });
           if (cmd === 'register_open_file' || cmd === 'unregister_open_file' || cmd === 'check_file_open' || cmd === 'get_window_for_file' || cmd === 'focus_window_with_file' || cmd === 'unregister_window_files') {
             return null;
           }

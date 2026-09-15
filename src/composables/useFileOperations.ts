@@ -1,7 +1,9 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
-import { open, save } from '@tauri-apps/plugin-dialog';
+import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, rename, remove, exists } from '@tauri-apps/plugin-fs';
 import { readTextFile } from '../services/documentText';
+import { nativeFs } from '../services/nativeFs';
+import { resolveDocumentLinkPath } from '../utils/document-link-path';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { generateSlug } from '../utils/markdown-converter';
 import { serializeVisualMarkdown } from '../utils/visual-source';
@@ -23,6 +25,8 @@ export interface UseFileOperationsOptions {
   setEditorContent: (content: string) => void;
   markSaveStart?: (filePath: string) => void;
   markSaveEnd?: (filePath: string, content: string) => void;
+  /** Reports native permission/read failures without mutating tabs or falling back. */
+  onOpenError?: (error: unknown, filePath: string | null) => void;
   onFileOpened?: (filePath: string, content: string) => void;
   /** Notifies hosts of a large raw document. Opening does not activate an editor;
    *  the host can page its source until the user chooses an editing mode. */
@@ -69,6 +73,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     markSaveEnd,
     onAfterSave,
     onFileOpened,
+    onOpenError,
     onLargeFileOpened,
     onPreSaveConflict,
     onAnchorNotFound,
@@ -80,12 +85,6 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
   // External link confirmation state
   const showExternalLinkDialog = ref(false);
   const pendingExternalUrl = ref('');
-
-  // Get directory from file path
-  const getDirectoryFromPath = (filePath: string): string => {
-    const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
-    return lastSlash > 0 ? filePath.substring(0, lastSlash) : '';
-  };
 
   const extractFileName = (filePath: string): string =>
     filePath.split(/[/\\]/).pop() || DEFAULT_FILE_NAME;
@@ -104,7 +103,13 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       return;
     }
 
-    const fileContent = await readTextFile(filePath);
+    const fileContent = await nativeFs.readPathText(filePath);
+    // Another open may have completed during the native read.
+    const openedDuringRead = findTabByFilePath(filePath);
+    if (openedDuringRead) {
+      await switchToTab(openedDuringRead.id);
+      return;
+    }
     const isLarge = fileContent.length > LARGE_FILE_CHAR_THRESHOLD;
     // Keep disk source inert until an explicit edit action.
     const htmlContent = '';
@@ -125,13 +130,12 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       const newTabId = createNewTab(filePath, htmlContent, fileName);
       if (!newTabId) return;
       const newTab = tabs.value.find(t => t.id === newTabId);
-      if (newTab) {
-        newTab.originalMarkdown = fileContent;
-        newTab.largeFile = isLarge || undefined;
-        newTab.pendingMarkdown = fileContent;
-        newTab.editorMode = null;
-        newTab.readOnly = true;
-      }
+      if (!newTab) return;
+      newTab.originalMarkdown = fileContent;
+      newTab.largeFile = isLarge || undefined;
+      newTab.pendingMarkdown = fileContent;
+      newTab.editorMode = null;
+      newTab.readOnly = true;
       await switchToTab(newTabId);
     }
 
@@ -139,29 +143,26 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     onFileOpened?.(filePath, fileContent);
   };
 
-  const openFile = async (): Promise<void> => {
-    try {
-      const selected = await open({
-        multiple: false,
-        filters: [
-          { name: 'Markdown', extensions: ['md', 'markdown'] },
-          { name: 'Wszystkie pliki', extensions: ['*'] },
-        ],
-      });
-
-      if (selected) {
-        await loadFileIntoTab(selected as string);
-      }
-    } catch (error) {
-      console.error('Error opening file:', error);
-    }
+  const reportOpenError = (error: unknown, filePath: string | null): void => {
+    console.error('Error opening document:', error);
+    onOpenError?.(error, filePath);
   };
 
   const openFileFromPath = async (filePath: string): Promise<void> => {
     try {
       await loadFileIntoTab(filePath);
     } catch (error) {
-      console.error('Error opening file from path:', error);
+      reportOpenError(error, filePath);
+    }
+  };
+
+  const openFile = async (): Promise<void> => {
+    try {
+      const selected = await nativeFs.pickDocuments();
+      // A failed selection must not prevent the remaining selected files opening.
+      for (const grant of selected) await openFileFromPath(grant.path);
+    } catch (error) {
+      reportOpenError(error, null);
     }
   };
 
@@ -333,50 +334,31 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
   };
 
   const openFileInNewTab = async (relativePath: string): Promise<void> => {
+    const fullPath = resolveDocumentLinkPath(currentFile.value, relativePath);
+    const previousTab = activeTab.value;
+    const scrollTop = document.querySelector(DOM_SELECTORS.ACTIVE_EDITOR_CONTAINER)?.scrollTop;
+    const keepPreviousScroll = (): void => {
+      if (scrollTop !== undefined && tabs.value.includes(previousTab)) previousTab.scrollTop = scrollTop;
+    };
     try {
-      // Save current scroll position before navigating
-      const editorContainer = document.querySelector(DOM_SELECTORS.EDITOR_CONTAINER);
-      if (editorContainer && activeTab.value) {
-        const tabIndex = findActiveTabIndex();
-        if (tabIndex !== -1) {
-          tabs.value[tabIndex].scrollTop = editorContainer.scrollTop;
-        }
-      }
-
       isLoadingFile.value = true;
-
-      // Get current file's directory as base
-      const baseDir = currentFile.value ? getDirectoryFromPath(currentFile.value) : '';
-
-      // Resolve the relative path
-      let fullPath = relativePath;
-      if (baseDir && !relativePath.match(/^[a-zA-Z]:/)) {
-        fullPath = `${baseDir}/${relativePath}`.replace(/\\/g, '/');
-        const parts = fullPath.split('/');
-        const normalized: string[] = [];
-        for (const part of parts) {
-          if (part === '..') {
-            normalized.pop();
-          } else if (part !== '.' && part !== '') {
-            normalized.push(part);
-          }
-        }
-        fullPath = normalized.join('/');
-        if (fullPath.match(/^[a-zA-Z]\//)) {
-          fullPath = fullPath.replace(/^([a-zA-Z])\//, '$1:/');
-        }
-      }
 
       // Check if file is already open
       const existingTab = findTabByFilePath(fullPath);
       if (existingTab) {
+        keepPreviousScroll();
         await switchToTab(existingTab.id);
-        isLoadingFile.value = false;
         return;
       }
 
       // Read the file
-      const fileContent = await readTextFile(fullPath);
+      const fileContent = await nativeFs.readPathText(fullPath);
+      const openedDuringRead = findTabByFilePath(fullPath);
+      if (openedDuringRead) {
+        keepPreviousScroll();
+        await switchToTab(openedDuringRead.id);
+        return;
+      }
       const isLarge = fileContent.length > LARGE_FILE_CHAR_THRESHOLD;
       const htmlContent = '';
       const fileName = extractFileName(fullPath);
@@ -384,19 +366,19 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       // Create new tab and switch to it
       const newTabId = createNewTab(fullPath, htmlContent, fileName);
       const newTab = tabs.value.find(t => t.id === newTabId);
-      if (newTab) {
-        newTab.originalMarkdown = fileContent;
-        newTab.largeFile = isLarge || undefined;
-        newTab.pendingMarkdown = fileContent;
-        newTab.editorMode = null;
-        newTab.readOnly = true;
-      }
+      if (!newTabId || !newTab) return;
+      keepPreviousScroll();
+      newTab.originalMarkdown = fileContent;
+      newTab.largeFile = isLarge || undefined;
+      newTab.pendingMarkdown = fileContent;
+      newTab.editorMode = null;
+      newTab.readOnly = true;
       await switchToTab(newTabId);
       if (isLarge) onLargeFileOpened?.(fullPath, fileContent);
       onFileOpened?.(fullPath, fileContent);
-      isLoadingFile.value = false;
     } catch (error) {
-      console.error('Error opening file in new tab:', error);
+      reportOpenError(error, fullPath);
+    } finally {
       isLoadingFile.value = false;
     }
   };
