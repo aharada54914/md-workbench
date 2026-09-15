@@ -66,8 +66,8 @@ const IndentAwareCodeBlock = CodeBlockLowlight.extend({
 import { Placeholder } from "@tiptap/extension-placeholder";
 import { CharacterCount } from "@tiptap/extension-character-count";
 import { common, createLowlight } from "lowlight";
-import { watch, ref, nextTick, computed, watchEffect } from "vue";
-import { Extension, Node, mergeAttributes, textblockTypeInputRule } from "@tiptap/core";
+import { watch, ref, nextTick, computed, watchEffect, provide } from "vue";
+import { Extension, Node, mergeAttributes, textblockTypeInputRule, type Editor as TiptapEditor } from "@tiptap/core";
 import { useEditorZoom } from "../composables/useEditorZoom";
 import { useSettings } from "../composables/useSettings";
 import { useFootnotes } from "../composables/useFootnotes";
@@ -98,6 +98,8 @@ import { FootnoteRef, FootnoteSection } from "../extensions/FootnoteExtension";
 import { DocumentSearchExtension } from "../extensions/DocumentSearchExtension";
 import { MoveBlockExtension } from "../extensions/MoveBlockExtension";
 import { SafeHtmlBlockExtension } from "../extensions/SafeHtmlBlockExtension";
+import { sourcePreservationExtension } from '../extensions/SourcePreservationExtension';
+import { canEditVisualSource, serializeVisualMarkdown } from '../utils/visual-source';
 import type { VisualSearchMatch, VisualTextMap } from "../composables/useDocumentSearch";
 import { useI18n } from "../i18n";
 
@@ -406,6 +408,8 @@ const props = withDefaults(defineProps<{
   modelValue?: string;
   filePath?: string | null;
   editable?: boolean;
+  sourceMarkdown?: string | null;
+  documentId?: string;
 }>(), {
   editable: true,
 });
@@ -414,7 +418,20 @@ const emit = defineEmits<{
   "update:modelValue": [value: string];
   "update:hasChanges": [value: boolean];
   "linkClick": [href: string];
+  "update:sourceMarkdown": [value: string];
+  "editSource": [];
 }>();
+
+const sourceSafe = ref(props.sourceMarkdown == null);
+provide('visualEditable', computed(() => props.editable && sourceSafe.value));
+let applyingSource = false;
+let sourceGeneration = 0;
+watch([() => props.modelValue, () => props.filePath, () => props.documentId, () => props.sourceMarkdown],
+  () => { sourceGeneration++; }, { flush: 'sync' });
+function refreshSourceSafety(ed: TiptapEditor) {
+  sourceSafe.value = canEditVisualSource(ed.getHTML(), props.sourceMarkdown);
+  ed.setEditable(props.editable && sourceSafe.value, false);
+}
 
 function pickImageFile(data: DataTransfer): File | null {
   for (let i = 0; i < data.items.length; i++) {
@@ -436,11 +453,20 @@ function mimeToExtension(mime: string): string {
 }
 
 async function handlePastedImage(file: File): Promise<void> {
+  const targetEditor = editor.value;
+  const targetPath = props.filePath ?? null;
+  const generation = sourceGeneration;
+  const isCurrent = () => sourceSafe.value && targetEditor?.isEditable
+    && !targetEditor.isDestroyed && targetEditor === editor.value
+    && generation === sourceGeneration && targetPath === (props.filePath ?? null);
+  if (!isCurrent()) return;
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!isCurrent()) return;
     const ext = mimeToExtension(file.type);
     const stemHint = file.name ? file.name.replace(/\.[^.]+$/, '') : 'pasted-image';
-    const result = await importImageBytes(bytes, ext, props.filePath ?? null, stemHint);
+    const result = await importImageBytes(bytes, ext, targetPath, stemHint);
+    if (!isCurrent()) return;
     await insertImagesByPath([{ path: result.markdownPath, alt: result.altText }]);
   } catch (e) {
     console.warn('[Editor] Failed to import pasted image:', e);
@@ -449,12 +475,13 @@ async function handlePastedImage(file: File): Promise<void> {
 
 const editor = useEditor({
   content: props.modelValue || `<p>${t.value.placeholder}</p>`,
-  editable: props.editable,
+  editable: props.editable && sourceSafe.value,
   // Resolve local image paths to blob URLs when the editor is first created.
   // This is essential because: (1) the watch on modelValue doesn't fire for the
   // initial value, and (2) onUpdate doesn't fire during initial content creation.
   // Without this, images wouldn't display after code→visual switch (Editor recreated).
   onCreate: ({ editor: ed }) => {
+    refreshSourceSafety(ed);
     nextTick(() => {
       const editorEl = editorContainerRef.value?.querySelector('.ProseMirror');
       if (!editorEl) return;
@@ -474,6 +501,7 @@ const editor = useEditor({
     });
   },
   extensions: [
+    sourcePreservationExtension(() => applyingSource || (props.editable && sourceSafe.value)),
     StarterKit.configure({
       codeBlock: false,
       heading: false, // Disable default heading, use HeadingWithId instead
@@ -530,6 +558,9 @@ const editor = useEditor({
   ],
   onUpdate: ({ editor: ed }) => {
     const html = ed.getHTML();
+    if (!applyingSource && props.sourceMarkdown != null) {
+      emit('update:sourceMarkdown', serializeVisualMarkdown(html, props.sourceMarkdown));
+    }
     emit("update:modelValue", html);
     if (settingContentCount === 0) {
       emit("update:hasChanges", html !== lastSavedHtml);
@@ -570,6 +601,7 @@ const editor = useEditor({
       "data-enable-grammarly": "false",
     },
     handlePaste: (_view, event) => {
+      if (!sourceSafe.value) return true;
       const clipboardData = event.clipboardData;
       if (!clipboardData) return false;
 
@@ -616,7 +648,13 @@ watch(
   async (newValue) => {
     if (editor.value && newValue !== editor.value.getHTML()) {
       settingContentCount++;
-      editor.value.commands.setContent(newValue || "");
+      applyingSource = true;
+      try {
+        editor.value.chain().setMeta('addToHistory', false).setContent(newValue || "", { emitUpdate: false }).run();
+        refreshSourceSafety(editor.value);
+      } finally {
+        applyingSource = false;
+      }
       lastSavedHtml = editor.value.getHTML();
       await nextTick();
       // Resolve local image paths to blob URLs.
@@ -643,9 +681,9 @@ watch(
 );
 
 watch(
-  () => props.editable,
-  (editable) => {
-    editor.value?.setEditable(editable);
+  [() => props.editable, () => props.sourceMarkdown],
+  () => {
+    if (editor.value) refreshSourceSafety(editor.value);
   }
 );
 
@@ -805,7 +843,8 @@ const focusSearchMatch = (match: VisualSearchMatch) => {
 
 async function insertImagesByPath(items: { path: string; alt: string }[]) {
   const ed = editor.value;
-  if (!ed || items.length === 0) return;
+  if (!ed || ed.isDestroyed || !sourceSafe.value || items.length === 0) return;
+  const targetPath = props.filePath;
 
   for (const item of items) {
     ed.chain().focus().setImage({
@@ -819,7 +858,9 @@ async function insertImagesByPath(items: { path: string; alt: string }[]) {
     ed.commands.setTextSelection(ed.state.selection.to);
   }
 
+  const generation = sourceGeneration;
   await nextTick();
+  if (ed.isDestroyed || ed !== editor.value || targetPath !== props.filePath || generation !== sourceGeneration) return;
 
   const editorEl = editorContainerRef.value?.querySelector('.ProseMirror');
   if (!editorEl) return;
@@ -858,6 +899,10 @@ defineExpose({
     @mouseover="(e) => { footnotes.handleMouseOver(e); handleEditorMouseOver(e); }"
     @mouseout="(e) => { footnotes.handleMouseOut(e); handleEditorMouseOut(e); }"
   >
+    <div v-if="!sourceSafe" class="source-preservation-notice" role="status">
+      <span>This document contains formatting that Visual editing cannot preserve.</span>
+      <button type="button" @click="emit('editSource')">Edit source</button>
+    </div>
     <div
       ref="contentWrapperRef"
       class="editor-content-wrapper"
@@ -934,6 +979,16 @@ defineExpose({
 </template>
 
 <style>
+.source-preservation-notice {
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--warning-bg, #fff3cd);
+  color: var(--text-primary, #332b00);
+}
+.source-preservation-notice button { white-space: nowrap; }
 .editor-container {
   flex: 1;
   display: flex;

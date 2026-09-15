@@ -3,7 +3,8 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, rename, remove, exists } from '@tauri-apps/plugin-fs';
 import { readTextFile } from '../services/documentText';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
-import { htmlToMarkdown, markdownToHtml, detectLineEnding, applyLineEnding, generateSlug } from '../utils/markdown-converter';
+import { markdownToHtml, generateSlug } from '../utils/markdown-converter';
+import { serializeVisualMarkdown } from '../utils/visual-source';
 import { aiCommands } from '../services/aiCommands';
 import type { Tab } from './useTabs';
 import { EMPTY_TAB_CONTENT, DEFAULT_FILE_NAME, DOM_SELECTORS, LARGE_FILE_CHAR_THRESHOLD } from '../constants';
@@ -209,13 +210,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     // avoids the empty-content bug caused by SplitContainer being unmounted.
     const markdownOverride = unchangedSource ?? (background ? background.markdown : getMarkdownOverride?.()) ?? null;
     const html = markdownOverride === null ? (background ? background.html : getEditorHtml()) : null;
-    let markdown = markdownOverride ?? htmlToMarkdown(html!);
-
-    // Preserve original line endings if we have the original content
-    if (markdownOverride === null && tab?.originalMarkdown) {
-      const originalLineEnding = detectLineEnding(tab.originalMarkdown);
-      markdown = applyLineEnding(markdown, originalLineEnding);
-    }
+    let markdown = markdownOverride ?? serializeVisualMarkdown(html!, tab?.originalMarkdown);
 
     // Pre-save conflict check
     let mergedContentApplied = false;

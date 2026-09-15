@@ -9,9 +9,9 @@ use font_kit::source::SystemSource;
 
 mod ai;
 mod file_access;
+mod open_files;
 
-// Store the file path to be opened (from CLI args or file association)
-pub struct OpenFileState(pub Mutex<Option<String>>);
+use open_files::{OpenFileState, paths_from_args, document_window_owner};
 
 // Global registry of open files: file_path -> window_label
 pub struct OpenFilesRegistry(pub Mutex<HashMap<String, String>>);
@@ -26,14 +26,6 @@ impl OpenFilesRegistry {
 // Counter for unique window IDs
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
 
-fn is_supported_markdown_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
-        .unwrap_or(false)
-}
-
 // Payload for transferring tabs between windows
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TabTransferPayload {
@@ -42,10 +34,48 @@ pub struct TabTransferPayload {
     pub target_window: String,
 }
 
+fn native_open_owner(app: &tauri::AppHandle, closing_label: Option<&str>) -> Option<tauri::WebviewWindow> {
+    let windows = app.webview_windows();
+    let label = document_window_owner(windows.keys().map(String::as_str)
+        .filter(|label| Some(*label) != closing_label))?;
+    windows.get(label).cloned()
+}
+
+fn is_native_open_owner(window: &tauri::Window) -> bool {
+    native_open_owner(window.app_handle(), None)
+        .is_some_and(|owner| owner.label() == window.label())
+}
+
 #[tauri::command]
-fn get_open_file_path(state: tauri::State<'_, OpenFileState>) -> Option<String> {
-    let mut path = state.0.lock().unwrap();
-    path.take()
+fn get_open_file_path(window: tauri::Window, state: tauri::State<'_, OpenFileState>) -> Option<String> {
+    if is_native_open_owner(&window) { state.pop() } else { None }
+}
+
+#[tauri::command]
+fn get_open_file_paths(window: tauri::Window, state: tauri::State<'_, OpenFileState>) -> Vec<String> {
+    // One live document window owns delivery. Print/preview webviews never do.
+    if is_native_open_owner(&window) { state.drain() } else { Vec::new() }
+}
+
+fn notify_pending_open_files(app: &tauri::AppHandle, closing_label: Option<&str>) {
+    if !app.state::<OpenFileState>().has_pending() {
+        return;
+    }
+    if let Some(window) = native_open_owner(app, closing_label) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("open-files-pending", ());
+    }
+}
+
+fn queue_open_files(app: &tauri::AppHandle, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    app.state::<OpenFileState>().enqueue(paths);
+    // If no consumer is ready, its startup getter will drain the retained queue.
+    notify_pending_open_files(app, None);
 }
 
 // Register a file as open in a specific window
@@ -996,9 +1026,8 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            // When another instance is launched with arguments (file association)
-            // Send the file path to the existing window
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            // A second instance can contain several file-association paths.
             if let Some(window) = app.get_webview_window("main") {
                 // Bring window to front even if minimized (#49)
                 if window.is_minimized().unwrap_or(false) {
@@ -1008,21 +1037,16 @@ pub fn run() {
                     let _ = window.show();
                 }
                 let _ = window.set_focus();
-
-                if args.len() > 1 {
-                    let file_path = &args[1];
-                    if is_supported_markdown_path(file_path) {
-                        let _ = window.emit("open-file", file_path.clone());
-                    }
-                }
             }
+            queue_open_files(app, paths_from_args(args, Some(Path::new(&cwd))));
         }))
-        .manage(OpenFileState(Mutex::new(None)))
+        .manage(OpenFileState::default())
         .manage(OpenFilesRegistry(Mutex::new(HashMap::new())))
         .manage(PrintHtmlState(Mutex::new(None)))
         .manage(ai::process::ChildRegistry::new())
         .invoke_handler(tauri::generate_handler![
             get_open_file_path,
+            get_open_file_paths,
             create_new_window,
             get_all_windows,
             get_current_window_label,
@@ -1070,15 +1094,9 @@ pub fn run() {
         ])
         .setup(|app| {
             // Check for CLI arguments (file association on first launch)
-            let args: Vec<String> = std::env::args().collect();
-            if args.len() > 1 {
-                let file_path = &args[1];
-                if is_supported_markdown_path(file_path) {
-                    // Store the file path to be retrieved by frontend
-                    let state = app.state::<OpenFileState>();
-                    *state.0.lock().unwrap() = Some(file_path.clone());
-                }
-            }
+            let cwd = std::env::current_dir().ok();
+            let args = std::env::args_os().map(|argument| argument.into_string().unwrap_or_default());
+            queue_open_files(app.handle(), paths_from_args(args, cwd.as_deref()));
 
             #[cfg(debug_assertions)]
             {
@@ -1104,19 +1122,18 @@ pub fn run() {
                     let file_paths: Vec<String> = urls
                         .into_iter()
                         .filter_map(|url| url.to_file_path().ok())
-                        .map(|path| path.to_string_lossy().to_string())
-                        .filter(|path| is_supported_markdown_path(path))
+                        .filter(|path| open_files::is_supported_markdown_path(path))
+                        .filter_map(|path| path.into_os_string().into_string().ok())
                         .collect();
 
                     if file_paths.is_empty() {
                         return;
                     }
 
-                    // Always persist the pending file before touching the window.
+                    // Always queue every pending file before touching the window.
                     // On cold start macOS can deliver Opened before the webview is
-                    // ready, and the frontend later retrieves this value.
-                    let state = app.state::<OpenFileState>();
-                    *state.0.lock().unwrap() = file_paths.last().cloned();
+                    // ready, and the frontend later drains these requests.
+                    queue_open_files(app, file_paths);
 
                     if let Some(window) = app.get_webview_window("main") {
                         if window.is_minimized().unwrap_or(false) {
@@ -1126,16 +1143,15 @@ pub fn run() {
                             let _ = window.show();
                         }
                         let _ = window.set_focus();
-
-                        for path in file_paths {
-                            let _ = window.emit("open-file", path);
-                        }
                     }
                 }
                 RunEvent::WindowEvent { label, event: WindowEvent::Destroyed, .. } => {
                     // Webview destruction does not guarantee Vue unmount hooks.
                     // Keep remaining windows able to reopen these documents.
                     app.state::<OpenFilesRegistry>().remove_window(&label);
+                    // The old owner may have closed before handling its wakeup.
+                    // Exclude it even if Tauri has not removed its registry entry yet.
+                    notify_pending_open_files(app, Some(&label));
                 }
                 _ => {}
             }

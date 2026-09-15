@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { Editor as TiptapEditor } from '@tiptap/vue-3';
 import Editor from './Editor.vue';
-import { htmlToMarkdown, markdownToHtml } from '../utils/markdown-converter';
+import { markdownToHtml } from '../utils/markdown-converter';
 import { splitMarkdownForLazyPreview } from '../utils/lazy-markdown';
 import { extractMarkdownToc } from '../utils/markdown-toc';
 
@@ -11,12 +11,13 @@ interface EditableChunk {
   lineCount: number;
 }
 
-const props = defineProps<{ markdown: string; filePath?: string | null }>();
+const props = defineProps<{ markdown: string; filePath?: string | null; documentId?: string }>();
 const emit = defineEmits<{
   'update:markdown': [markdown: string];
   'update:hasChanges': [changed: boolean];
   'link-click': [href: string];
   'editor-focus': [editor: TiptapEditor];
+  'edit-source': [];
 }>();
 
 const scrollerRef = ref<HTMLDivElement | null>(null);
@@ -160,9 +161,9 @@ const scheduleMarkdownUpdate = () => {
   }, 400);
 };
 
-const handleChunkUpdate = (index: number, html: string) => {
-  htmlCache.set(index, html);
-  chunks.value[index].markdown = htmlToMarkdown(html).trimEnd();
+const handleChunkUpdate = (index: number, markdown: string) => {
+  if (chunks.value[index].markdown === markdown) return;
+  chunks.value[index].markdown = markdown;
   chunks.value[index].lineCount = Math.max(1, chunks.value[index].markdown.split('\n').length);
   emit('update:hasChanges', true);
   scheduleMarkdownUpdate();
@@ -218,9 +219,13 @@ onBeforeUnmount(() => {
           :ref="(instance) => setEditorRef(index, instance)"
           class="lazy-chunk-editor"
           :model-value="chunkHtml(index)"
+          :document-id="`${documentId ?? ''}:${index}`"
           :file-path="filePath"
+          :source-markdown="chunks[index].markdown"
           :editable="true"
-          @update:model-value="(html: string) => handleChunkUpdate(index, html)"
+          @update:model-value="(html: string) => htmlCache.set(index, html)"
+          @update:source-markdown="(markdown: string) => handleChunkUpdate(index, markdown)"
+          @edit-source="emit('edit-source')"
           @update:has-changes="(changed: boolean) => changed && emit('update:hasChanges', true)"
           @link-click="(href: string) => emit('link-click', href)"
         />

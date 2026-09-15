@@ -20,8 +20,13 @@ export async function setupTauriMocks(
   opts: {
     /** Initial file system contents */
     initialFs?: MockFs;
-    /** Initial file path to report from get_open_file_path (or null) */
+    /** Initial file path, retained for single-file test compatibility. */
     openFilePath?: string | null;
+    /** Ordered native startup queue. Takes precedence over openFilePath. */
+    openFilePaths?: string[];
+    /** Simulated native window and live registry for queue-owner tests. */
+    windowLabel?: string;
+    windowLabels?: string[];
     /** App version string */
     version?: string;
   } = {},
@@ -37,6 +42,10 @@ export async function setupTauriMocks(
    */
   triggerExternalChange: (filePath: string, newContent: string) => Promise<void>;
   triggerWindowClose: () => Promise<void>;
+  /** Queue native open requests and notify the frontend to drain them. */
+  triggerOpenFiles: (paths: string[]) => Promise<void>;
+  /** Remove a native window and notify the new queue owner, if any. */
+  destroyNativeWindow: (label: string) => Promise<void>;
 }> {
   const fs: MockFs = { ...(opts.initialFs ?? {}) };
   const calls: Array<{ cmd: string; args: unknown }> = [];
@@ -78,12 +87,14 @@ export async function setupTauriMocks(
   // from tests. Instead, we use a plain window variable set in addInitScript,
   // which tests can override via page.evaluate.
 
-  const openFilePath = opts.openFilePath ?? null;
+  const openFilePaths = opts.openFilePaths ?? (opts.openFilePath ? [opts.openFilePath] : []);
   const version = opts.version ?? '0.0.0-test';
+  const windowLabel = opts.windowLabel ?? 'main';
+  const windowLabels = opts.windowLabels ?? [windowLabel];
 
   // Inject mock __TAURI_INTERNALS__ before the app JS runs
   await page.addInitScript(
-    ({ openFilePath, version }: { openFilePath: string | null; version: string }) => {
+    ({ openFilePaths, version, windowLabel, windowLabels }: { openFilePaths: string[]; version: string; windowLabel: string; windowLabels: string[] }) => {
       // Keep the first-run AI popover from covering toolbar controls in tests.
       // Tests that provide their own settings before this mock keep them.
       if (!localStorage.getItem('mermark-settings')) {
@@ -99,6 +110,28 @@ export async function setupTauriMocks(
       (window as Record<string, unknown>).__mockDialogSavePath = null;
       const listeners = new Map<number, { event: string; handler: number }>();
       let nextListener = 1;
+      const pendingOpenPaths = [...openFilePaths];
+      (window as any).__nativeOpenDrainCalls = 0;
+      let liveWindowLabels = [...windowLabels];
+      const nativeOwner = () => liveWindowLabels.includes('main') ? 'main'
+        : liveWindowLabels.filter(label => /^window-[1-9]\d*$/.test(label) && Number(label.slice(7)) <= 0xffffffff)
+          .sort((a, b) => Number(a.slice(7)) - Number(b.slice(7)))[0];
+      const notifyNativeOwner = async () => {
+        if (nativeOwner() !== windowLabel) return;
+        for (const [id, listener] of listeners) {
+          if (listener.event === 'open-files-pending') {
+            await (window as any)['_cb_' + listener.handler]({ event: listener.event, id, payload: null });
+          }
+        }
+      };
+      (window as any).__triggerOpenFiles = async (paths: string[]) => {
+        pendingOpenPaths.push(...paths);
+        await notifyNativeOwner();
+      };
+      (window as any).__destroyNativeWindow = async (label: string) => {
+        liveWindowLabels = liveWindowLabels.filter(current => current !== label);
+        if (pendingOpenPaths.length > 0) await notifyNativeOwner();
+      };
       (window as any).__mockWindowCommands = [];
       (window as any).__triggerWindowClose = async () => {
         for (const [id, listener] of listeners) {
@@ -129,8 +162,8 @@ export async function setupTauriMocks(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__TAURI_INTERNALS__ = {
         metadata: {
-          currentWindow: { label: 'main' },
-          windows: [{ label: 'main' }],
+          currentWindow: { label: windowLabel },
+          windows: windowLabels.map(label => ({ label })),
         },
 
         transformCallback(callback: (data: unknown) => unknown, once: boolean) {
@@ -230,8 +263,13 @@ export async function setupTauriMocks(
           if (cmd.startsWith('plugin:deep-link') || cmd.startsWith('plugin:process')) return null;
 
           // ── custom Rust commands ───────────────────────────────────
-          if (cmd === 'get_open_file_path') return openFilePath;
-          if (cmd === 'register_open_file' || cmd === 'unregister_open_file' || cmd === 'check_file_open' || cmd === 'get_window_for_file' || cmd === 'focus_window_with_file' || cmd === 'get_current_window_label' || cmd === 'unregister_window_files') {
+          if (cmd === 'get_open_file_paths') {
+            (window as any).__nativeOpenDrainCalls++;
+            return nativeOwner() === windowLabel ? pendingOpenPaths.splice(0) : [];
+          }
+          if (cmd === 'get_open_file_path') return nativeOwner() === windowLabel ? pendingOpenPaths.shift() ?? null : null;
+          if (cmd === 'get_current_window_label') return windowLabel;
+          if (cmd === 'register_open_file' || cmd === 'unregister_open_file' || cmd === 'check_file_open' || cmd === 'get_window_for_file' || cmd === 'focus_window_with_file' || cmd === 'unregister_window_files') {
             return null;
           }
 
@@ -248,7 +286,7 @@ export async function setupTauriMocks(
         },
       };
     },
-    { openFilePath, version },
+    { openFilePaths, version, windowLabel, windowLabels },
   );
 
   const triggerExternalChange = async (filePath: string, newContent: string): Promise<void> => {
@@ -262,9 +300,13 @@ export async function setupTauriMocks(
   };
 
   return {
+    destroyNativeWindow: async (label: string) => {
+      await page.evaluate(async label => { await (window as any).__destroyNativeWindow(label); }, label);
+    },
     getFs: () => ({ ...fs }),
     getCalls: () => [...calls],
     triggerExternalChange,
+    triggerOpenFiles: paths => page.evaluate(async paths => { await (window as any).__triggerOpenFiles(paths); }, paths),
     triggerWindowClose: () => page.evaluate(async () => { await (window as any).__triggerWindowClose(); }),
   };
 }

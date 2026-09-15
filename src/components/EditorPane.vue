@@ -27,6 +27,7 @@ const emit = defineEmits<{
   updateChanges: [tabId: string, hasChanges: boolean];
   linkClick: [href: string];
   focus: [];
+  editSource: [];
 }>();
 
 const isFileDragOver = computed(() => ws.dropTargetPaneId.value === props.pane.id);
@@ -42,6 +43,15 @@ const activeTab = computed(() => {
 
 const editorContent = computed(() => activeTab.value?.content || '<p></p>');
 const editorFilePath = computed(() => activeTab.value?.filePath || null);
+const editorSource = computed(() => activeTab.value?.pendingMarkdown
+  ?? (!activeTab.value?.hasChanges ? activeTab.value?.originalMarkdown : null));
+
+const handleSourceUpdate = (markdown: string) => {
+  const tab = activeTab.value;
+  if (!tab) return;
+  tab.pendingMarkdown = markdown;
+  emit('updateChanges', tab.id, markdown !== tab.originalMarkdown);
+};
 
 const isValidDropTarget = computed(() => {
   return isDragging.value && draggedTab.value?.paneId !== props.pane.id;
@@ -55,7 +65,9 @@ const handleContentUpdate = (content: string) => {
 
 const handleChangesUpdate = (hasChanges: boolean) => {
   if (activeTab.value) {
-    emit('updateChanges', activeTab.value.id, hasChanges);
+    const tab = activeTab.value;
+    emit('updateChanges', tab.id, tab.pendingMarkdown != null
+      ? tab.pendingMarkdown !== tab.originalMarkdown : hasChanges);
   }
 };
 
@@ -137,9 +149,14 @@ defineExpose({
     <div class="editor-wrapper">
       <Editor
         v-if="!isEmpty"
+        :key="activeTab?.id"
         ref="editorRef"
         :model-value="editorContent"
+        :document-id="activeTab?.id"
         :file-path="editorFilePath"
+        :source-markdown="editorSource"
+        @update:source-markdown="handleSourceUpdate"
+        @edit-source="emit('focus'); emit('editSource')"
         @update:model-value="handleContentUpdate"
         @update:has-changes="handleChangesUpdate"
         @link-click="handleLinkClick"

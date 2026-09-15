@@ -1,6 +1,7 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
 import { readTextFile } from '../services/documentText';
-import { markdownToHtml, htmlToMarkdown } from '../utils/markdown-converter';
+import { markdownToHtml } from '../utils/markdown-converter';
+import { serializeVisualMarkdown } from '../utils/visual-source';
 import { generateDiff, type DiffLine, type DiffStats } from './useDiffPreview';
 import { useFileWatcher } from './useFileWatcher';
 import { scrollTopFromRatio } from './useScrollSync';
@@ -10,10 +11,8 @@ import type { Tab } from './useTabs';
 
 // Reading the live container (not the stale tab.scrollTop) is the whole point:
 // an external edit can fire while the user is mid-scroll.
-// ponytail: Visual view only. Code view (and split) reload doesn't refresh the
-// textarea content at all (reloadTabContent updates tab.content but nothing
-// syncs that into codeContent), so there's no rebuilt content to scroll-restore
-// there. Wire those modes here once code-view/split reload actually re-seeds.
+// This scroll restoration targets the active Visual container; Source editors
+// retain their own scroll state when setCodeMarkdown reseeds the raw buffer.
 const getActiveScrollContainer = (): HTMLElement | null =>
   document.querySelector<HTMLElement>(DOM_SELECTORS.ACTIVE_EDITOR_CONTAINER);
 
@@ -53,13 +52,12 @@ export interface UseFileReloadOptions {
   hasChanges: ComputedRef<boolean>;
   findTabByFilePathSplit: (filePath: string) => PaneTabResult | undefined;
   setEditorContent: (content: string) => void;
-  /** Reseed the code editor when a reloaded markdown-first tab is active —
-   *  those tabs have no HTML, so setEditorContent cannot carry the update. */
+  /** Reseed active Source/Split editors with the exact reloaded Markdown. */
   setCodeMarkdown?: (markdown: string) => void;
 }
 
 export function useFileReload(options: UseFileReloadOptions) {
-  const { activePaneId, currentFile, hasChanges, findTabByFilePathSplit, setEditorContent, setCodeMarkdown } = options;
+  const { activePaneId, currentFile, findTabByFilePathSplit, setEditorContent, setCodeMarkdown } = options;
 
   // Toast state
   const showToast = ref(false);
@@ -123,6 +121,7 @@ export function useFileReload(options: UseFileReloadOptions) {
     const savedRatio = container ? getScrollRatio(container) : 0;
 
     tab.content = htmlContent;
+    tab.pendingMarkdown = newContent;
     tab.originalMarkdown = newContent;
     tab.hasChanges = false;
 
@@ -146,7 +145,7 @@ export function useFileReload(options: UseFileReloadOptions) {
       showToastNotification(t.value.fileReloadedExternally(filePath), 'info');
     } else {
       // Diff shows local (current editor) → disk so the user sees their changes vs external changes.
-      const localMarkdown = htmlToMarkdown(tab.content);
+      const localMarkdown = tab.pendingMarkdown ?? serializeVisualMarkdown(tab.content, tab.originalMarkdown);
       const diffResult = generateDiff(localMarkdown, newDiskContent);
       conflictFilePath.value = filePath;
       conflictFileName.value = tab.fileName;
@@ -168,7 +167,15 @@ export function useFileReload(options: UseFileReloadOptions) {
   };
 
   const handleConflictMerge = (mergedContent: string) => {
-    reloadTabContent(conflictFilePath.value, mergedContent);
+    const filePath = conflictFilePath.value;
+    reloadTabContent(filePath, mergedContent);
+    const result = findTabByFilePathSplit(filePath);
+    if (result) {
+      // A manual merge edits the buffer; the external version is still on disk.
+      result.tab.originalMarkdown = conflictNewContent.value;
+      result.tab.hasChanges = mergedContent !== conflictNewContent.value;
+      fileWatcher.updateKnownContent(filePath, conflictNewContent.value);
+    }
     showConflictModal.value = false;
   };
 
@@ -179,7 +186,8 @@ export function useFileReload(options: UseFileReloadOptions) {
     try {
       const newContent = await readTextFile(filePath);
 
-      if (hasChanges.value) {
+      // The active tab can change while the disk read is pending.
+      if (findTabByFilePathSplit(filePath)?.tab.hasChanges) {
         handleExternalFileChange(filePath, newContent);
       } else {
         reloadTabContent(filePath, newContent);

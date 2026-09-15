@@ -190,7 +190,7 @@ export function htmlToMarkdown(
   md = md.replace(/<pre[^>]*>\s*<code[^>]*class=["']language-(\w+)["'][^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi, (_, lang, code) => {
     const decodedCode = decodeHtmlEntities(code);
     const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
-    protectedBlocks.push(`\n\`\`\`${lang}\n${decodedCode}\n\`\`\`\n`);
+    protectedBlocks.push(`\n\`\`\`${lang}\n${decodedCode}${decodedCode.endsWith('\n') ? '' : '\n'}\`\`\`\n`);
     return placeholder;
   });
 
@@ -198,7 +198,7 @@ export function htmlToMarkdown(
   md = md.replace(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi, (_, code) => {
     const decodedCode = decodeHtmlEntities(code);
     const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
-    protectedBlocks.push(`\n\`\`\`\n${decodedCode}\n\`\`\`\n`);
+    protectedBlocks.push(`\n\`\`\`\n${decodedCode}${decodedCode.endsWith('\n') ? '' : '\n'}\`\`\`\n`);
     return placeholder;
   });
 
@@ -246,12 +246,12 @@ export function htmlToMarkdown(
   md = processHtmlLists(md);
 
   // Headers
-  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>\n?/gi, (_, content) => `\n# ${convertInlineToMarkdown(content)}\n`);
-  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>\n?/gi, (_, content) => `\n## ${convertInlineToMarkdown(content)}\n`);
-  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>\n?/gi, (_, content) => `\n### ${convertInlineToMarkdown(content)}\n`);
-  md = md.replace(/<h4[^>]*>([\s\S]*?)<\/h4>\n?/gi, (_, content) => `\n#### ${convertInlineToMarkdown(content)}\n`);
-  md = md.replace(/<h5[^>]*>([\s\S]*?)<\/h5>\n?/gi, (_, content) => `\n##### ${convertInlineToMarkdown(content)}\n`);
-  md = md.replace(/<h6[^>]*>([\s\S]*?)<\/h6>\n?/gi, (_, content) => `\n###### ${convertInlineToMarkdown(content)}\n`);
+  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>\n?/gi, (_, content) => `\n# ${convertInlineToMarkdown(content)}\n\n`);
+  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>\n?/gi, (_, content) => `\n## ${convertInlineToMarkdown(content)}\n\n`);
+  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>\n?/gi, (_, content) => `\n### ${convertInlineToMarkdown(content)}\n\n`);
+  md = md.replace(/<h4[^>]*>([\s\S]*?)<\/h4>\n?/gi, (_, content) => `\n#### ${convertInlineToMarkdown(content)}\n\n`);
+  md = md.replace(/<h5[^>]*>([\s\S]*?)<\/h5>\n?/gi, (_, content) => `\n##### ${convertInlineToMarkdown(content)}\n\n`);
+  md = md.replace(/<h6[^>]*>([\s\S]*?)<\/h6>\n?/gi, (_, content) => `\n###### ${convertInlineToMarkdown(content)}\n\n`);
 
   // Blockquote
   md = md.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {

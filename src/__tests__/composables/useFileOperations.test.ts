@@ -378,12 +378,15 @@ describe('useFileOperations', () => {
   // ----------------------------------------------------------
 
   describe('checkPreSaveConflict', () => {
-    it.each([['', 'external text'], ['# original\r\n', '# original\n']])('detects exact external revision from %j', async (originalMarkdown, disk) => {
+    it.each([
+      ['', 'external text', 'md:<p>hello</p>'],
+      ['# original\r\n', '# original\n', 'md:<p>hello</p>\r\n'],
+    ])('detects exact external revision from %j', async (originalMarkdown, disk, local) => {
       mockReadTextFile.mockResolvedValue(disk);
       const onPreSaveConflict = vi.fn(async () => 'cancel' as const);
       const { options, tabs } = makeOptions({ originalMarkdown });
       await useFileOperations({ ...options, onPreSaveConflict }).saveFile();
-      expect(onPreSaveConflict).toHaveBeenCalledWith('/test/file.md', disk, 'md:<p>hello</p>');
+      expect(onPreSaveConflict).toHaveBeenCalledWith('/test/file.md', disk, local);
       expect(mockWriteTextFile).not.toHaveBeenCalled();
       expect(tabs.value[0].hasChanges).toBe(true);
     });

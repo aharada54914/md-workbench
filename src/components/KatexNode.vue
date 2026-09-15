@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { NodeViewWrapper } from "@tiptap/vue-3";
-import { ref, watch, onMounted, computed, nextTick } from "vue";
+import type { Editor } from "@tiptap/core";
+import { ref, watch, onMounted, computed, nextTick, inject } from "vue";
 import { renderMath, findMath } from '../utils/math';
 import { useI18n } from '../i18n';
 
@@ -8,6 +9,7 @@ import { useI18n } from '../i18n';
 const { t } = useI18n();
 
 const props = defineProps<{
+  editor: Editor;
   node: {
     type: { name: string };
     attrs: { formula: string; source?: string };
@@ -16,6 +18,8 @@ const props = defineProps<{
   deleteNode: () => void;
   selected: boolean;
 }>();
+
+const editable = inject('visualEditable', computed(() => props.editor.isEditable));
 
 const isBlock = computed(() => props.node.type.name === "katexBlock");
 const encodedFormula = computed(() => encodeURIComponent(props.node.attrs.formula));
@@ -33,12 +37,17 @@ const render = () => {
 };
 
 const startEdit = () => {
+  if (!editable.value || !props.editor.isEditable) return;
   editFormula.value = props.node.attrs.formula;
   isEditing.value = true;
   nextTick(() => textareaRef.value?.focus());
 };
 
 const saveEdit = () => {
+  if (!editable.value || !props.editor.isEditable) {
+    isEditing.value = false;
+    return;
+  }
   let source = props.node.attrs.source ?? '';
   const old = findMath(source)[0];
   if (old && old.formula !== old.source) {
@@ -53,6 +62,12 @@ const cancelEdit = () => {
   editFormula.value = props.node.attrs.formula;
   isEditing.value = false;
 };
+
+const deleteFormula = () => {
+  if (editable.value && props.editor.isEditable) props.deleteNode();
+};
+
+watch(editable, value => { if (!value) cancelEdit(); });
 
 const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === "Escape") cancelEdit();
@@ -78,12 +93,12 @@ onMounted(render);
   >
     <!-- View mode -->
     <template v-if="!isEditing">
-      <span v-html="renderedHtml" class="katex-render" :class="{ 'katex-error': error }" :title="error ?? t.mathEdit" tabindex="0" role="button" :aria-label="t.mathEdit" @dblclick="startEdit" @keydown.enter.prevent="startEdit"></span>
-      <span class="katex-actions">
+      <span v-html="renderedHtml" class="katex-render" :class="{ 'katex-error': error }" :title="error ?? (editable ? t.mathEdit : undefined)" :tabindex="editable ? 0 : undefined" :role="editable ? 'button' : undefined" :aria-label="editable ? t.mathEdit : undefined" @dblclick="startEdit" @keydown.enter.prevent="startEdit"></span>
+      <span v-if="editable" class="katex-actions">
         <button class="katex-btn" :title="t.mathEdit" @click="startEdit">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
         </button>
-        <button class="katex-btn danger" :title="t.mathDelete" @click="props.deleteNode">
+        <button class="katex-btn danger" :title="t.mathDelete" @click="deleteFormula">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
         </button>
       </span>

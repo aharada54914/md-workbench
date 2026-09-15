@@ -147,7 +147,7 @@ export function parseHtmlList(html: string, indent = 0, isOrdered = false, start
     textContent = textContent
       .replace(/<label[^>]*>[\s\S]*?<\/label>/gi, '')
       .replace(/<\/?div[^>]*>/gi, '')
-      .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, '$1');
+      .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, '$1\n');
 
     // Separate protected block placeholders from text content
     const segments: { type: 'text' | 'block'; content: string }[] = [];
@@ -192,7 +192,8 @@ export function parseHtmlList(html: string, indent = 0, isOrdered = false, start
 
     for (const segment of segments) {
       if (segment.type === 'text') {
-        const text = convertInlineToMarkdown(segment.content);
+        // Paragraphs inside an item must keep their line boundaries.
+        const text = convertInlineToMarkdown(segment.content).replace(/\n/g, `\n${contentIndent}`);
         if (text.trim()) {
           if (isFirstText) {
             result += `${indentStr}${marker} ${text}\n`;

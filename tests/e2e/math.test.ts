@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { setupTauriMocks } from './helpers/tauri-mock';
-import { openCodeView, openVisualView } from './helpers/code-editor';
+import { fillCodeEditor, openCodeView, openVisualView } from './helpers/code-editor';
 
 const path = '/test/math-showcase.md';
 const showcase = readFileSync('docs/math-showcase.md', 'utf8');
@@ -15,26 +15,24 @@ test('math showcase: edit, save, reopen, offline print and Marp', async ({ page,
   await expect(page.locator('.ProseMirror .math-error')).toHaveCount(0);
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: testInfo.outputPath('math-editor.png') });
-  // The editor suppresses dirty events for 300ms during initial hydration.
-  await page.waitForTimeout(400);
-
+  // This showcase has source formatting that the Visual serializer cannot
+  // reproduce. Formula controls must respect the whole-document source guard.
   const first = formulas.first();
+  await expect(page.locator('.source-preservation-notice')).toBeVisible();
   await first.locator('.katex-render').dblclick();
-  await first.getByRole('textbox').fill('E=mc^3');
-  await first.getByRole('textbox').press('Enter');
-  await expect(first).toHaveAttribute('data-formula', 'E%3Dmc%5E3');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect.poll(() => fs.getFs()[path]).toContain('$E=mc^3$');
+  await expect(first.getByRole('textbox')).toHaveCount(0);
+  await expect(first.locator('.katex-actions')).toHaveCount(0);
   await openCodeView(page);
-  await page.waitForTimeout(500); // allow the view's cursor/scroll restoration to finish
+  const edited = showcase.replace('$E=mc^2$', '$E=mc^3$');
+  expect(edited).not.toBe(showcase);
+  await fillCodeEditor(page, edited);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => fs.getFs()[path]).toBe(edited);
   await openVisualView(page);
   await expect(formulas).toHaveCount(46);
   await page.reload();
   await expect(formulas).toHaveCount(46);
   await expect(formulas.first()).toHaveAttribute('data-formula', 'E%3Dmc%5E3');
-  await formulas.first().locator('.katex-render').dblclick();
-  await formulas.first().getByRole('textbox').fill('E=mc^2');
-  await formulas.first().getByRole('textbox').press('Enter');
 
   const output = await page.evaluate(async () => {
     const serializerPath = '/src/utils/documentSerializer.ts';

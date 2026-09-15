@@ -31,7 +31,8 @@ const isInsideCodeBlock = (text: string, cursorPos: number): boolean => {
 };
 
 // Mock the markdown converter
-vi.mock('../../utils/markdown-converter', () => ({
+vi.mock('../../utils/markdown-converter', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../utils/markdown-converter')>(),
   htmlToMarkdown: (html: string) => {
     // Preserve the cursor marker in conversions
     if (html.includes(CURSOR_MARKER)) {
@@ -533,7 +534,7 @@ describe('useCodeView markdown-first API (issue #129)', () => {
     cv.codeView.value = true;
     await cv.toggleCodeView(null);
     expect(cv.codeView.value).toBe(false);
-    expect(setActiveContent).toHaveBeenLastCalledWith('<p>HTML from: # right</p>');
+    expect(setActiveContent).toHaveBeenLastCalledWith('<p>HTML from: # right</p>', '# right');
   });
 
   it('exit with forceConvertOnExit converts but does not mark changed', async () => {
@@ -541,8 +542,17 @@ describe('useCodeView markdown-first API (issue #129)', () => {
     await cv.enterCodeViewWithMarkdown('# raw');
     await cv.toggleCodeView(null);
     expect(setActiveContent).toHaveBeenCalledTimes(1);
-    expect(setActiveContent.mock.calls[0][0]).toContain('HTML from: # raw');
+    expect(setActiveContent.mock.calls[0]).toEqual(['<p>HTML from: # raw</p>', '# raw']);
     expect(markAsChanged).not.toHaveBeenCalled();
+  });
+
+  it('hands exact source bytes to the Visual cache after a Source edit', async () => {
+    const { cv, setActiveContent } = make();
+    await cv.enterCodeViewWithMarkdown('# initial');
+    const source = '\uFEFF# source\r\n\r\n:::unknown  \r\n\t\r\n';
+    cv.onCodeContentUpdate(source);
+    await cv.toggleCodeView(null);
+    expect(setActiveContent.mock.calls[0][1]).toBe(source);
   });
 
   it('exit with real edits converts and marks changed', async () => {
@@ -552,7 +562,7 @@ describe('useCodeView markdown-first API (issue #129)', () => {
     markAsChanged.mockClear();
     await cv.toggleCodeView(null);
     expect(setActiveContent).toHaveBeenCalledTimes(1);
-    expect(setActiveContent.mock.calls[0][0]).toContain('HTML from: # edited');
+    expect(setActiveContent.mock.calls[0]).toEqual(['<p>HTML from: # edited</p>', '# edited']);
     expect(markAsChanged).toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
+import { codeEditor } from './helpers/code-editor';
 
 // ============================================================
 // Test suite: Large file open (#129)
@@ -8,7 +9,7 @@ import { setupTauriMocks } from './helpers/tauri-mock';
 // converting or mounting the complete document in a single TipTap instance.
 // ============================================================
 
-const CHUNK = [
+const NON_REVERSIBLE_CHUNK = [
   '# Section header',
   '',
   'A paragraph with **bold**, *italic*, `code` and a [link](https://example.com).',
@@ -27,9 +28,15 @@ const CHUNK = [
   '',
 ].join('\n');
 
-function buildLargeDoc(minChars: number): string {
+// Ordinary list continuations round-trip. A blank line followed by four-space
+// indentation inside a list loses layout metadata in the current parser.
+const CHUNK = NON_REVERSIBLE_CHUNK.replace(
+  '    indented code candidate line 1\n    indented code candidate line 2\n\n', '',
+) + '\n';
+
+function buildLargeDoc(minChars: number, chunk = CHUNK): string {
   let doc = '';
-  while (doc.length < minChars) doc += CHUNK;
+  while (doc.length < minChars) doc += chunk;
   return doc;
 }
 
@@ -55,7 +62,7 @@ test.describe('Large file open (#129)', () => {
   });
 
   test('explicit toggle opens bounded editable lazy visual mode', async ({ page }) => {
-    await setupTauriMocks(page, {
+    const mocks = await setupTauriMocks(page, {
       initialFs: { [PATH_BIG]: BIG_MD },
       openFilePath: PATH_BIG,
     });
@@ -82,7 +89,13 @@ test.describe('Large file open (#129)', () => {
     const firstChunkEditor = page.locator('.lazy-editor-chunk[data-lazy-chunk="0"] .ProseMirror');
     await expect(firstChunkEditor).toBeEditable();
     await expect(firstChunkEditor.locator('h1').first()).toContainText('Section header');
-    await firstChunkEditor.fill('Edited in lazy visual mode');
+    await firstChunkEditor.focus();
+    await expect(firstChunkEditor).toBeFocused();
+    await firstChunkEditor.evaluate(element => {
+      const editor = (element as HTMLElement & { editor: { commands: { setTextSelection: (range: { from: number; to: number }) => void } } }).editor;
+      editor.commands.setTextSelection({ from: 1, to: 'Section header'.length + 1 });
+    });
+    await page.keyboard.insertText('Edited in lazy visual mode');
     await expect(firstChunkEditor).toContainText('Edited in lazy visual mode');
     await page.waitForTimeout(500);
 
@@ -94,6 +107,32 @@ test.describe('Large file open (#129)', () => {
     await page.keyboard.press('Control+Shift+V');
     await expect(page.locator('.lazy-editor')).toBeVisible({ timeout: 10_000 });
     await expect(page.locator('.lazy-editor-chunk[data-lazy-chunk="0"] .ProseMirror')).toContainText('Edited in lazy visual mode');
+    await page.keyboard.press('Control+s');
+    // One heading changed; every other byte, including all unmounted tail chunks, survives.
+    await expect.poll(() => mocks.getFs()[PATH_BIG]).toBe(BIG_MD.replace('# Section header', '# Edited in lazy visual mode'));
+  });
+
+
+  test('non-reversible list layout keeps exact large source and offers source editing', async ({ page }) => {
+    const source = buildLargeDoc(1_050_000, NON_REVERSIBLE_CHUNK);
+    const copy = '/test/big-copy.md';
+    const mocks = await setupTauriMocks(page, { initialFs: { [PATH_BIG]: source }, openFilePath: PATH_BIG });
+    await page.goto('/');
+    const visual = page.locator('.lazy-editor .ProseMirror').first();
+    await expect(visual).toBeVisible({ timeout: 10_000 });
+    await expect.poll(() => visual.evaluate(element => (element as HTMLElement).isContentEditable)).toBe(false);
+    await expect(page.locator('.source-preservation-notice').first()).toBeVisible();
+    await page.evaluate(copy => { (window as Record<string, unknown>).__mockDialogSavePath = copy; }, copy);
+    await page.keyboard.press('Control+Shift+s');
+    await expect.poll(() => mocks.getFs()[copy]).toBe(source);
+    await page.getByRole('button', { name: 'Edit source', exact: true }).first().click();
+    await expect(codeEditor(page)).toBeVisible();
+    await codeEditor(page).click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.insertText('Source tail edit');
+    await page.keyboard.press('Control+s');
+    await expect.poll(() => mocks.getFs()[copy]).toBe(source + 'Source tail edit');
+    expect(mocks.getFs()[PATH_BIG]).toBe(source);
   });
 
   test('switching tabs restores the large file in lazy visual mode', async ({ page }) => {
@@ -165,12 +204,7 @@ test.describe('Large file open (#129)', () => {
     expect(await page.locator('.lazy-editor .ProseMirror').count()).toBeLessThan(10);
   });
 
-  // fixme: the tauri-mock watcher bridge is broken on master — every
-  // tests/e2e/file-watcher.test.ts case fails there identically, so synthetic
-  // watch events never reach the app. The reload logic itself is covered by
-  // unit tests in src/__tests__/composables/useFileReload.test.ts
-  // ("markdown-first tabs"). Re-enable once the watcher mock is repaired.
-  test.fixme('external file change reloads lazy visual mode without full conversion', async ({ page }) => {
+  test('external file change reloads lazy visual mode without full conversion', async ({ page }) => {
     const mocks = await setupTauriMocks(page, {
       initialFs: { [PATH_BIG]: BIG_MD },
       openFilePath: PATH_BIG,

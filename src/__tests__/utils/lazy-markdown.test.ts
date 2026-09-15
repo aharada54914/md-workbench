@@ -11,6 +11,11 @@ describe('splitMarkdownForLazyPreview', () => {
     expect(Math.max(...chunks.map(chunk => chunk.markdown.length))).toBeLessThan(50 * 1024);
   });
 
+  it.each(['\n', '\r\n'])('recombines exact source with %j line endings', newline => {
+    const markdown = '\uFEFF' + ('# Heading\n\nParagraph  \n\n').repeat(5_000).replace(/\n/g, newline) + '\t';
+    expect(splitMarkdownForLazyPreview(markdown).map(chunk => chunk.markdown).join('\n')).toBe(markdown);
+  });
+
   it('never cuts through a fenced code block', () => {
     const fenced = `\`\`\`text\n${'code line\n'.repeat(10_000)}\`\`\``;
     const markdown = `# Before\n\n${fenced}\n\n# After`;

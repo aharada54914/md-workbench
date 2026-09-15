@@ -1,5 +1,5 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
-import { diffLines, diffWordsWithSpace } from 'diff';
+import { diffArrays, diffWordsWithSpace } from 'diff';
 
 export interface DiffSegment {
   value: string;
@@ -10,6 +10,8 @@ export interface DiffSegment {
 export interface DiffLine {
   type: 'added' | 'removed' | 'unchanged';
   content: string;
+  /** Exact source slice, including its line ending when present. */
+  raw: string;
   oldLineNumber: number | null;
   newLineNumber: number | null;
   /** Word-level breakdown for changed lines paired across a remove/add run. */
@@ -71,29 +73,23 @@ export function applyHunkSelections(hunks: DiffHunk[], acceptedIds: Set<number>)
   const lines: string[] = [];
   for (const hunk of hunks) {
     if (hunk.type === 'unchanged') {
-      for (const line of hunk.lines) lines.push(line.content);
+      for (const line of hunk.lines) lines.push(line.raw);
     } else if (acceptedIds.has(hunk.id)) {
       for (const line of hunk.lines) {
-        if (line.type === 'added') lines.push(line.content);
+        if (line.type === 'added') lines.push(line.raw);
       }
     } else {
       for (const line of hunk.lines) {
-        if (line.type === 'removed') lines.push(line.content);
+        if (line.type === 'removed') lines.push(line.raw);
       }
     }
   }
-  return lines.join('\n');
+  return lines.join('');
 }
 
-/**
- * Strip trailing whitespace from every line. The WYSIWYG → markdown
- * serializer can emit inconsistent trailing spaces, which made a single
- * real edit light up every following line as "changed". Comparing on
- * trimmed lines collapses those spurious whitespace-only diffs so the
- * preview shows just the lines the user actually touched.
- */
-function stripTrailingWhitespace(text: string): string {
-  return text.replace(/[ \t]+(\r?\n)/g, '$1').replace(/[ \t]+$/, '');
+/** Keep separators on their source lines so merge selections never invent bytes. */
+function sourceLines(text: string): string[] {
+  return text.match(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g) ?? [];
 }
 
 /**
@@ -118,10 +114,7 @@ function buildSegments(oldLine: string, newLine: string, which: 'removed' | 'add
 }
 
 export function generateDiff(oldText: string, newText: string): { lines: DiffLine[]; stats: DiffStats } {
-  const normalizedOld = stripTrailingWhitespace(oldText.replace(/\r\n/g, '\n'));
-  const normalizedNew = stripTrailingWhitespace(newText.replace(/\r\n/g, '\n'));
-
-  const changes = diffLines(normalizedOld, normalizedNew);
+  const changes = diffArrays(sourceLines(oldText), sourceLines(newText));
 
   const lines: DiffLine[] = [];
   let oldLine = 1;
@@ -130,17 +123,16 @@ export function generateDiff(oldText: string, newText: string): { lines: DiffLin
   let removeCount = 0;
 
   for (const change of changes) {
-    const changeLines = change.value.replace(/\n$/, '').split('\n');
-
-    for (const line of changeLines) {
+    for (const raw of change.value) {
+      const content = raw.replace(/(?:\r\n|\r|\n)$/, '');
       if (change.added) {
-        lines.push({ type: 'added', content: line, oldLineNumber: null, newLineNumber: newLine++ });
+        lines.push({ type: 'added', content, raw, oldLineNumber: null, newLineNumber: newLine++ });
         addCount++;
       } else if (change.removed) {
-        lines.push({ type: 'removed', content: line, oldLineNumber: oldLine++, newLineNumber: null });
+        lines.push({ type: 'removed', content, raw, oldLineNumber: oldLine++, newLineNumber: null });
         removeCount++;
       } else {
-        lines.push({ type: 'unchanged', content: line, oldLineNumber: oldLine++, newLineNumber: newLine++ });
+        lines.push({ type: 'unchanged', content, raw, oldLineNumber: oldLine++, newLineNumber: newLine++ });
       }
     }
   }

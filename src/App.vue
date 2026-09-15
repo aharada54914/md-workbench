@@ -8,6 +8,7 @@ import { copyFile, exists, remove } from '@tauri-apps/plugin-fs';
 import { readTextFile } from './services/documentText';
 import { open } from '@tauri-apps/plugin-dialog';
 import { htmlToMarkdown, markdownToHtml } from './utils/markdown-converter';
+import { serializeVisualMarkdown } from './utils/visual-source';
 import { inlineMarkdownImages, getDirectoryFromFilePath } from './utils/image-resolver';
 import type { Editor as TiptapEditor } from '@tiptap/vue-3';
 
@@ -240,8 +241,7 @@ const createDocument = async (kind: 'plain' | 'marp') => {
   if (splitEditorActive.value && activeTab.value) {
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     activeTab.value.content = exitSplitEditor();
-    activeTab.value.pendingMarkdown = null;
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = splitMarkdownSource.value;
   }
   if (kind === 'marp') {
     createNewTab(null, markdownToHtml(buildMarpSeed()));
@@ -278,6 +278,7 @@ const {
   setCodeMarkdown: (markdown: string) => {
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     if (codeView.value) seedCodeContent(markdown);
+    if (splitEditorActive.value) enterSplitEditorRaw('', markdown);
   },
 });
 
@@ -481,7 +482,7 @@ const getMarkdownForSave = () => {
   if (codeView.value) return codeContent.value;
   return largeFileVisualMode.value
     ? lazyMarkdownEditorRef.value?.getMarkdown() ?? activeTab.value?.pendingMarkdown ?? null
-    : null;
+    : activeTab.value?.pendingMarkdown ?? null;
 };
 const {
   isLoadingFile,
@@ -798,6 +799,8 @@ const lazyMarkdownEditorRef = ref<InstanceType<typeof LazyMarkdownPreview> | nul
 const isMarkdownFirst = (tab: { largeFile?: boolean; pendingMarkdown?: string | null } | null | undefined): boolean =>
   !!tab && tab.largeFile === true && tab.pendingMarkdown != null;
 const largeFileVisualMode = ref(false);
+// Only tabs parked before converting their Source buffer have a stale HTML cache.
+const parkedSourceTabs = new Set<string>();
 
 const {
   codeView,
@@ -808,17 +811,21 @@ const {
   enterCodeViewWithMarkdown,
   seedCodeContent,
 } = useCodeView({
-  getUnchangedMarkdown: () => activeTab.value?.hasChanges ? null : activeTab.value?.originalMarkdown ?? null,
+  getUnchangedMarkdown: () => activeTab.value?.pendingMarkdown
+    ?? (!activeTab.value?.hasChanges ? activeTab.value?.originalMarkdown ?? null : null),
+  getMarkdownReference: () => activeTab.value?.originalMarkdown ?? null,
   getActiveContent: () => activeTab.value?.content || '<p></p>',
-  setActiveContent: (content: string) => {
+  setActiveContent: (content: string, markdown: string) => {
     if (activeTab.value) {
       activeTab.value.content = content;
-      activeTab.value.pendingMarkdown = null;
+      activeTab.value.pendingMarkdown = markdown;
+      parkedSourceTabs.delete(activeTabId.value);
     }
   },
   markAsChanged: () => {
     if (activeTab.value) {
-      activeTab.value.hasChanges = true;
+      activeTab.value.pendingMarkdown = codeContent.value;
+      activeTab.value.hasChanges = codeContent.value !== activeTab.value.originalMarkdown;
     }
   },
   forceConvertOnExit: () => activeTab.value.pendingMarkdown != null,
@@ -837,6 +844,17 @@ watch(
 
 const toggleCodeView = async () => {
   isLoadingContent.value = true;
+
+  if (splitEditorActive.value) {
+    const markdown = splitMarkdownSource.value;
+    activeTab.value.content = exitSplitEditor();
+    activeTab.value.pendingMarkdown = markdown;
+    scrollSync.detach();
+    splitEditorActive.value = false;
+    await enterCodeViewWithMarkdown(markdown);
+    isLoadingContent.value = false;
+    return;
+  }
 
   if (largeFileVisualMode.value) {
     if (activeTab.value) {
@@ -877,17 +895,12 @@ const {
   markdownSource: splitMarkdownSource,
   previewHtml: splitPreviewHtml,
   onMarkdownInput: onSplitMarkdownInput,
-  syncFromVisual: syncSplitFromVisual,
   enter: enterSplitEditorRaw,
   exit: exitSplitEditor,
 } = useSplitEditor();
 
 // Proportional scroll-sync between the split code pane and the live preview.
 const scrollSync = useScrollSync();
-
-// Latest HTML emitted by the read-only preview editor. Committed back to the
-// code source only on a real in-preview edit (see onSplitPreviewChanged).
-const splitPreviewLatestHtml = ref('');
 
 // Tags splitMarkdownSource with the tab it was seeded from so the WRITE paths
 // can refuse to persist a source belonging to a different tab.
@@ -914,7 +927,6 @@ watch(activeTabId, (_newId, oldId) => {
     if (oldTab) {
       oldTab.content = markdownToHtml(splitMarkdownSource.value);
       oldTab.pendingMarkdown = splitMarkdownSource.value;
-      oldTab.hasChanges = true;
     }
   }
   enterSplitEditor(activeTab.value?.content || '<p></p>');
@@ -930,6 +942,7 @@ watch(activeTabId, (_newId, oldId) => {
   largeFileVisualMode.value = false;
   if (codeView.value && oldTab) {
     oldTab.pendingMarkdown = codeContent.value;
+    parkedSourceTabs.add(oldTab.id);
   }
 
   const tab = activeTab.value;
@@ -943,10 +956,10 @@ watch(activeTabId, (_newId, oldId) => {
     return;
   }
 
-  // A parked Source tab may be selected after another tab switched to Visual.
-  // Its cached HTML is stale: resume Source until an explicit Visual transition
-  // regenerates that cache, rather than displaying or saving the stale copy.
-  if (tab?.pendingMarkdown != null && !splitEditorActive.value) {
+  // Resume a Source buffer whose HTML cache has not been regenerated yet.
+  // Visual edits also carry pendingMarkdown, so raw presence alone cannot
+  // determine whether a tab should return to Source.
+  if (tab?.pendingMarkdown != null && parkedSourceTabs.has(tab.id) && !splitEditorActive.value) {
     seedCodeContent(tab.pendingMarkdown);
     codeView.value = true;
     return;
@@ -955,7 +968,7 @@ watch(activeTabId, (_newId, oldId) => {
   if (codeView.value) {
     seedCodeContent(tab?.pendingMarkdown
       ?? (!tab?.hasChanges ? tab?.originalMarkdown : null)
-      ?? htmlToMarkdown(tab?.content || '<p></p>'));
+      ?? serializeVisualMarkdown(tab?.content || '<p></p>', tab?.originalMarkdown));
   }
 });
 
@@ -985,8 +998,7 @@ const toggleSplitEditor = async () => {
   const html = exitSplitEditor();
   if (activeTab.value) {
     activeTab.value.content = html;
-    activeTab.value.pendingMarkdown = null;
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = splitMarkdownSource.value;
   }
   isLoadingContent.value = true;
   splitEditorActive.value = false;
@@ -997,18 +1009,18 @@ const toggleSplitEditor = async () => {
 const handleSplitMarkdownInput = (value: string) => {
   onSplitMarkdownInput(value);
   if (activeTab.value) {
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = value;
+    activeTab.value.hasChanges = value !== activeTab.value.originalMarkdown;
   }
 };
 
-// Fires only for genuine in-preview edits (Mermaid diagram apply, manual node
-// edit) — the preview's setContent push suppresses hasChanges, so this never
-// echoes a code edit. Propagates the diagram change back into the code source.
-const onSplitPreviewChanged = (changed: boolean) => {
-  if (!changed || !splitEditorActive.value) return;
-  syncSplitFromVisual(splitPreviewLatestHtml.value);
+// The editor emits exact Markdown before its HTML/dirty events. Updating only
+// the source avoids echoing a visual edit through the preview's debounce.
+const handleSplitVisualSource = (markdown: string) => {
+  splitMarkdownSource.value = markdown;
   if (activeTab.value) {
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = markdown;
+    activeTab.value.hasChanges = markdown !== activeTab.value.originalMarkdown;
   }
 };
 
@@ -1033,6 +1045,12 @@ const focusCodeMatch = (match: DocumentSearchMatch) => {
   if (!editor) return;
   editor.focus();
   editor.setSelection(match.start, match.end);
+};
+
+const editInSource = async () => {
+  if (!splitEditorActive.value && !codeView.value) await toggleCodeView();
+  await nextTick();
+  getCodeEditor()?.focus();
 };
 
 const getSelectedTextForDocumentSearch = (): string => {
@@ -1118,13 +1136,11 @@ const switchToTabFromCodeView = async (tabId: string) => {
   await switchToTab(tabId);
 };
 
-// Close tab while in code view: exit code view first to commit edits if closing the active tab
-const closeTabFromCodeView = async (tabId: string) => {
-  // Markdown-first: no exit-toggle (it would force a multi-MB conversion);
-  // hasChanges is already set by onCodeContentUpdate and save flows through
-  // getMarkdownOverride, so the unsaved-changes dialog keeps working.
-  if (codeView.value && tabId === activeTabId.value && !isMarkdownFirst(activeTab.value)) {
-    await toggleCodeView();
+// Closing a Source tab commits its raw buffer without a mode transition.
+// A pending cursor animation must not decide which mode the next tab opens in.
+const closeTabFromCodeView = (tabId: string) => {
+  if (codeView.value && tabId === activeTabId.value && activeTab.value) {
+    activeTab.value.pendingMarkdown = codeContent.value;
   }
   handleCloseTabRequest(activePaneId.value, tabId);
 };
@@ -1137,8 +1153,7 @@ const switchToTabFromSplitEditor = async (tabId: string) => {
 const closeTabFromSplitEditor = async (tabId: string) => {
   if (tabId === activeTabId.value && activeTab.value && splitSourceTabId.value === tabId) {
     activeTab.value.content = exitSplitEditor();
-    activeTab.value.pendingMarkdown = null;
-    activeTab.value.hasChanges = true;
+    activeTab.value.pendingMarkdown = splitMarkdownSource.value;
   }
   handleCloseTabRequest(activePaneId.value, tabId);
   await nextTick();
@@ -1624,8 +1639,15 @@ const triggerAutoSave = () => {
 // Source and split editors do not emit SplitContainer's visual dirty event.
 watch([codeContent, splitMarkdownSource, () => activeTab.value.pendingMarkdown], () => triggerAutoSave());
 
-const handleChangesUpdated = (_paneId: string, _tabId: string, hasChanges: boolean) => {
-  if (hasChanges) {
+const handleChangesUpdated = (_paneId: string, tabId: string, hasChanges: boolean) => {
+  const tab = splitState.value.panes.flatMap(pane => pane.tabs).find(tab => tab.id === tabId);
+  if (tab) {
+    const raw = tabId === activeTabId.value && codeView.value ? codeContent.value
+      : tabId === splitSourceTabId.value && splitEditorActive.value ? splitMarkdownSource.value
+      : tab.pendingMarkdown;
+    if (raw != null) tab.hasChanges = raw !== tab.originalMarkdown;
+  }
+  if (tab?.hasChanges ?? hasChanges) {
     triggerAutoSave();
   }
 };
@@ -1911,35 +1933,36 @@ onMounted(async () => {
   const urlFilePath = getFilePathFromUrl();
   let hasExplicitFile = false;
 
-  // Register before reading pending open state so macOS open-document events
-  // cannot race past the frontend during cold start.
+  // Register first, then drain. Native events only announce pending work; the
+  // host queue owns paths until a getter consumes them. Serialize drains and
+  // opens so bursts cannot race the active tab or open one entry twice.
+  let pendingOpens = Promise.resolve();
+  const drainNativeOpens = (): Promise<void> => {
+    pendingOpens = pendingOpens.then(async () => {
+      const paths = await invoke<string[]>('get_open_file_paths');
+      if (paths.length > 0) hasExplicitFile = true;
+      for (const path of paths) {
+        try {
+          await openFileWithCrossWindowCheck(path);
+        } catch (error) {
+          console.error('[App] Could not open native file:', path, error);
+        }
+      }
+    }).catch(error => console.error('[App] Could not drain native open queue:', error));
+    return pendingOpens;
+  };
   try {
-    unlistenOpenFile = await listen<string>('open-file', (event) => {
-      hasExplicitFile = true;
-      openFileWithCrossWindowCheck(event.payload);
-    });
+    unlistenOpenFile = await listen('open-files-pending', () => { void drainNativeOpens(); });
   } catch (error) {
     console.error('Błąd nasłuchiwania zdarzeń:', error);
   }
 
   if (urlFilePath) {
     hasExplicitFile = true;
-    console.log('[App] Opening file from URL:', urlFilePath);
     await nextTick();
-    setTimeout(() => openFileWithCrossWindowCheck(urlFilePath), 100);
-  } else {
-    // Check for file path from CLI arguments (for main window / file associations)
-    try {
-      const filePath = await invoke<string | null>('get_open_file_path');
-      if (filePath) {
-        hasExplicitFile = true;
-        await nextTick();
-        setTimeout(() => openFileWithCrossWindowCheck(filePath), 100);
-      }
-    } catch (error) {
-      console.error('Błąd pobierania ścieżki pliku:', error);
-    }
+    await openFileWithCrossWindowCheck(urlFilePath);
   }
+  await drainNativeOpens();
 
   // Restore previous session if no explicit file was provided
   if (!hasExplicitFile) {
@@ -2210,17 +2233,21 @@ onUnmounted(async () => {
         <div class="split-editor-panes">
           <div class="split-editor-code">
             <CodeEditor
+              ref="codeEditorComponentRef"
               :model-value="splitMarkdownSource"
               @update:model-value="handleSplitMarkdownInput"
             />
           </div>
           <div class="split-editor-preview">
             <Editor
+              :key="activeTab?.id"
               :model-value="splitPreviewHtml"
+              :document-id="activeTab?.id"
+              :source-markdown="splitMarkdownSource"
               :file-path="activeTab?.filePath || null"
               :editable="false"
-              @update:model-value="(h: string) => (splitPreviewLatestHtml = h)"
-              @update:has-changes="onSplitPreviewChanged"
+              @update:source-markdown="handleSplitVisualSource"
+              @edit-source="editInSource"
             />
           </div>
         </div>
@@ -2243,11 +2270,14 @@ onUnmounted(async () => {
             @close="showTocPanel = false"
           />
           <LazyMarkdownPreview
+            :key="activeTab?.id"
             ref="lazyMarkdownEditorRef"
+            :document-id="activeTab?.id"
             :markdown="activeTab?.pendingMarkdown ?? ''"
             :file-path="activeTab?.filePath ?? null"
             @update:markdown="(markdown: string) => { if (activeTab) activeTab.pendingMarkdown = markdown; }"
             @update:has-changes="(changed: boolean) => { if (changed && activeTab) activeTab.hasChanges = true; }"
+            @edit-source="editInSource"
             @editor-focus="(editor: TiptapEditor) => (editorInstance = editor)"
             @link-click="handleLinkClick"
           />
@@ -2272,6 +2302,7 @@ onUnmounted(async () => {
           @link-click="handleLinkClick"
           @close-tab-request="handleCloseTabRequest"
           @changes-updated="handleChangesUpdated"
+          @edit-source="editInSource"
           @toggle-pin="handleTabTogglePin"
           @close-others="handleTabCloseOthers"
           @close-all="handleTabCloseAll"

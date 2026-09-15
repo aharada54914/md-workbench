@@ -44,6 +44,7 @@ const emit = defineEmits<{
   closeAll: [paneId: string];
   closeAllButPinned: [paneId: string];
   closeSaved: [paneId: string];
+  editSource: [];
 }>();
 
 const leftPaneRef = ref<InstanceType<typeof EditorPane> | null>(null);
@@ -312,6 +313,7 @@ defineExpose({
       @update-changes="(tabId, hasChanges) => handleChangesUpdate('left', tabId, hasChanges)"
       @link-click="handleLinkClick"
       @focus="handlePaneFocus('left')"
+      @edit-source="emit('editSource')"
     />
 
     <!-- Divider (only visible in split mode) -->
@@ -342,6 +344,7 @@ defineExpose({
       @update-changes="(tabId, hasChanges) => handleChangesUpdate('right', tabId, hasChanges)"
       @link-click="handleLinkClick"
       @focus="handlePaneFocus('right')"
+      @edit-source="emit('editSource')"
     />
   </div>
 </template>

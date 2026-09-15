@@ -1,5 +1,6 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
 import { htmlToMarkdown, markdownToHtml } from '../utils/markdown-converter';
+import { serializeVisualMarkdown } from '../utils/visual-source';
 
 const PREVIEW_DEBOUNCE_MS = 200;
 
@@ -55,7 +56,7 @@ export function useSplitEditor(): UseSplitEditorReturn {
   // signal, so the code→visual push echo never reaches here. debouncedSource /
   // previewHtml are left untouched so the preview isn't re-rendered mid-edit.
   const syncFromVisual = (html: string): void => {
-    const md = htmlToMarkdown(html);
+    const md = serializeVisualMarkdown(html, markdownSource.value);
     if (md === markdownSource.value) return;
     markdownSource.value = md;
   };
