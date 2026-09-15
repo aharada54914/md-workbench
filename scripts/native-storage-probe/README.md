@@ -125,6 +125,10 @@ Primary API contracts used by this slice:
 
 - [GetTokenInformation](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation)
   supplies process-user, elevation and enabled-privilege information with TOKEN_QUERY.
+  The fixed-size [TOKEN_ELEVATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_elevation)
+  query uses a typed buffer and validates its returned length; it does not rely
+  on a NULL-buffer sizing call returning ERROR_INSUFFICIENT_BUFFER. Windows tests
+  exercise each token-information class separately without logging identity data.
 - [CreateDirectoryW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)
   and [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
   accept creation security attributes; existing objects are never repaired by them.

@@ -99,6 +99,26 @@ fn sid_string(sid: PSID) -> io::Result<String> {
     Err(error(Reason::BoundedBufferExceeded))
 }
 
+fn token_elevated(token: &OwnedHandle) -> io::Result<bool> {
+    // This class has a fixed-size result. A NULL/zero sizing query can fail
+    // with ERROR_BAD_LENGTH rather than the variable-size helper's error.
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut returned = 0;
+    check(unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    })?;
+    if returned as usize != size_of::<TOKEN_ELEVATION>() {
+        return Err(error(Reason::InvalidSecurityDescriptor));
+    }
+    Ok(elevation.TokenIsElevated != 0)
+}
+
 pub fn identity() -> io::Result<Identity> {
     let mut raw = ptr::null_mut();
     check(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) })?;
@@ -108,9 +128,7 @@ pub fn identity() -> io::Result<Identity> {
     if sid == "S-1-5-18" {
         return Err(error(Reason::UnsupportedTokenIdentity));
     }
-    let elevation = token_buffer(&token, TokenElevation)?;
-    let elevated =
-        unsafe { (*(elevation.as_ptr().cast::<TOKEN_ELEVATION>())).TokenIsElevated != 0 };
+    let elevated = token_elevated(&token)?;
     let privileges = token_buffer(&token, TokenPrivileges)?;
     let p = privileges.as_ptr().cast::<TOKEN_PRIVILEGES>();
     let count = unsafe { (*p).PrivilegeCount } as usize;
@@ -251,6 +269,36 @@ fn validate_descriptor(sd: &Local, user: &str, directory: bool) -> io::Result<()
 mod tests {
     use super::*;
     const USER: &str = "S-1-5-21-1-2-3-1001";
+
+    fn process_token() -> OwnedHandle {
+        let mut raw = ptr::null_mut();
+        check(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) }).unwrap();
+        unsafe { OwnedHandle::from_raw_handle(raw) }
+    }
+    // Exercise each actual query separately so a sizing failure is attributed
+    // without logging the user's SID or privilege list. These are API tests;
+    // the probe's identity() still independently rejects unsafe identities.
+    #[test]
+    fn current_process_user_query() {
+        let token = process_token();
+        let user = token_buffer(&token, TokenUser).unwrap();
+        let sid = unsafe { (*(user.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+        assert!(!sid_string(sid).unwrap().is_empty());
+    }
+    #[test]
+    fn current_process_privileges_query() {
+        let token = process_token();
+        let privileges = token_buffer(&token, TokenPrivileges).unwrap();
+        assert!(
+            privileges.len() * size_of::<usize>()
+                >= std::mem::offset_of!(TOKEN_PRIVILEGES, Privileges)
+        );
+    }
+    #[test]
+    fn current_process_elevation_uses_fixed_size_buffer() {
+        token_elevated(&process_token()).unwrap();
+    }
+
     #[test]
     fn null_fixture_is_protected_before_file_creation() {
         let sd = protected_null_descriptor(USER).unwrap();
