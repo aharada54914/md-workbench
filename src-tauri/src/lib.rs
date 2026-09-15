@@ -9,6 +9,7 @@ use font_kit::source::SystemSource;
 
 mod ai;
 mod file_access;
+mod native_files;
 mod open_files;
 
 use open_files::{OpenFileState, paths_from_args, document_window_owner};
@@ -25,6 +26,8 @@ impl OpenFilesRegistry {
 
 // Counter for unique window IDs
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
+// Serialize queue mutation with retained native authority acknowledgement.
+static NATIVE_OPEN_DELIVERY_LOCK: Mutex<()> = Mutex::new(());
 
 // Payload for transferring tabs between windows
 #[derive(Clone, Serialize, Deserialize)]
@@ -37,7 +40,7 @@ pub struct TabTransferPayload {
 fn native_open_owner(app: &tauri::AppHandle, closing_label: Option<&str>) -> Option<tauri::WebviewWindow> {
     let windows = app.webview_windows();
     let label = document_window_owner(windows.keys().map(String::as_str)
-        .filter(|label| Some(*label) != closing_label))?;
+        .filter(|label| Some(*label) != closing_label && native_files::is_registered(app, label)))?;
     windows.get(label).cloned()
 }
 
@@ -48,13 +51,29 @@ fn is_native_open_owner(window: &tauri::Window) -> bool {
 
 #[tauri::command]
 fn get_open_file_path(window: tauri::Window, state: tauri::State<'_, OpenFileState>) -> Option<String> {
-    if is_native_open_owner(&window) { state.pop() } else { None }
+    let _delivery = NATIVE_OPEN_DELIVERY_LOCK.lock().ok()?;
+    if !is_native_open_owner(&window)
+        || native_files::distribute_pending(window.app_handle(), window.label()).is_err() {
+        return None;
+    }
+    let path = state.pop();
+    if let Some(path) = &path {
+        native_files::acknowledge_delivery(window.app_handle(), std::slice::from_ref(path));
+    }
+    path
 }
 
 #[tauri::command]
 fn get_open_file_paths(window: tauri::Window, state: tauri::State<'_, OpenFileState>) -> Vec<String> {
+    let Ok(_delivery) = NATIVE_OPEN_DELIVERY_LOCK.lock() else { return Vec::new(); };
     // One live document window owns delivery. Print/preview webviews never do.
-    if is_native_open_owner(&window) { state.drain() } else { Vec::new() }
+    if !is_native_open_owner(&window)
+        || native_files::distribute_pending(window.app_handle(), window.label()).is_err() {
+        return Vec::new();
+    }
+    let paths = state.drain();
+    native_files::acknowledge_delivery(window.app_handle(), &paths);
+    paths
 }
 
 fn notify_pending_open_files(app: &tauri::AppHandle, closing_label: Option<&str>) {
@@ -62,6 +81,7 @@ fn notify_pending_open_files(app: &tauri::AppHandle, closing_label: Option<&str>
         return;
     }
     if let Some(window) = native_open_owner(app, closing_label) {
+        if native_files::distribute_pending(app, window.label()).is_err() { return; }
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -73,7 +93,15 @@ fn queue_open_files(app: &tauri::AppHandle, paths: Vec<String>) {
     if paths.is_empty() {
         return;
     }
+    let Ok(delivery) = NATIVE_OPEN_DELIVERY_LOCK.lock() else { return; };
+    let errors = native_files::capture_os_open(app, &paths);
     app.state::<OpenFileState>().enqueue(paths);
+    if !errors.is_empty() {
+        if let Some(window) = native_open_owner(app, None) {
+            let _ = window.emit("native-file-errors", errors);
+        }
+    }
+    drop(delivery);
     // If no consumer is ready, its startup getter will drain the retained queue.
     notify_pending_open_files(app, None);
 }
@@ -149,7 +177,7 @@ async fn focus_window_with_file(
 }
 
 // Dedicated window that renders the print-ready document for native printing.
-const PRINT_WINDOW_LABEL: &str = "window-print";
+const PRINT_WINDOW_LABEL: &str = "print-preview";
 // Custom URI scheme that serves the print-ready HTML from memory.
 const PRINT_SCHEME: &str = "mermarkprint";
 
@@ -911,6 +939,8 @@ async fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> 
     .build()
     .map_err(|e| e.to_string())?;
 
+    native_files::register_editor(&app, &window_label)?;
+    notify_pending_open_files(&app, None);
     window.set_focus().map_err(|e| e.to_string())?;
 
     Ok(window_label)
@@ -1041,10 +1071,25 @@ pub fn run() {
             queue_open_files(app, paths_from_args(args, Some(Path::new(&cwd))));
         }))
         .manage(OpenFileState::default())
+        .manage(native_files::NativeFiles::default())
         .manage(OpenFilesRegistry(Mutex::new(HashMap::new())))
         .manage(PrintHtmlState(Mutex::new(None)))
         .manage(ai::process::ChildRegistry::new())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(move |invoke| {
+            let webview = invoke.message.webview_ref();
+            if !native_files::allows_custom_ipc(webview.app_handle(), webview.label(), webview.window().label()) {
+                invoke.resolver.reject(serde_json::json!({
+                    "code": "permission_required", "message": "Editor window required"
+                }));
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            native_files::native_get_grant,
+            native_files::native_read_grant,
+            native_files::native_pick_documents,
+            native_files::native_pick_save_destination,
+            native_files::native_pick_workspace,
+            native_files::native_pick_resource,
             get_open_file_path,
             get_open_file_paths,
             create_new_window,
@@ -1091,8 +1136,13 @@ pub fn run() {
             ai_send,
             ai_cancel,
             ai_image_save
-        ])
+            ];
+            handler(invoke)
+        })
         .setup(|app| {
+            if app.get_webview_window("main").is_some() {
+                native_files::register_editor(app.handle(), "main")?;
+            }
             // Check for CLI arguments (file association on first launch)
             let cwd = std::env::current_dir().ok();
             let args = std::env::args_os().map(|argument| argument.into_string().unwrap_or_default());
@@ -1145,7 +1195,11 @@ pub fn run() {
                         let _ = window.set_focus();
                     }
                 }
+                RunEvent::WindowEvent { label, event: WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }), .. } => {
+                    native_files::native_drop(app, &label, &paths);
+                }
                 RunEvent::WindowEvent { label, event: WindowEvent::Destroyed, .. } => {
+                    native_files::revoke_editor(app, &label);
                     // Webview destruction does not guarantee Vue unmount hooks.
                     // Keep remaining windows able to reopen these documents.
                     app.state::<OpenFilesRegistry>().remove_window(&label);

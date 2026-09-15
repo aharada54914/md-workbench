@@ -1,7 +1,8 @@
 # Filesystem broker: host API contract
 
-Implemented stage 1, 2026-09-15. This module is not yet connected to application
-commands. Existing filesystem permissions and commands remain unchanged; T04 is
+Implemented stages 1–2, 2026-09-15: the host core and native authority ingress.
+Purpose-specific pickers, native open/drop custody and owned-grant reads are wired.
+Existing broad filesystem permissions and legacy I/O commands still remain; T04 is
 not complete until the migration in [the plan](FILESYSTEM_BROKER_PLAN.md) is done.
 
 ## Authority and lifecycle
@@ -17,6 +18,7 @@ or native events; never accept the caller label from renderer arguments.
 | `register_window(window)` | Host calls after creating `main` or a `window-N` editor. Unknown and print/preview labels are rejected. |
 | `grant_file_from_native_selection(window, path, kind, rights)` | Native picker/OS-open path only. Grants exactly one Document, Resource or Export file. Only Export may initially be missing. |
 | `grant_directory_from_native_selection(window, path, kind, rights)` | Native picker/drop only; an explicitly selected Workspace or Resource directory. |
+| `capture_native_file(path, kind, rights)` / `attach_native_file(window, held)` | Host-only opaque custody pins a native selection before an editor exists and can attach it to the eventual owner without reopening its path. |
 | `transfer(source, target, id, rights)` | Source must own the grant; target must be registered; rights can only decrease. Creates a new target UUID and shares the retained anchor. |
 | `revoke(window, id)` / `revoke_window(window)` | Remove a grant or the window and all its grants. A reused window label does not revive previous UUIDs. |
 | `describe(window, id)` | Returns owned grant metadata. `selected_path` is for display/routing only; never reopen it with ambient filesystem APIs. |
@@ -33,7 +35,9 @@ to structured frontend errors rather than interpreting an OS error string.
 Exact-file operations use an empty relative path. Directory operations use clean
 UTF-8 slash-separated paths such as `images/chart.png`. A relative path cannot
 contain `.`/`..`, empty segments, backslashes, absolute/UNC/device prefixes, ADS
-colons, control characters, Windows reserved basenames or trailing dots/spaces.
+colons, control characters, Windows reserved basenames (including COM/LPT with superscript ¹, ², ³) or trailing
+dots/spaces. These device aliases follow the
+[Microsoft filename rules](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file).
 The portable naming policy deliberately rejects names that are unsafe on another
 supported platform. Native selections must be absolute. A canonical UNC selection
 is permitted only from the native authority source; operation input cannot choose
@@ -73,9 +77,9 @@ reused because its canonicalized `PathBuf` is later reopened by ambient APIs.
 
 ## Remaining integration and operations
 
-- Connect trusted native open/save/workspace/resource pickers, CLI, OS-open and
-  drag/drop events before granting. A recent/localStorage path, Markdown reference,
-  tab URL or renderer-supplied access map must never call a native-selection API.
+- Migrate frontend callers to the stage 2 native APIs below. A recent/localStorage
+  path, Markdown reference, tab URL or renderer-supplied access map must never call
+  a native-selection API. Existing renderer dialogs are not broker authority.
 - Restore authority only from a validated native private record or ask for a new
   selection. Transfer rights before target frontend reads and revoke the source
   after a successful close acknowledgement.
@@ -99,7 +103,69 @@ bounded reads and a concurrent Unix parent/symlink swap with outside-file checks
 Windows adds a real junction test; its symlink tests require an elevated runner or
 Developer Mode and intentionally fail if fixtures cannot be created.
 
-The 11 applicable tests passed locally on macOS; the full native suite passed
-212 tests with zero failures. Windows and Linux execution and
-packaged native IPC/UX acceptance remain required; their results are not inferred
-from the macOS run. No coverage percentage was measured.
+Native Windows/Linux execution and packaged native IPC/UX acceptance remain
+required; their results are not inferred from a macOS run. No coverage percentage
+was measured.
+
+## Stage 2 command and event contract
+
+The host registers the actual main/editor window it creates and revokes it on
+native destruction. Picker callbacks capture a generation token; closing/reusing
+a label cannot apply a stale result. No renderer command registers a window or
+accepts a caller label. Nonblocking native dialogs are parented to the caller.
+Cancellation creates no grants; a failed multi-selection rolls back its new grants.
+All application custom IPC additionally requires the actual webview label to equal
+its host-registered editor window label. Print, unknown, unregistered and child
+webviews are denied before command dispatch. The print label is `print-preview`,
+outside the editor capability patterns `main` and `window-*`; its HTML is served
+by the existing memory-backed custom protocol without custom IPC.
+
+`NativeGrant = { id: string, path: string, kind: "document" | "workspace" |
+"resource" | "export", read: boolean, write: boolean }`. `path` is metadata only.
+
+| Command arguments | Result | Authority |
+| --- | --- | --- |
+| `native_pick_documents()` | `NativeGrant[]`, cancel `[]` | Selected exact files, Document READ_WRITE. |
+| `native_pick_save_destination()` | `NativeGrant` or `null` | Selected exact destination, Export WRITE; no file is created. |
+| `native_pick_workspace()` | `NativeGrant` or `null` | Selected directory, Workspace READ_WRITE. |
+| `native_pick_resource()` | `NativeGrant` or `null` | Selected exact file, Resource READ. |
+| `native_get_grant({path})` | `NativeGrant` or `null` | Existing caller-owned metadata lookup only; no disk I/O or new grant. |
+| `native_read_grant({id, relative, limit})` | `number[]` | Reads bytes through the owned grant on a blocking worker; `relative: ""` for an exact file, limit at most 67108864. |
+
+Commands reject `{code, message}`. Branch on `code`, one of
+`permission_required`, `invalid_path`, `invalid_grant_kind`,
+`unsupported_platform`, `file_too_large`, `native_state_unavailable`,
+`dialog_unavailable`, `filesystem_error`. `message` is diagnostic text.
+There is no create/overwrite/rename/delete IPC in this stage.
+
+CLI, second instance and macOS Opened capture Document READ_WRITE anchors in a
+host-only pending map. The existing ordered queue and getters remain compatible.
+Before notifying/draining, the host attaches pending anchors to the registered
+queue owner. Getter delivery releases pending custody; the owner's grant remains.
+Queue capture/enqueue and drain/acknowledgement are serialized. If the owner closes
+before delivery, its grants are revoked and the retained anchor can be attached to
+the next registered editor. There is no path recanonicalization during reassignment.
+A malformed/missing native request remains in the legacy queue for existing error
+UI but receives no grant. Once a getter returns, later window closure does not
+requeue those acknowledged files; frontend acknowledgement is future work.
+
+Native drops grant only to their actual registered window: directories become
+Workspace READ_WRITE, Markdown files Document READ_WRITE, other files Resource
+READ. The host emits `native-file-grants` with `NativeGrant[]` after completing the
+grant operation and `native-file-errors` with `{path,error}[]` for failures. OS-open
+errors use the same error event when a live owner exists. The legacy Tauri drop
+event is not a guarantee that grant creation finished; migrated callers should
+use the host grant event, or query after queue delivery. Errors without a live
+owner remain represented by the legacy queued request rather than a replayable
+error event.
+
+`create_new_window({filePath})` never grants its renderer-provided URL path. Recent,
+workspace restoration and tab transfer still need explicit broker integration;
+old access-map and plugin-FS behavior must not be used as authorization evidence.
+
+Native state tests cover lookup isolation, cancellation/batch failure, stale
+callbacks, fixed picker rights, pending reassignment, re-selection after a prior
+resource grant, DTO/error serialization, and a real Unix parent-symlink swap.
+The macOS full native suite passed 222 tests with zero failures.
+Actual native picker interaction, drop ordering and closed-window behavior still
+require packaged tests on each supported OS.

@@ -16,7 +16,7 @@ it. This covers initial CLI arguments, a second instance's arguments, and macOS
 `get_open_file_paths` atomically drains an ordered `string[]` only for the
 current owner. The owner comes from Tauri's live webview registry: `main` has
 priority; otherwise the lowest positive numeric `window-N` label wins. Only the
-exact labels created by the backend qualify. Print (`window-print`), preview,
+exact labels created by the backend qualify. Print (`print-preview`), preview,
 unknown labels, and windows absent from the registry cannot consume requests.
 A blank or unsaved document window remains eligible; the file-to-window registry
 is not an owner requirement.

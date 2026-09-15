@@ -12,6 +12,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
+#[path = "file_access_policy.rs"]
+mod policy;
+use policy::{supported_platform, validate_native_selection, validate_relative};
+
 pub(crate) const MAX_IO_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -58,6 +62,13 @@ impl Rights {
         read: true,
         write: true,
     };
+
+    pub(crate) fn can_read(self) -> bool {
+        self.read
+    }
+    pub(crate) fn can_write(self) -> bool {
+        self.write
+    }
 
     fn contains(self, other: Self) -> bool {
         (!other.read || self.read) && (!other.write || self.write)
@@ -109,6 +120,16 @@ struct Anchor {
     file_name: Option<OsString>,
 }
 
+/// Host-only custody for a native request awaiting a live editor.
+/// It pins the original selection across window revocation; never serialize it.
+#[derive(Clone)]
+pub(crate) struct HeldGrant {
+    selected_path: PathBuf,
+    kind: GrantKind,
+    rights: Rights,
+    anchor: Arc<Anchor>,
+}
+
 struct Grant {
     info: GrantInfo,
     anchor: Arc<Anchor>,
@@ -126,13 +147,7 @@ impl FileAccess {
     /// Call only when the host creates a normal editor window. Print and other
     /// preview labels cannot be registered even by an accidental caller.
     pub(crate) fn register_window(&mut self, window: &str) -> Result<(), AccessError> {
-        let editor = window == "main"
-            || window.strip_prefix("window-").is_some_and(|suffix| {
-                !suffix.is_empty()
-                    && suffix.bytes().all(|b| b.is_ascii_digit())
-                    && suffix.parse::<u32>().is_ok_and(|id| id > 0)
-            });
-        if !editor {
+        if crate::open_files::document_window_number(window).is_none() {
             return Err(AccessError::Denied);
         }
         self.windows.insert(window.to_owned());
@@ -159,6 +174,16 @@ impl FileAccess {
         rights: Rights,
     ) -> Result<GrantInfo, AccessError> {
         self.require_window(window)?;
+        let held = Self::capture_native_file(path, kind, rights)?;
+        self.attach_native_file(window, &held)
+    }
+
+    /// Capture only a native OS/dialog ingress, including before any editor exists.
+    pub(crate) fn capture_native_file(
+        path: &Path,
+        kind: GrantKind,
+        rights: Rights,
+    ) -> Result<HeldGrant, AccessError> {
         supported_platform()?;
         if kind == GrantKind::Workspace {
             return Err(AccessError::InvalidKind);
@@ -188,15 +213,28 @@ impl FileAccess {
             Ok(_) => return Err(AccessError::InvalidPath),
             Err(error) => return Err(error.into()),
         }
-        self.insert(
-            window,
-            selected,
+        Ok(HeldGrant {
+            selected_path: selected,
             kind,
             rights,
-            Arc::new(Anchor {
+            anchor: Arc::new(Anchor {
                 directory,
                 file_name: Some(name),
             }),
+        })
+    }
+
+    pub(crate) fn attach_native_file(
+        &mut self,
+        window: &str,
+        held: &HeldGrant,
+    ) -> Result<GrantInfo, AccessError> {
+        self.insert(
+            window,
+            held.selected_path.clone(),
+            held.kind,
+            held.rights,
+            held.anchor.clone(),
         )
     }
 
@@ -352,87 +390,6 @@ impl FileAccess {
         );
         Ok(info)
     }
-}
-
-fn supported_platform() -> Result<(), AccessError> {
-    if cfg!(any(
-        target_os = "windows",
-        target_os = "macos",
-        target_os = "linux"
-    )) {
-        Ok(())
-    } else {
-        Err(AccessError::UnsupportedPlatform)
-    }
-}
-
-fn validate_native_selection(path: &Path) -> Result<(), AccessError> {
-    if !path.is_absolute() {
-        return Err(AccessError::InvalidPath);
-    }
-    // Prefixes are accepted only from a trusted native selection, never from
-    // relative operation input. Block device namespaces and ADS nonetheless.
-    for component in path.components() {
-        match component {
-            Component::ParentDir => return Err(AccessError::InvalidPath),
-            Component::Normal(name) => {
-                validate_name(name.to_str().ok_or(AccessError::InvalidPath)?)?
-            }
-            #[cfg(windows)]
-            Component::Prefix(prefix)
-                if !matches!(
-                    prefix.kind(),
-                    std::path::Prefix::Disk(_)
-                        | std::path::Prefix::VerbatimDisk(_)
-                        | std::path::Prefix::UNC(_, _)
-                        | std::path::Prefix::VerbatimUNC(_, _)
-                ) =>
-            {
-                return Err(AccessError::InvalidPath)
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn validate_name(name: &str) -> Result<(), AccessError> {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.ends_with(['.', ' '])
-        || name.chars().any(|c| {
-            c.is_control() || matches!(c, ':' | '\\' | '/' | '<' | '>' | '"' | '|' | '?' | '*')
-        })
-    {
-        return Err(AccessError::InvalidPath);
-    }
-    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
-    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ["COM", "LPT"].iter().any(|prefix| {
-            stem.strip_prefix(prefix).is_some_and(|tail| {
-                matches!(tail, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-            })
-        })
-    {
-        return Err(AccessError::InvalidPath);
-    }
-    Ok(())
-}
-
-fn validate_relative(path: &Path) -> Result<(), AccessError> {
-    let raw = path.to_str().ok_or(AccessError::InvalidPath)?;
-    // Check the raw string too: Path::components normalizes embedded `.`.
-    for name in raw.split('/') {
-        validate_name(name)?;
-    }
-    if path
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return Err(AccessError::InvalidPath);
-    }
-    Ok(())
 }
 
 /// Resolve each directory component with nofollow before using the final
