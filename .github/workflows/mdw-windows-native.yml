@@ -7,6 +7,7 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'scripts/benchmark/windows_native.mjs'
+      - 'scripts/benchmark/native_authority.mjs'
       - 'scripts/benchmark/windows_ui.ps1'
       - 'scripts/benchmark/native_memory.py'
       - 'scripts/benchmark/windows_glyphs.py'

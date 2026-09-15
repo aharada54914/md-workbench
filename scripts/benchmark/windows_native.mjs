@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import sharp from 'sharp';
 import os from 'node:os';
 import { summarizeNative } from './native_summary.mjs';
+import { exerciseNativeAuthority } from './native_authority.mjs';
 
 if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') {
   throw new Error('Restricted to disposable GitHub-hosted Windows runners');
@@ -204,6 +205,14 @@ try {
     currentTrial = null;
     await verifyInputs();
     await writeFile(join(out, 'native-results.json'), JSON.stringify(report, null, 2));
+  }
+  if (appName === 'MD-Workbench') {
+    // Keep authority/window exercises out of the measured process lifecycle.
+    const unselectedPath = join(out, 'unselected-private.md');
+    await writeFile(unselectedPath, 'Never selected by OS ingress or a picker.\n', { flag: 'wx' });
+    report.native_authority = await exerciseNativeAuthority(browser, fixtures[0], unselectedPath);
+    await writeFile(join(out, 'native-authority.json'), JSON.stringify(report.native_authority, null, 2));
+    await verifyInputs();
   }
   await browser.close();
   await killOwned(child.pid);
