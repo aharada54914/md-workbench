@@ -8,6 +8,9 @@ on:
       - 'pnpm-lock.yaml'
       - 'scripts/benchmark/windows_native.mjs'
       - 'scripts/benchmark/native_authority.mjs'
+      - 'scripts/benchmark/native_open_queue.mjs'
+      - 'scripts/benchmark/native_open_queue.test.mjs'
+      - 'scripts/benchmark/windows_queue_state.ps1'
       - 'scripts/benchmark/native_preview_boundary.mjs'
       - 'scripts/benchmark/windows_ui.ps1'
       - 'scripts/benchmark/native_memory.py'
@@ -35,7 +38,7 @@ jobs:
           node-version: '22.16.0'
       - run: npm install --global pnpm@11.3.0 --ignore-scripts
       - run: pnpm install --frozen-lockfile
-      - run: node --test scripts/benchmark/native_summary.test.mjs
+      - run: node --test scripts/benchmark/native_summary.test.mjs scripts/benchmark/native_open_queue.test.mjs
       - run: python -m pip install -r scripts/benchmark/requirements.txt
       - run: python -m unittest discover -s scripts/benchmark -p test_windows_glyphs.py
       - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
