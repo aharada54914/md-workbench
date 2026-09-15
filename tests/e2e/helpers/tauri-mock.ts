@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import type { NativeDrop } from '../../../src/services/nativeFs';
 import type { WorkspaceNode } from '../../../src/services/workspaceFs';
 
 /**
@@ -36,6 +37,8 @@ export async function setupTauriMocks(
     windowLabels?: string[];
     /** Native transfer requests created before the target has a listener. */
     pendingTransfers?: MockTabTransfer[];
+    /** Completed host selections queued before listener startup. */
+    pendingDrops?: NativeDrop[];
     /** App version string */
     version?: string;
   } = {},
@@ -54,6 +57,8 @@ export async function setupTauriMocks(
   /** Queue native open requests and notify the frontend to drain them. */
   triggerOpenFiles: (paths: string[]) => Promise<void>;
   triggerTabTransfers: (transfers: MockTabTransfer[]) => Promise<void>;
+  triggerNativeDrops: (drops: NativeDrop[]) => Promise<void>;
+  triggerRendererEvent: (event: string, payload: unknown) => Promise<void>;
   /** Remove a native window and notify the new queue owner, if any. */
   destroyNativeWindow: (label: string) => Promise<void>;
 }> {
@@ -107,12 +112,13 @@ export async function setupTauriMocks(
   const openFilePaths = opts.openFilePaths ?? (opts.openFilePath ? [opts.openFilePath] : []);
   const version = opts.version ?? '0.0.0-test';
   const pendingTransfers = opts.pendingTransfers ?? [];
+  const pendingDrops = opts.pendingDrops ?? [];
   const windowLabel = opts.windowLabel ?? 'main';
   const windowLabels = opts.windowLabels ?? [windowLabel];
 
   // Inject mock __TAURI_INTERNALS__ before the app JS runs
   await page.addInitScript(
-    ({ openFilePaths, version, windowLabel, windowLabels, pendingTransfers }: { openFilePaths: string[]; version: string; windowLabel: string; windowLabels: string[]; pendingTransfers: MockTabTransfer[] }) => {
+    ({ openFilePaths, version, windowLabel, windowLabels, pendingTransfers, pendingDrops }: { openFilePaths: string[]; version: string; windowLabel: string; windowLabels: string[]; pendingTransfers: MockTabTransfer[]; pendingDrops: NativeDrop[] }) => {
       // Keep the first-run AI popover from covering toolbar controls in tests.
       // Tests that provide their own settings before this mock keep them.
       if (!localStorage.getItem('mermark-settings')) {
@@ -143,7 +149,31 @@ export async function setupTauriMocks(
       (window as any).__mockNativeFsCalls = [];
       const grantDocument = (path: string) => {
         documentGrants.add(path);
+        dropGrantIds.set(path, `document:${path}`);
         return { id: `document:${path}`, path, kind: 'document', read: true, write: true };
+      };
+      const dropQueue: NativeDrop[] = [];
+      const dropGrantIds = new Map<string, string>();
+      const queueDrops = (drops: NativeDrop[]) => {
+        for (const drop of drops) {
+          for (const grant of drop.grants) {
+            dropGrantIds.set(grant.path, grant.id);
+            if (grant.kind === 'document') documentGrants.add(grant.path);
+            if (grant.kind === 'workspace') workspaceGrants.add(grant.path);
+          }
+          dropQueue.push(drop);
+        }
+      };
+      queueDrops(pendingDrops);
+      (window as any).__triggerRendererEvent = async (event: string, payload: unknown) => {
+        for (const [id, listener] of listeners) {
+          if (listener.event === event) await (window as any)['_cb_' + listener.handler]({ event, id, payload });
+        }
+      };
+      (window as any).__triggerNativeDrops = async (drops: NativeDrop[]) => {
+        queueDrops(drops);
+        // The event is deliberately untrusted; only the queue supplies grants.
+        await (window as any).__triggerRendererEvent('native-drops-pending', { paths: ['/forged.md'] });
       };
       const transferQueue = [...pendingTransfers];
       (window as any).__mockTransferAcks = [];
@@ -192,6 +222,8 @@ export async function setupTauriMocks(
       // Watcher callback registry: path -> Tauri callback id
       // Filled when plugin:fs|watch is invoked (see invoke handler below).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let nextWatchResource = 1;
+      const watchResources = new Map<number, string[]>();
       (window as any).__watchCallbacks = {} as Record<string, { id: number; index: number }>;
 
       // Trigger a synthetic watcher event for a path (called from test via page.evaluate).
@@ -224,6 +256,7 @@ export async function setupTauriMocks(
         },
 
         async invoke(cmd: string, args: Record<string, unknown> | Uint8Array = {}, options: Record<string, unknown> = {}) {
+          if (cmd === 'native_take_drops') return dropQueue.splice(0);
           if (cmd === 'native_pick_documents') {
             (window as any).__mockNativeFsCalls.push({ cmd });
             const selection: string[] = (window as any).__mockDocumentSelection;
@@ -236,17 +269,22 @@ export async function setupTauriMocks(
             (window as any).__mockWorkspaceSelection = null;
             if (path === null) return null;
             workspaceGrants.add(path);
+            dropGrantIds.set(path, `workspace:${path}`);
             return { id: `workspace:${path}`, path, kind: 'workspace', read: true, write: false };
           }
           if (cmd === 'read_workspace_tree') {
             const root = (args as Record<string, unknown>).root as string;
             (window as any).__mockNativeFsCalls.push({ cmd, root });
+            const expected = (args as Record<string, unknown>).expectedGrantId;
+            if (expected !== undefined && dropGrantIds.get(root) !== expected) throw { code: 'permission_required' };
             if (!workspaceGrants.has(root)) throw { code: 'permission_required', message: 'Select this folder again' };
             return call('__mockWorkspaceTree', root);
           }
           if (cmd === 'native_read_path') {
             const path = (args as Record<string, unknown>).path as string;
             (window as any).__mockNativeFsCalls.push({ cmd, path });
+            const expected = (args as Record<string, unknown>).expectedGrantId;
+            if (expected !== undefined && dropGrantIds.get(path) !== expected) throw { code: 'permission_required' };
             if (!documentGrants.has(path) && !insideWorkspace(path)) throw { code: 'permission_required', message: 'Select this document again' };
             const content = await call('__mockFsRead', path) as string;
             return Array.from(new TextEncoder().encode(content));
@@ -285,7 +323,15 @@ export async function setupTauriMocks(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             for (const p of paths) (window as any).__watchCallbacks[p] = { id: cbId, index: 0 };
             await call('__mockFsWatch');
-            return 1;
+            const resource = nextWatchResource++;
+            watchResources.set(resource, paths);
+            return resource;
+          }
+          if (cmd === 'plugin:resources|close') {
+            const resource = (args as { rid: number }).rid;
+            for (const path of watchResources.get(resource) ?? []) delete (window as any).__watchCallbacks[path];
+            watchResources.delete(resource);
+            return undefined;
           }
           if (cmd === 'plugin:fs|unwatch') {
             return call('__mockFsWatch');
@@ -297,6 +343,9 @@ export async function setupTauriMocks(
           }
           if (cmd === 'plugin:dialog|save') {
             // Read the mutable path variable (overridable from tests via page.evaluate)
+            if ((window as any).__mockDeferSaveDialog) {
+              return new Promise(resolve => { (window as any).__resolveSaveDialog = resolve; });
+            }
             return (window as Record<string, unknown>).__mockDialogSavePath ?? null;
           }
 
@@ -378,7 +427,7 @@ export async function setupTauriMocks(
         },
       };
     },
-    { openFilePaths, version, windowLabel, windowLabels, pendingTransfers },
+    { openFilePaths, version, windowLabel, windowLabels, pendingTransfers, pendingDrops },
   );
 
   const triggerExternalChange = async (filePath: string, newContent: string): Promise<void> => {
@@ -398,6 +447,8 @@ export async function setupTauriMocks(
     getFs: () => ({ ...fs }),
     getCalls: () => [...calls],
     triggerExternalChange,
+    triggerNativeDrops: drops => page.evaluate(async drops => { await (window as any).__triggerNativeDrops(drops); }, drops),
+    triggerRendererEvent: (event, payload) => page.evaluate(async ({ event, payload }) => { await (window as any).__triggerRendererEvent(event, payload); }, { event, payload }),
     triggerTabTransfers: transfers => page.evaluate(async items => { await (window as any).__triggerTabTransfers(items); }, transfers),
     triggerOpenFiles: paths => page.evaluate(async paths => { await (window as any).__triggerOpenFiles(paths); }, paths),
     triggerWindowClose: () => page.evaluate(async () => { await (window as any).__triggerWindowClose(); }),

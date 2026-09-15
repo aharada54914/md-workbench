@@ -234,15 +234,14 @@ A malformed/missing native request remains in the legacy queue for existing erro
 UI but receives no grant. Once a getter returns, later window closure does not
 requeue those acknowledged files; frontend acknowledgement is future work.
 
-Native drops grant only to their actual registered window: directories become
-Workspace READ_WRITE, Markdown files Document READ_WRITE, other files Resource
-READ. The host emits `native-file-grants` with `NativeGrant[]` after completing the
-grant operation and `native-file-errors` with `{path,error}[]` for failures. OS-open
-errors use the same error event when a live owner exists. The legacy Tauri drop
-event is not a guarantee that grant creation finished; migrated callers should
-use the host grant event, or query after queue delivery. Errors without a live
-owner remain represented by the legacy queued request rather than a replayable
-error event.
+Native drops grant only to their actual registered window and enqueue bounded,
+ordered batches before emitting the payloadless `native-drops-pending` wakeup.
+Consumers drain `native_take_drops()` and preserve each returned grant UUID through
+the subsequent read. Renderer drag events cannot create authority. See
+[Native drop delivery](NATIVE_DROP.md) for classification, queue bounds, partial
+errors, reselection and lifecycle rules. OS-open errors still use
+`native-file-errors` when a live owner exists; errors without a live owner remain
+represented by the legacy queued request rather than a replayable error event.
 
 ## Window registry and transfer boundary
 

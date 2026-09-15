@@ -262,9 +262,13 @@ const findVisualTargetAt = (x: number, y: number) => {
   const idx = panes.indexOf(paneEl);
   const targetRef = idx === 0 ? leftPaneRef.value : rightPaneRef.value;
   if (!targetRef?.editor) return null;
+  const editor = targetRef.editor;
+  const filePath = targetRef.getFilePath?.() ?? null;
 
   return {
-    filePath: targetRef.getFilePath?.() ?? null,
+    filePath,
+    isCurrent: () => (idx === 0 ? leftPaneRef.value : rightPaneRef.value) === targetRef
+      && targetRef.editor === editor && (targetRef.getFilePath?.() ?? null) === filePath,
     insertImages: (items: { path: string; alt: string }[]) =>
       targetRef.insertImagesByPath?.(items),
   };

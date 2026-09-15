@@ -43,6 +43,7 @@ fn tree(state: &NativeState, label: &str, root: &str) -> Result<WorkspaceNode, S
         WORKSPACE_TREE_MAX_DEPTH,
         WORKSPACE_TREE_MAX_ENTRIES,
         WORKSPACE_TREE_MAX_OUTPUT_BYTES,
+        None,
     )
 }
 fn names(node: &WorkspaceNode) -> Vec<&str> {
@@ -156,7 +157,8 @@ fn total_scan_budget_counts_filtered_entries_across_directories() {
                 &fixture.root(),
                 50,
                 4,
-                WORKSPACE_TREE_MAX_OUTPUT_BYTES
+                WORKSPACE_TREE_MAX_OUTPUT_BYTES,
+                None
             )
             .unwrap_err(),
         "file_too_large"
@@ -169,6 +171,7 @@ fn total_scan_budget_counts_filtered_entries_across_directories() {
             50,
             5,
             WORKSPACE_TREE_MAX_OUTPUT_BYTES,
+            None,
         )
         .unwrap();
     assert_eq!(names(&complete), vec!["nested", "doc.md"]);
@@ -200,6 +203,7 @@ fn directory_depth_limit_rejects_instead_of_silently_truncating() {
             WORKSPACE_TREE_MAX_DEPTH + 1,
             100,
             WORKSPACE_TREE_MAX_OUTPUT_BYTES,
+            None,
         )
         .unwrap();
     let mut leaf = &complete;
@@ -232,7 +236,8 @@ fn queued_tree_denies_destroyed_and_reused_window_generations() {
                 &fixture.root(),
                 50,
                 100,
-                WORKSPACE_TREE_MAX_OUTPUT_BYTES
+                WORKSPACE_TREE_MAX_OUTPUT_BYTES,
+                None
             )
             .unwrap_err(),
         "permission_required"
@@ -277,7 +282,8 @@ fn symlinks_and_unsafe_names_are_omitted_but_count_toward_budget() {
                 &fixture.root(),
                 50,
                 2,
-                WORKSPACE_TREE_MAX_OUTPUT_BYTES
+                WORKSPACE_TREE_MAX_OUTPUT_BYTES,
+                None
             )
             .unwrap_err(),
         "file_too_large"
@@ -310,7 +316,8 @@ fn windows_tree_omits_junctions_and_accepts_existing_separator_alias() {
                 &fixture.root(),
                 50,
                 1,
-                WORKSPACE_TREE_MAX_OUTPUT_BYTES
+                WORKSPACE_TREE_MAX_OUTPUT_BYTES,
+                None
             )
             .unwrap_err(),
         "file_too_large"
@@ -362,13 +369,13 @@ fn output_budget_includes_root_and_each_document_before_returning_a_tree() {
     let root_name = Path::new(&root).file_name().unwrap().to_str().unwrap();
     let root_cost = node_output_cost(root_name.len(), root.len()).unwrap();
     let empty = state
-        .workspace_tree("main", generation, &root, 50, 100, root_cost)
+        .workspace_tree("main", generation, &root, 50, 100, root_cost, None)
         .unwrap();
     assert!(names(&empty).is_empty());
     assert!(serde_json::to_vec(&empty).unwrap().len() <= root_cost);
     assert_eq!(
         state
-            .workspace_tree("main", generation, &root, 50, 100, root_cost - 1)
+            .workspace_tree("main", generation, &root, 50, 100, root_cost - 1, None)
             .unwrap_err(),
         "file_too_large"
     );
@@ -379,14 +386,14 @@ fn output_budget_includes_root_and_each_document_before_returning_a_tree() {
     let file_cost = node_output_cost(filename.len(), file.to_str().unwrap().len()).unwrap();
     let total = root_cost + file_cost;
     let complete = state
-        .workspace_tree("main", generation, &root, 50, 100, total)
+        .workspace_tree("main", generation, &root, 50, 100, total, None)
         .unwrap();
     assert_eq!(names(&complete), vec![filename]);
     assert!(serde_json::to_vec(&complete).unwrap().len() <= total);
     for insufficient in [0, root_cost, total - 1] {
         assert_eq!(
             state
-                .workspace_tree("main", generation, &root, 50, 100, insufficient)
+                .workspace_tree("main", generation, &root, 50, 100, insufficient, None)
                 .unwrap_err(),
             "file_too_large"
         );

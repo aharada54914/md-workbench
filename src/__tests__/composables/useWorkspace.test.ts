@@ -73,6 +73,96 @@ describe('useWorkspace', () => {
       expect(ws.activeWorkspace.value?.rootPath).toBe('/x');
     });
 
+    it('validates the exact dropped alias and grant even when already cached', async () => {
+      const ws = useWorkspace();
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/x'));
+      const entry = await ws.openWorkspace('/x');
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/x/'));
+      expect((await ws.openWorkspace('/x/', 'drop-id')).id).toBe(entry.id);
+      expect(invokeMock).toHaveBeenLastCalledWith('read_workspace_tree', {
+        root: '/x/', expectedGrantId: 'drop-id',
+      });
+      expect(ws.openWorkspaces.value).toHaveLength(1);
+    });
+
+    it('preserves cached tree and active selection when dropped authority is rejected', async () => {
+      const ws = useWorkspace();
+      const previous = makeFolderNode('/x');
+      invokeMock.mockResolvedValueOnce(previous);
+      const entry = await ws.openWorkspace('/x');
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/y'));
+      const active = await ws.openWorkspace('/y');
+      invokeMock.mockRejectedValueOnce({ code: 'permission_required', message: 'changed grant' });
+      await expect(ws.openWorkspace('/x', 'old-id')).rejects.toThrow();
+      expect(ws.treesById.value[entry.id]).toEqual(previous);
+      expect(ws.activeWorkspaceId.value).toBe(active.id);
+      expect(ws.openWorkspaces.value).toHaveLength(2);
+    });
+
+    it('does no I/O or state changes for an already stale open', async () => {
+      const ws = useWorkspace();
+      ws.lastOpenError.value = 'previous';
+      await expect(ws.openWorkspace('/x', 'id', () => false)).rejects.toMatchObject({ name: 'AbortError' });
+      expect(invokeMock).not.toHaveBeenCalled();
+      expect(ws.openWorkspaces.value).toEqual([]);
+      expect(ws.lastOpenError.value).toBe('previous');
+    });
+
+    it.each([false, true])('discards a late tree without adopting state (cached=%s)', async (cached) => {
+      const ws = useWorkspace();
+      let entryId: string | undefined;
+      const old = makeFolderNode('/x');
+      if (cached) {
+        invokeMock.mockResolvedValueOnce(old);
+        entryId = (await ws.openWorkspace('/x')).id;
+      }
+      const beforeOpen = [...ws.openWorkspaces.value];
+      const beforeRecents = [...ws.recentWorkspaces.value];
+      const beforeExpanded = new Set(ws.expandedFolders.value);
+      ws.lastOpenError.value = 'previous';
+      let complete!: (node: WorkspaceNode) => void;
+      invokeMock.mockImplementationOnce(() => new Promise<WorkspaceNode>((resolve) => { complete = resolve; }));
+      let current = true;
+      const pending = ws.openWorkspace('/x', 'id', () => current);
+      current = false;
+      complete({ ...old, children: [makeFolderNode('/x/new')] });
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(ws.openWorkspaces.value).toEqual(beforeOpen);
+      expect(ws.recentWorkspaces.value).toEqual(beforeRecents);
+      expect(ws.expandedFolders.value).toEqual(beforeExpanded);
+      expect(ws.lastOpenError.value).toBe('previous');
+      if (entryId) expect(ws.treesById.value[entryId]).toEqual(old);
+    });
+
+    it('suppresses a late read failure after the session stops', async () => {
+      const ws = useWorkspace();
+      ws.lastOpenError.value = 'previous';
+      let fail!: (error: unknown) => void;
+      invokeMock.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+      let current = true;
+      const pending = ws.openWorkspace('/x', 'id', () => current);
+      current = false;
+      fail({ code: 'permission_required' });
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(ws.lastOpenError.value).toBe('previous');
+      expect(ws.openWorkspaces.value).toEqual([]);
+    });
+
+    it('does not restore or activate a cached workspace closed while validating a drop', async () => {
+      const ws = useWorkspace();
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/x'));
+      const entry = await ws.openWorkspace('/x');
+      let complete!: (node: WorkspaceNode) => void;
+      invokeMock.mockImplementationOnce(() => new Promise<WorkspaceNode>((resolve) => { complete = resolve; }));
+      const pending = ws.openWorkspace('/x', 'id');
+      ws.closeWorkspaceById(entry.id);
+      complete(makeFolderNode('/x'));
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(ws.treesById.value[entry.id]).toBeUndefined();
+      expect(ws.openWorkspaces.value).toEqual([]);
+      expect(ws.activeWorkspaceId.value).toBeNull();
+    });
+
     it('caps open workspaces at OPEN_WORKSPACES_LIMIT (drops oldest non-active)', async () => {
       const ws = useWorkspace();
       invokeMock.mockResolvedValue(makeFolderNode('any'));
@@ -160,6 +250,62 @@ describe('useWorkspace', () => {
       expect(invokeMock).toHaveBeenCalledWith('read_workspace_tree', { root: '/a' });
       // b still around
       expect(ws.openWorkspaces.value.map((w) => w.id)).toContain(b.id);
+    });
+  });
+
+  describe('refreshAll with a drop session', () => {
+    it.each(['success', 'failure'])('discards a stale %s and does not start later roots', async (outcome) => {
+      const ws = useWorkspace();
+      const previous = makeFolderNode('/a');
+      invokeMock.mockResolvedValueOnce(previous);
+      const a = await ws.openWorkspace('/a');
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/b'));
+      await ws.openWorkspace('/b');
+      ws.lastOpenError.value = 'previous error';
+      const expanded = new Set(ws.expandedFolders.value);
+      invokeMock.mockClear();
+      let complete!: (node: WorkspaceNode) => void;
+      let fail!: (error: Error) => void;
+      invokeMock.mockImplementationOnce(() => new Promise<WorkspaceNode>((resolve, reject) => {
+        complete = resolve;
+        fail = reject;
+      }));
+      let current = true;
+      const pending = ws.refreshAll(() => current);
+      expect(invokeMock).toHaveBeenCalledExactlyOnceWith('read_workspace_tree', { root: '/a' });
+      current = false;
+      if (outcome === 'success') complete({ ...previous, children: [makeFolderNode('/a/new')] });
+      else fail(new Error('late failure'));
+      await pending;
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(ws.treesById.value[a.id]).toEqual(previous);
+      expect(ws.expandedFolders.value).toEqual(expanded);
+      expect(ws.lastOpenError.value).toBe('previous error');
+      expect(ws.isLoading.value).toBe(false);
+    });
+
+    it('does no reads when the drop session already stopped', async () => {
+      const ws = useWorkspace();
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/a'));
+      await ws.openWorkspace('/a');
+      invokeMock.mockClear();
+      await ws.refreshAll(() => false);
+      expect(invokeMock).not.toHaveBeenCalled();
+    });
+
+    it('refreshes all roots while the drop session stays current', async () => {
+      const ws = useWorkspace();
+      for (const root of ['/a', '/b']) {
+        invokeMock.mockResolvedValueOnce(makeFolderNode(root));
+        await ws.openWorkspace(root);
+      }
+      invokeMock.mockClear();
+      invokeMock.mockImplementation(async (_cmd, args) => ({ ...makeFolderNode(args.root), name: 'updated' }));
+      await ws.refreshAll(() => true);
+      expect(invokeMock.mock.calls).toEqual([
+        ['read_workspace_tree', { root: '/a' }], ['read_workspace_tree', { root: '/b' }],
+      ]);
+      for (const entry of ws.openWorkspaces.value) expect(ws.treesById.value[entry.id]?.name).toBe('updated');
     });
   });
 
@@ -380,7 +526,7 @@ describe('useWorkspace', () => {
       expect(picked).toBe('/picked');
       expect(ws.activeWorkspace.value?.rootPath).toBe('/picked');
       expect(invokeMock.mock.calls).toEqual([
-        ['native_pick_workspace'], ['read_workspace_tree', { root: '/picked' }],
+        ['native_pick_workspace'], ['read_workspace_tree', { root: '/picked', expectedGrantId: 'native-workspace' }],
       ]);
     });
 

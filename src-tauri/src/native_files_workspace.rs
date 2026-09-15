@@ -130,7 +130,7 @@ impl TreeReader<'_> {
     }
 }
 impl NativeState {
-    fn workspace_tree(
+    pub(super) fn workspace_tree(
         &self,
         label: &str,
         generation: Uuid,
@@ -138,11 +138,13 @@ impl NativeState {
         max_depth: usize,
         max_entries: usize,
         output_budget: usize,
+        expected_grant_id: Option<&str>,
     ) -> Result<WorkspaceNode, String> {
         if self.generation(label)? != generation {
             return Err("permission_required".into());
         }
-        let (grant, relative) = self.resolve_owned_path(label, root, true)?;
+        let (grant, relative) =
+            self.resolve_expected_owned_path(label, root, true, expected_grant_id)?;
         TreeReader {
             access: &self.access,
             owner: label,
@@ -159,6 +161,7 @@ impl NativeState {
 pub(crate) async fn read_workspace_tree(
     window: tauri::Window,
     root: String,
+    expected_grant_id: Option<String>,
 ) -> Result<WorkspaceNode, NativeCommandError> {
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
@@ -180,6 +183,7 @@ pub(crate) async fn read_workspace_tree(
                 WORKSPACE_TREE_MAX_DEPTH,
                 WORKSPACE_TREE_MAX_ENTRIES,
                 WORKSPACE_TREE_MAX_OUTPUT_BYTES,
+                expected_grant_id.as_deref(),
             )
             .map_err(Into::into)
     })

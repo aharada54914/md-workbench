@@ -193,7 +193,7 @@ const pl: Translations = {
   autoSaveOn: 'Wł.',
   autoSaveOff: 'Wył.',
   wordWrap: 'Zawijanie wierszy',
-  dropFilesHere: 'Upuść pliki .md tutaj',
+  dropFilesHere: 'Upuść dokumenty, obrazy lub foldery tutaj',
   dropFolderHere: 'Upuść folder, aby dodać obszar roboczy',
   editorFont: 'Czcionka edytora',
   codeFont: 'Czcionka kodu',

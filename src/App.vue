@@ -4,9 +4,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { copyFile, exists, remove } from '@tauri-apps/plugin-fs';
+import { writeFile, exists, remove } from '@tauri-apps/plugin-fs';
 import { readTextFile } from './services/documentText';
-import { nativeFs } from './services/nativeFs';
+import { nativeFs, type NativeGrant } from './services/nativeFs';
 import { htmlToMarkdown, markdownToHtml } from './utils/markdown-converter';
 import { inlineMarkdownImages, getDirectoryFromFilePath } from './utils/image-resolver';
 import type { Editor as TiptapEditor } from '@tiptap/vue-3';
@@ -47,7 +47,7 @@ import { useSplitEditor } from './composables/useSplitEditor';
 import { useScrollSync } from './composables/useScrollSync';
 import { useSettings } from './composables/useSettings';
 import { useSplitView } from './composables/useSplitView';
-import { useFileOperations } from './composables/useFileOperations';
+import { useFileOperations, type OpenDocumentSelection } from './composables/useFileOperations';
 import { useCloseConfirmation } from './composables/useCloseConfirmation';
 import { useWindowManager } from './composables/useWindowManager';
 import { useEditorZoom } from './composables/useEditorZoom';
@@ -60,6 +60,7 @@ import { useAiMermaidTarget } from './composables/useAiMermaidTarget';
 import { useDocumentSearch, type DocumentSearchMatch, type VisualSearchMatch } from './composables/useDocumentSearch';
 import { useImageDrop } from './composables/useImageDrop';
 import { useFolderDrop } from './composables/useFolderDrop';
+import { useNativeDrops } from './composables/useNativeDrops';
 import { nextAvailableImportPath, workspaceImportDirectoryAt } from './utils/workspace-import';
 import { isImageFile } from './utils/image-file-utils';
 import { t } from './i18n';
@@ -256,6 +257,8 @@ const findTabByFilePath = (filePath: string) => {
   return result?.tab;
 };
 
+const isTabOpen = (tab: Tab): boolean => splitState.value.panes.some((pane) => pane.tabs.includes(tab));
+
 // ============ File Watcher & Reload ============
 const {
   showToast, toastMessage, toastType, dismissToast, showToastNotification,
@@ -287,35 +290,53 @@ const preSaveConflictDiffLines = ref<import('./composables/useDiffPreview').Diff
 const preSaveConflictDiffStats = ref<import('./composables/useDiffPreview').DiffStats>({ additions: 0, deletions: 0 });
 const preSaveConflictDiskContent = ref('');
 let preSaveConflictResolver: ((decision: 'save' | 'cancel' | string) => void) | null = null;
+let preSaveSelection: { tab: Tab; oldPath: string | null; original: string | null } | null = null;
 
+const currentPreSaveTab = (): Tab | null => {
+  const selection = preSaveSelection;
+  return selection && isTabOpen(selection.tab) && selection.tab.filePath === selection.oldPath
+    && selection.tab.originalMarkdown === selection.original ? selection.tab : null;
+};
+const finishPreSaveConflict = (decision: 'save' | 'cancel' | string) => {
+  showPreSaveConflictModal.value = false;
+  const resolve = preSaveConflictResolver;
+  preSaveConflictResolver = null;
+  preSaveSelection = null;
+  resolve?.(decision);
+};
+const applyPreSaveBuffer = (tab: Tab, markdown: string): void => {
+  tab.pendingMarkdown = markdown;
+  tab.hasChanges = markdown !== tab.originalMarkdown;
+  // Retain raw source for inactive/read-only tabs without mounting an editor.
+  if (!tab.readOnly && !tab.largeFile) tab.content = markdownToHtml(markdown);
+  if (activeTab.value === tab) {
+    if (codeView.value) seedCodeContent(markdown);
+    if (splitEditorActive.value) enterSplitEditorRaw('', markdown);
+    if (!tab.readOnly && tab.editorMode === 'visual' && !tab.largeFile) setEditorContent(tab.content);
+  }
+};
 const handlePreSaveConflictSaveAnyway = () => {
-  showPreSaveConflictModal.value = false;
-  preSaveConflictResolver?.('save');
-  preSaveConflictResolver = null;
+  finishPreSaveConflict(currentPreSaveTab() ? 'save' : 'cancel');
 };
-
 const handlePreSaveConflictLoadExternal = () => {
-  // eslint-disable-next-line @typescript-eslint/no-use-before-define
-  reloadTabContent(preSaveConflictFilePath.value, preSaveConflictDiskContent.value);
-  showPreSaveConflictModal.value = false;
-  preSaveConflictResolver?.('cancel');
-  preSaveConflictResolver = null;
+  const tab = currentPreSaveTab();
+  if (tab) {
+    if (tab.filePath === preSaveConflictFilePath.value) {
+      reloadTabContent(tab.filePath, preSaveConflictDiskContent.value);
+    } else {
+      // Save As conflict belongs to the chosen destination, not the old file.
+      applyPreSaveBuffer(tab, preSaveConflictDiskContent.value);
+    }
+  }
+  finishPreSaveConflict('cancel');
 };
-
 const handlePreSaveConflictMerge = (mergedContent: string) => {
-  // eslint-disable-next-line @typescript-eslint/no-use-before-define
-  reloadTabContent(preSaveConflictFilePath.value, mergedContent);
-  showPreSaveConflictModal.value = false;
-  // Pass merged content to writeAndUpdateTab — it will use it as the save content
-  preSaveConflictResolver?.(mergedContent);
-  preSaveConflictResolver = null;
+  const tab = currentPreSaveTab();
+  if (tab) applyPreSaveBuffer(tab, mergedContent);
+  // The accepted merge stays dirty until the write actually succeeds.
+  finishPreSaveConflict(tab ? mergedContent : 'cancel');
 };
-
-const handlePreSaveConflictCancel = () => {
-  showPreSaveConflictModal.value = false;
-  preSaveConflictResolver?.('cancel');
-  preSaveConflictResolver = null;
-};
+const handlePreSaveConflictCancel = () => finishPreSaveConflict('cancel');
 
 // ============ Tab Close Confirmation ============
 const showTabCloseDialog = ref(false);
@@ -491,6 +512,7 @@ const {
   confirmExternalLink,
   cancelExternalLink,
 } = useFileOperations({
+  isTabOpen,
   tabs,
   activeTabId,
   activeTab,
@@ -516,17 +538,17 @@ const {
       largeFileVisualMode.value = false;
     }
   },
-  onAfterSave: (filePath: string, content: string) => {
-    // New file just got a path (Save / Save As on a fresh tab) — ensure
-    // the file watcher is registered so external edits (e.g., AI) are
-    // detected and trigger an editor reload.
+  onAfterSave: ({ tab, oldPath, filePath, content }) => {
+    if (!isTabOpen(tab) || tab.filePath !== filePath) return;
+    if (oldPath && oldPath !== filePath && !findTabByFilePathSplit(oldPath)) unwatchFile(oldPath);
     watchFile(filePath, content);
   },
   onAnchorNotFound: (anchor: string) => {
     showToastNotification(t.value.anchorNotFound(anchor), 'warning');
   },
-  onPreSaveConflict: (filePath: string, diskContent: string, localMarkdown: string) => {
-    const tab = findTabByFilePath(filePath);
+  onPreSaveConflict: (filePath: string, diskContent: string, localMarkdown: string, tab: Tab) => {
+    if (!isTabOpen(tab) || preSaveConflictResolver) return Promise.resolve('cancel');
+    preSaveSelection = { tab, oldPath: tab.filePath, original: tab.originalMarkdown };
     // Diff shows local (current editor) → disk so the user sees their changes vs external changes.
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     const diffResult = generateDiff(localMarkdown, diskContent);
@@ -1012,7 +1034,7 @@ const { handleDrop: handleImageDrop } = useImageDrop({
   codeEditor: getCodeEditor,
   activeFilePath: () => activeTab.value?.filePath ?? null,
   findVisualTargetAt: (x, y) => splitContainerRef.value?.findVisualTargetAt?.(x, y) ?? null,
-  onImagesImported: () => { void workspace.refreshAll(); },
+  onImagesImported: (isCurrent) => { void workspace.refreshAll(isCurrent); },
 });
 
 const focusCodeMatch = (match: DocumentSearchMatch) => {
@@ -1773,13 +1795,12 @@ let unlistenCloseRequest: (() => void) | null = null;
 let unlistenTabTransfer: UnlistenFn | null = null;
 let unlistenFocusFile: UnlistenFn | null = null;
 let unlistenDragEnter: UnlistenFn | null = null;
-let unlistenDragDrop: UnlistenFn | null = null;
+let unlistenDropErrors: UnlistenFn | null = null;
 let unlistenDragLeave: UnlistenFn | null = null;
 let currentWindowLabel = '';
 
 // ============ File Drag & Drop ============
 const isDragOver = ref(false);
-const DROPPABLE_DOC_RE = /\.(md|markdown|txt|mermark)$/i;
 
 // ============ Folder Drag & Drop (adds a workspace, #124) ============
 const workspaceSidebarRef = ref<InstanceType<typeof WorkspaceSidebar> | null>(null);
@@ -1794,11 +1815,10 @@ const folderDrop = useFolderDrop({
   revealWorkspace: workspace.revealWorkspace,
 });
 
-// While a directory is being dragged the sidebar is the drop target, so the
-// full-window overlay would only hide it. With the sidebar closed there is
-// nothing to aim at and the overlay carries the folder hint instead.
+// Hover is generic: paths are classified only by the host after an OS drop.
+// Keep a visible sidebar available as the document/folder drop target.
 const sidebarFolderDropActive = computed(
-  () => isDragOver.value && folderDrop.dragHasFolder.value && workspace.sidebarVisible.value,
+  () => isDragOver.value && workspace.sidebarVisible.value,
 );
 const showDragOverlay = computed(() => isDragOver.value && !sidebarFolderDropActive.value);
 
@@ -1809,16 +1829,60 @@ const workspaceImportTarget = (position: { x: number; y: number } | null | undef
   return workspaceImportDirectoryAt(position.x / dpr, position.y / dpr, sidebar);
 };
 
-const importDocumentsIntoWorkspace = async (paths: string[], directory: string): Promise<string[]> => {
-  const imported: string[] = [];
-  for (const source of paths) {
-    const destination = await nextAvailableImportPath(directory, source, exists);
-    if (destination !== source) await copyFile(source, destination);
-    imported.push(destination);
+const importDocumentsIntoWorkspace = async (
+  grants: NativeGrant[], directory: string, isCurrent: () => boolean,
+): Promise<{ path: string; expectedGrantId?: string }[]> => {
+  const imported: { path: string; expectedGrantId?: string }[] = [];
+  for (const grant of grants) {
+    if (!isCurrent()) return imported;
+    try {
+      const bytes = await nativeFs.readPathBytes(grant.path, undefined, grant.id);
+      if (!isCurrent()) return imported;
+      const destination = await nextAvailableImportPath(directory, grant.path, exists);
+      if (!isCurrent()) return imported;
+      if (destination !== grant.path) {
+        await writeFile(destination, bytes);
+        if (!isCurrent()) return imported;
+        imported.push({ path: destination });
+      } else {
+        imported.push({ path: destination, expectedGrantId: grant.id });
+      }
+    } catch (error) {
+      if (isCurrent()) reportDocumentOpenError(error);
+    }
   }
-  await workspace.refreshAll();
+  if (isCurrent()) await workspace.refreshAll(isCurrent);
   return imported;
 };
+
+const nativeDrops = useNativeDrops({
+  onError: reportDocumentOpenError,
+  handleDrop: async ({ grants, errors, position }, isCurrent) => {
+    if (!isCurrent()) return;
+    isDragOver.value = false;
+    if (errors.length) reportDocumentOpenError({ code: errors[0].error });
+    const dpr = window.devicePixelRatio || 1;
+    const paneId = splitContainerRef.value?.findPaneIdAt?.(position.x / dpr, position.y / dpr);
+    if (paneId) splitState.value.activePaneId = paneId;
+
+    const documents = grants.filter((grant) => grant.kind === 'document');
+    const importTarget = workspaceImportTarget(position);
+    const pathsToOpen = importTarget && documents.length > 0
+      ? await importDocumentsIntoWorkspace(documents, importTarget, isCurrent)
+      : documents.map((grant) => ({ path: grant.path, expectedGrantId: grant.id }));
+    for (const selection of pathsToOpen) {
+      if (!isCurrent()) return;
+      await openFileWithCrossWindowCheck(selection.path, { expectedGrantId: selection.expectedGrantId, isCurrent });
+    }
+
+    if (!isCurrent()) return;
+    const resources = grants.filter((grant) => grant.kind === 'resource');
+    if (resources.length) await handleImageDrop(resources.map((grant) => grant.path), position, { grants: resources, isCurrent });
+    if (!isCurrent()) return;
+    const addedRoots = await folderDrop.handleDrop(grants, position, isCurrent);
+    if (isCurrent() && addedRoots.length > 0 && !workspace.sidebarVisible.value) workspace.setSidebarVisible(true);
+  },
+});
 
 function reportDocumentOpenError(error: unknown): void {
   const permissionRequired = typeof error === 'object' && error !== null
@@ -1827,7 +1891,8 @@ function reportDocumentOpenError(error: unknown): void {
 }
 
 // Wrapper that checks if file is open locally or in another window first
-const openFileWithCrossWindowCheck = async (filePath: string): Promise<void> => {
+const openFileWithCrossWindowCheck = async (filePath: string, selection?: OpenDocumentSelection): Promise<void> => {
+  if (selection?.isCurrent?.() === false) return;
   try {
     // First check if file is already open locally in this window
     const localResult = findTabByFilePathSplit(filePath);
@@ -1840,6 +1905,7 @@ const openFileWithCrossWindowCheck = async (filePath: string): Promise<void> => 
 
     // Check if file is open in another window
     const windowWithFile = await checkFileOpen(filePath);
+    if (selection?.isCurrent?.() === false) return;
     if (windowWithFile && windowWithFile !== currentWindowLabel) {
       // File is open in another window - focus that window
       console.log(`[App] File already open in window ${windowWithFile}, focusing...`);
@@ -1848,16 +1914,17 @@ const openFileWithCrossWindowCheck = async (filePath: string): Promise<void> => 
     }
 
     // File not open anywhere - open it normally
-    await openFileFromPath(filePath);
+    await openFileFromPath(filePath, selection);
 
     // Register the file after successful open
-    if (currentWindowLabel && findTabByFilePathSplit(filePath)) {
+    if (selection?.isCurrent?.() !== false && currentWindowLabel && findTabByFilePathSplit(filePath)) {
       await registerOpenFile(filePath, currentWindowLabel);
     }
   } catch (error) {
     console.error('[App] Error in cross-window file check:', error);
-    // Fall back to normal open
-    await openFileFromPath(filePath);
+    if (selection?.isCurrent?.() === false) return;
+    // Retry only with the original native selection constraint.
+    await openFileFromPath(filePath, selection);
   }
 };
 
@@ -2034,52 +2101,22 @@ onMounted(async () => {
     console.error('Błąd nasłuchiwania focus-file:', error);
   }
 
-  // Listen for file drag & drop onto the window
+  // Hover does not read or classify renderer-provided paths.
   try {
-    unlistenDragEnter = await listen<{ paths: string[] }>('tauri://drag-enter', (event) => {
+    unlistenDragEnter = await listen('tauri://drag-enter', () => {
       isDragOver.value = true;
-      void folderDrop.beginDrag(event.payload?.paths ?? []);
     });
     unlistenDragLeave = await listen('tauri://drag-leave', () => {
       isDragOver.value = false;
-      folderDrop.endDrag();
     });
-    unlistenDragDrop = await listen<{ paths: string[]; position: { x: number; y: number } }>(
-      'tauri://drag-drop',
-      async (event) => {
-        isDragOver.value = false;
-        const { paths, position } = event.payload;
-
-        // Route the drop to the pane it landed on before opening anything —
-        // both the tab and the image insert target the active pane.
-        if (position) {
-          const dpr = window.devicePixelRatio || 1;
-          const paneId = splitContainerRef.value?.findPaneIdAt?.(position.x / dpr, position.y / dpr);
-          if (paneId) splitState.value.activePaneId = paneId;
-        }
-
-        const docPaths = paths.filter((p) => DROPPABLE_DOC_RE.test(p));
-        const importTarget = workspaceImportTarget(position);
-        const pathsToOpen = importTarget && docPaths.length > 0
-          ? await importDocumentsIntoWorkspace(docPaths, importTarget)
-          : docPaths;
-        for (const filePath of pathsToOpen) {
-          await openFileWithCrossWindowCheck(filePath);
-        }
-
-        if (position) {
-          await handleImageDrop(paths, position);
-        }
-
-        const addedRoots = await folderDrop.handleDrop(paths, position);
-        if (addedRoots.length > 0 && !workspace.sidebarVisible.value) {
-          workspace.setSidebarVisible(true);
-        }
-      },
-    );
+    unlistenDropErrors = await listen('native-file-errors', () => {
+      isDragOver.value = false;
+      reportDocumentOpenError(new Error('Native file selection failed'));
+    });
   } catch (error) {
-    console.error('Błąd nasłuchiwania drag-drop:', error);
+    console.error('[App] Could not listen for native drop status:', error);
   }
+  await nativeDrops.start();
 
   // Enable change detection after editor stabilizes
   setTimeout(() => {
@@ -2115,9 +2152,8 @@ onUnmounted(async () => {
   if (unlistenDragLeave) {
     unlistenDragLeave();
   }
-  if (unlistenDragDrop) {
-    unlistenDragDrop();
-  }
+  nativeDrops.stop();
+  unlistenDropErrors?.();
 
   // Unregister all files for this window
   if (currentWindowLabel) {
@@ -2590,18 +2626,13 @@ onUnmounted(async () => {
     <!-- File Drag & Drop Overlay -->
     <div v-if="showDragOverlay" class="drag-drop-overlay">
       <div class="drag-drop-box">
-        <svg v-if="folderDrop.dragHasFolder.value" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
-          <line x1="12" y1="11" x2="12" y2="17"/>
-          <line x1="9" y1="14" x2="15" y2="14"/>
-        </svg>
-        <svg v-else width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
           <polyline points="14,2 14,8 20,8"/>
           <line x1="12" y1="12" x2="12" y2="18"/>
           <line x1="9" y1="15" x2="15" y2="15"/>
         </svg>
-        <span>{{ folderDrop.dragHasFolder.value ? t.dropFolderHere : t.dropFilesHere }}</span>
+        <span>{{ t.dropFilesHere }}</span>
       </div>
     </div>
   </div>

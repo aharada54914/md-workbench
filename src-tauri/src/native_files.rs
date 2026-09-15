@@ -45,6 +45,7 @@ struct NativeState {
     owned: HashMap<(String, String), GrantInfo>,
     // Save destinations must not replace the retained READ binding for an alias.
     save_exports: HashMap<(String, String), GrantInfo>,
+    drops: HashMap<String, Vec<drops::QueuedDrop>>,
     // Only OS ingress adds these capabilities; a path lookup cannot populate it.
     pending: HashMap<String, HeldGrant>,
     distributed: HashSet<(String, String)>,
@@ -92,6 +93,7 @@ impl NativeState {
         self.building.remove(label);
         self.owned.retain(|(owner, _), _| owner != label);
         self.save_exports.retain(|(owner, _), _| owner != label);
+        self.drops.remove(label);
         self.access.revoke_window(label);
         self.distributed.retain(|(owner, _)| owner != label);
         // Pending native ingress owns its original anchor independently.
@@ -200,7 +202,7 @@ impl NativeState {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct NativeError {
     path: String,
     error: String,
@@ -256,39 +258,6 @@ pub(crate) fn acknowledge_delivery(app: &tauri::AppHandle, paths: &[String]) {
     }
 }
 
-pub(crate) fn native_drop(app: &tauri::AppHandle, label: &str, paths: &[PathBuf]) {
-    let managed = app.state::<NativeFiles>();
-    let Ok(mut state) = managed.0.lock() else {
-        return;
-    };
-    let Ok(generation) = state.generation(label) else {
-        return;
-    };
-    let mut grants = Vec::new();
-    let mut errors = Vec::new();
-    for path in paths {
-        let purpose = if path.is_dir() {
-            Purpose::Workspace
-        } else if crate::open_files::is_supported_markdown_path(path) {
-            Purpose::Document
-        } else {
-            Purpose::Resource
-        };
-        match state.select(label, generation, vec![path.clone()], purpose) {
-            Ok(mut selected) => grants.append(&mut selected),
-            Err(error) => errors.push(NativeError {
-                path: path.to_string_lossy().into_owned(),
-                error,
-            }),
-        }
-    }
-    drop(state);
-    let _ = app.emit_to(label, "native-file-grants", grants);
-    if !errors.is_empty() {
-        let _ = app.emit_to(label, "native-file-errors", errors);
-    }
-}
-
 #[path = "native_files_transfer.rs"]
 mod transfer;
 pub(crate) use transfer::*;
@@ -316,3 +285,7 @@ pub(crate) use workspace::*;
 #[path = "native_files_search.rs"]
 mod search;
 pub(crate) use search::*;
+
+#[path = "native_files_drop.rs"]
+mod drops;
+pub(crate) use drops::*;

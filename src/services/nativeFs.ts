@@ -10,6 +10,14 @@ export interface NativeGrant {
   write: boolean;
 }
 
+/** A completed host OS drop. Event payloads only wake the queue reader. */
+export interface NativeDrop {
+  id: string;
+  grants: NativeGrant[];
+  errors: { path: string; error: string }[];
+  position: { x: number; y: number };
+}
+
 export interface NativeFsError {
   code:
     | 'permission_required'
@@ -35,6 +43,7 @@ export interface NativeDirectoryListing {
 /** Native grants are scoped to the invoking editor window. Never fall back to
  * plugin-fs when authority is missing or revoked. Callers handle typed rejects. */
 export const nativeFs = {
+  takeDrops: () => invoke<NativeDrop[]>('native_take_drops'),
   getGrant: (path: string) => invoke<NativeGrant | null>('native_get_grant', { path }),
   pickDocuments: () => invoke<NativeGrant[]>('native_pick_documents'),
   pickSaveDestination: () => invoke<NativeGrant | null>('native_pick_save_destination'),
@@ -46,13 +55,15 @@ export const nativeFs = {
 
   // The host resolves only grants already owned by this caller. This lookup
   // cannot authorize recent/session paths or create access from a path string.
-  async readPathBytes(path: string, limit = MAX_NATIVE_READ_BYTES): Promise<Uint8Array> {
-    const bytes = await invoke<number[]>('native_read_path', { path, limit });
+  async readPathBytes(path: string, limit = MAX_NATIVE_READ_BYTES, expectedGrantId?: string): Promise<Uint8Array> {
+    const bytes = await invoke<number[]>('native_read_path', {
+      path, limit, ...(expectedGrantId === undefined ? {} : { expectedGrantId }),
+    });
     return Uint8Array.from(bytes);
   },
 
-  async readPathText(path: string, limit = MAX_NATIVE_READ_BYTES): Promise<string> {
-    return decodeDocumentUtf8(await nativeFs.readPathBytes(path, limit));
+  async readPathText(path: string, limit = MAX_NATIVE_READ_BYTES, expectedGrantId?: string): Promise<string> {
+    return decodeDocumentUtf8(await nativeFs.readPathBytes(path, limit, expectedGrantId));
   },
 
   async readBytes(id: string, relative = '', limit = MAX_NATIVE_READ_BYTES): Promise<Uint8Array> {

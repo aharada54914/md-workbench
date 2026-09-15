@@ -193,7 +193,7 @@ const en: Translations = {
   autoSaveOn: 'On',
   autoSaveOff: 'Off',
   wordWrap: 'Word wrap',
-  dropFilesHere: 'Drop .md files here',
+  dropFilesHere: 'Drop documents, images or folders here',
   dropFolderHere: 'Drop a folder to add a workspace',
   editorFont: 'Editor font',
   codeFont: 'Code font',

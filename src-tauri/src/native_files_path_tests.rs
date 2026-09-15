@@ -36,7 +36,7 @@ impl Drop for Fixture {
     }
 }
 fn read(state: &NativeState, label: &str, path: &str, limit: usize) -> Result<Vec<u8>, String> {
-    state.read_path(label, state.generation(label)?, path, limit)
+    state.read_path(label, state.generation(label)?, path, limit, None)
 }
 fn list(
     state: &NativeState,
@@ -236,7 +236,7 @@ fn destruction_and_reused_label_deny_a_previously_scheduled_read_or_list() {
     fixture.grant(&mut state, "work", Purpose::Workspace);
     assert_eq!(
         state
-            .read_path("main", generation, &fixture.path("work/doc.md"), 100)
+            .read_path("main", generation, &fixture.path("work/doc.md"), 100, None)
             .unwrap_err(),
         "permission_required"
     );

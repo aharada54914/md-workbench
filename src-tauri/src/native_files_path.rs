@@ -100,17 +100,36 @@ impl NativeState {
             .map(|(_, id, relative)| (id, relative))
             .ok_or_else(|| "permission_required".into())
     }
-    fn read_path(
+    // Resolve once under the registry lock. An expected identity never authorizes
+    // a historical grant or changes the normal exact-file/workspace precedence.
+    pub(super) fn resolve_expected_owned_path(
+        &self,
+        label: &str,
+        path: &str,
+        directory: bool,
+        expected_grant_id: Option<&str>,
+    ) -> Result<(GrantId, String), String> {
+        let resolved = self.resolve_owned_path(label, path, directory)?;
+        if expected_grant_id
+            .is_some_and(|expected| GrantId::parse(expected).ok() != Some(resolved.0))
+        {
+            return Err("permission_required".into());
+        }
+        Ok(resolved)
+    }
+    pub(super) fn read_path(
         &self,
         label: &str,
         generation: Uuid,
         path: &str,
         limit: usize,
+        expected_grant_id: Option<&str>,
     ) -> Result<Vec<u8>, String> {
         if self.generation(label)? != generation {
             return Err("permission_required".into());
         }
-        let (id, relative) = self.resolve_owned_path(label, path, false)?;
+        let (id, relative) =
+            self.resolve_expected_owned_path(label, path, false, expected_grant_id)?;
         self.access
             .read(label, id, Path::new(&relative), limit)
             .map_err(|error| error.to_string())
@@ -137,6 +156,7 @@ pub(crate) async fn native_read_path(
     window: tauri::Window,
     path: String,
     limit: usize,
+    expected_grant_id: Option<String>,
 ) -> Result<Vec<u8>, NativeCommandError> {
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
@@ -151,7 +171,13 @@ pub(crate) async fn native_read_path(
             .0
             .lock()
             .map_err(|_| NativeCommandError::from("native_state_unavailable"))?
-            .read_path(&label, generation, &path, limit)
+            .read_path(
+                &label,
+                generation,
+                &path,
+                limit,
+                expected_grant_id.as_deref(),
+            )
             .map_err(Into::into)
     })
     .await

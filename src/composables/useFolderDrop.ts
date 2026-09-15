@@ -1,5 +1,4 @@
-import { ref, computed, type ComputedRef } from 'vue';
-import { workspaceFs, type ClassifiedPath } from '../services/workspaceFs';
+import type { NativeGrant } from '../services/nativeFs';
 import {
   acceptsFolderDrop,
   droppedFolders,
@@ -11,54 +10,21 @@ import {
 export interface UseFolderDropOptions {
   /** Sidebar box in CSS pixels, or null when the sidebar is hidden. */
   sidebarRect: () => DropRect | null;
-  openWorkspace: (root: string) => Promise<{ id: string }>;
+  openWorkspace: (root: string, expectedGrantId?: string, isCurrent?: () => boolean) => Promise<{ id: string }>;
   revealWorkspace?: (id: string) => void;
 }
 
 export interface UseFolderDropReturn {
-  /** True while a drag carrying at least one directory hovers the window. */
-  dragHasFolder: ComputedRef<boolean>;
-  beginDrag: (paths: string[]) => Promise<void>;
-  endDrag: () => void;
-  /** Adds every dropped directory as a workspace. Returns the roots handled. */
-  handleDrop: (paths: string[], position?: DropPoint | null) => Promise<string[]>;
-}
-
-function cacheKey(paths: string[]): string {
-  return paths.join('\u0000');
-}
-
-async function classify(paths: string[]): Promise<ClassifiedPath[]> {
-  try {
-    return await workspaceFs.classifyPaths(paths);
-  } catch (e) {
-    console.error('[useFolderDrop] classify paths:', e);
-    return [];
-  }
+  /** Adds host-confirmed workspace grants. Returns the roots opened successfully. */
+  handleDrop: (grants: NativeGrant[], position?: DropPoint | null, isCurrent?: () => boolean) => Promise<string[]>;
 }
 
 export function useFolderDrop(options: UseFolderDropOptions): UseFolderDropReturn {
-  const dragFolders = ref<string[]>([]);
-  const dragKey = ref<string | null>(null);
-
-  const dragHasFolder = computed(() => dragFolders.value.length > 0);
-
-  function endDrag() {
-    dragFolders.value = [];
-    dragKey.value = null;
-  }
-
-  async function beginDrag(paths: string[]): Promise<void> {
-    const key = cacheKey(paths);
-    const classified = await classify(paths);
-    dragKey.value = key;
-    dragFolders.value = droppedFolders(classified);
-  }
-
-  async function handleDrop(paths: string[], position?: DropPoint | null): Promise<string[]> {
-    const folders =
-      dragKey.value === cacheKey(paths) ? dragFolders.value : droppedFolders(await classify(paths));
-    endDrag();
+  async function handleDrop(
+    grants: NativeGrant[], position?: DropPoint | null, isCurrent: () => boolean = () => true,
+  ): Promise<string[]> {
+    if (!isCurrent()) return [];
+    const folders = droppedFolders(grants);
     if (folders.length === 0) return [];
 
     const point = position ? toCssPoint(position, window.devicePixelRatio) : null;
@@ -67,17 +33,23 @@ export function useFolderDrop(options: UseFolderDropOptions): UseFolderDropRetur
     const added: string[] = [];
     let lastId: string | null = null;
     for (const root of folders) {
+      if (!isCurrent()) break;
+      // droppedFolders retains the first spelling: keep that exact grant identity.
+      const grant = grants.find((item) => item.kind === 'workspace' && item.path === root);
+      if (!grant) continue;
       try {
-        const entry = await options.openWorkspace(root);
+        const entry = await options.openWorkspace(root, grant.id, isCurrent);
+        if (!isCurrent()) break;
         added.push(root);
         lastId = entry.id;
       } catch (e) {
+        if (!isCurrent()) break;
         console.error('[useFolderDrop] open workspace:', root, e);
       }
     }
-    if (lastId) options.revealWorkspace?.(lastId);
+    if (isCurrent() && lastId) options.revealWorkspace?.(lastId);
     return added;
   }
 
-  return { dragHasFolder, beginDrag, endDrag, handleDrop };
+  return { handleDrop };
 }

@@ -162,22 +162,35 @@ export function useWorkspace() {
 
   // ===== Tree loading =====
 
-  async function loadTreeFor(entry: OpenWorkspaceEntry): Promise<WorkspaceNode> {
-    loadingById.value[entry.id] = true;
-    errorById.value[entry.id] = null;
+  async function loadTreeFor(entry: OpenWorkspaceEntry, isCurrent?: () => boolean): Promise<WorkspaceNode> {
+    const assertCurrent = () => {
+      if (isCurrent && (!isCurrent() || !openWorkspaces.value.some((w) => w.id === entry.id))) {
+        throw new DOMException('Workspace refresh cancelled', 'AbortError');
+      }
+    };
+    assertCurrent();
+    // A drop refresh stages its result so stopping it leaves no loading/error
+    // state behind. Existing interactive refresh callers retain their spinner.
+    if (!isCurrent) {
+      loadingById.value[entry.id] = true;
+      errorById.value[entry.id] = null;
+    }
     try {
       const node = await workspaceFs.readTree(entry.rootPath);
+      assertCurrent();
       treesById.value[entry.id] = node;
+      errorById.value[entry.id] = null;
       autoExpandTopLevel(node);
       return node;
     } catch (e) {
+      assertCurrent();
       const msg = describeOpenError(e);
       errorById.value[entry.id] = msg;
       lastOpenError.value = msg;
       treesById.value[entry.id] = null;
       throw new Error(msg);
     } finally {
-      loadingById.value[entry.id] = false;
+      if (!isCurrent) loadingById.value[entry.id] = false;
     }
   }
 
@@ -188,32 +201,45 @@ export function useWorkspace() {
 
   // ===== Public API: workspace lifecycle =====
 
-  /** Open a workspace by path. If already open, switch to it instead. */
-  async function openWorkspace(rootPath: string, refresh = false): Promise<OpenWorkspaceEntry> {
-    lastOpenError.value = null;
+  /** Open using existing authority; a supplied grant ID must still match in the host. */
+  async function openWorkspace(
+    rootPath: string, expectedGrantId?: string, isCurrent: () => boolean = () => true,
+  ): Promise<OpenWorkspaceEntry> {
+    const assertCurrent = () => {
+      if (!isCurrent()) throw new DOMException('Workspace open cancelled', 'AbortError');
+    };
+    assertCurrent();
     const existing = findOpenByPath(rootPath);
-    if (existing) {
-      setActiveWorkspaceId(existing.id);
-      if (refresh || !treesById.value[existing.id]) {
-        await loadTreeFor(existing);
-      }
-      return existing;
-    }
-
-    const entry: OpenWorkspaceEntry = {
+    const entry: OpenWorkspaceEntry = existing ?? {
       id: newId(),
       rootPath,
       name: basenameOf(rootPath) || rootPath,
     };
 
-    treesById.value[entry.id] = null;
-    try {
-      await loadTreeFor(entry);
-    } catch (e) {
-      delete treesById.value[entry.id];
-      delete loadingById.value[entry.id];
-      delete errorById.value[entry.id];
-      throw e;
+    // Stage the result before touching visible state. Even a cached workspace
+    // must validate the dropped/picked grant under the host's read lock.
+    if (expectedGrantId !== undefined || !treesById.value[entry.id]) {
+      let node: WorkspaceNode;
+      try {
+        node = await workspaceFs.readTree(rootPath, expectedGrantId);
+      } catch (e) {
+        assertCurrent();
+        const msg = describeOpenError(e);
+        lastOpenError.value = msg;
+        throw new Error(msg);
+      }
+      assertCurrent();
+      if (existing && !openWorkspaces.value.some((w) => w.id === existing.id)) {
+        throw new DOMException('Workspace closed during open', 'AbortError');
+      }
+      treesById.value[entry.id] = node;
+      errorById.value[entry.id] = null;
+      autoExpandTopLevel(node);
+    }
+    lastOpenError.value = null;
+    if (existing) {
+      setActiveWorkspaceId(existing.id);
+      return existing;
     }
 
     const next = [...openWorkspaces.value, entry];
@@ -235,7 +261,7 @@ export function useWorkspace() {
       if (!picked) return null;
       // A new native selection can refer to a changed directory at the same
       // spelling. Refresh cached entries using the newly selected authority.
-      await openWorkspace(picked.path, true);
+      await openWorkspace(picked.path, picked.id);
       return picked.path;
     } catch (error) {
       lastOpenError.value = describeOpenError(error);
@@ -280,7 +306,15 @@ export function useWorkspace() {
     await loadTreeFor(entry);
   }
 
-  async function refreshAll(): Promise<void> {
+  async function refreshAll(isCurrent?: () => boolean): Promise<void> {
+    if (isCurrent) {
+      // Serialize a drop's refresh work so stop prevents starting another root.
+      for (const entry of [...openWorkspaces.value]) {
+        if (!isCurrent()) return;
+        await loadTreeFor(entry, isCurrent).catch(() => null);
+      }
+      return;
+    }
     await Promise.all(
       openWorkspaces.value.map((w) => loadTreeFor(w).catch(() => null)),
     );

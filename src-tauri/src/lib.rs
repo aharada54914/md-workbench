@@ -2,7 +2,6 @@ use std::sync::Mutex;
 use std::collections::BTreeSet;
 use std::path::Path;
 use tauri::{Manager, Emitter, WebviewUrl, WebviewWindowBuilder, RunEvent, WindowEvent};
-use serde::Serialize;
 use font_kit::source::SystemSource;
 
 mod ai;
@@ -379,34 +378,6 @@ fn rename_path(from: String, to: String) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Serialize)]
-struct ClassifiedPath {
-    path: String,
-    /// "file", "folder" or "missing"
-    kind: &'static str,
-}
-
-fn path_kind(path: &Path) -> &'static str {
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => "folder",
-        Ok(meta) if meta.is_file() => "file",
-        _ => "missing",
-    }
-}
-
-/// Classify dropped OS paths so the frontend can tell a folder drop (add a
-/// workspace) from a file drop (open a tab / insert an image).
-#[tauri::command]
-fn classify_paths(paths: Vec<String>) -> Vec<ClassifiedPath> {
-    paths
-        .into_iter()
-        .map(|p| {
-            let kind = path_kind(Path::new(&p));
-            ClassifiedPath { path: p, kind }
-        })
-        .collect()
-}
-
 #[tauri::command]
 fn delete_path(path: String) -> Result<(), String> {
     let target = Path::new(&path);
@@ -669,6 +640,7 @@ pub fn run() {
             native_files::native_get_pending_transfers,
             native_files::native_ack_tab_transfer,
             native_files::native_get_grant,
+            native_files::native_take_drops,
             native_files::native_read_grant,
             native_files::native_read_path,
             native_files::native_list_directory,
@@ -694,7 +666,6 @@ pub fn run() {
             create_folder,
             rename_path,
             delete_path,
-            classify_paths,
             reveal_in_os,
             native_files::search_workspace_content,
             ai_health_check,
@@ -781,8 +752,8 @@ pub fn run() {
                         let _ = window.set_focus();
                     }
                 }
-                RunEvent::WindowEvent { label, event: WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }), .. } => {
-                    native_files::native_drop(app, &label, &paths);
+                RunEvent::WindowEvent { label, event: WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }), .. } => {
+                    native_files::native_drop(app, &label, &paths, position);
                 }
                 RunEvent::WindowEvent { label, event: WindowEvent::Destroyed, .. } => {
                     native_files::revoke_editor(app, &label);
@@ -814,34 +785,6 @@ mod tests {
     fn webkit_override_respects_explicit_user_value() {
         assert!(!should_apply_webkit_override(Some(OsStr::new("1"))));
         assert!(!should_apply_webkit_override(Some(OsStr::new("0"))));
-    }
-
-    #[test]
-    fn classify_paths_separates_folders_files_and_missing() {
-        let dir = std::env::temp_dir().join(format!("mermark-classify-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("note.md");
-        std::fs::write(&file, "x").unwrap();
-        let missing = dir.join("gone.md");
-
-        let out = classify_paths(vec![
-            dir.to_string_lossy().into_owned(),
-            file.to_string_lossy().into_owned(),
-            missing.to_string_lossy().into_owned(),
-        ]);
-
-        let kinds: Vec<&str> = out.iter().map(|e| e.kind).collect();
-        assert_eq!(kinds, ["folder", "file", "missing"]);
-        assert_eq!(out[1].path, file.to_string_lossy());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn classify_paths_preserves_input_order_and_length() {
-        let out = classify_paths(vec!["/definitely/not/here".into(), "/nor/here".into()]);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].path, "/definitely/not/here");
-        assert!(out.iter().all(|e| e.kind == "missing"));
     }
 
     #[test]

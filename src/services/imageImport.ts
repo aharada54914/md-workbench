@@ -2,6 +2,7 @@ import { copyFile, mkdir, exists, writeFile } from '@tauri-apps/plugin-fs';
 import { appDataDir } from '@tauri-apps/api/path';
 import { getDirectoryFromFilePath } from '../utils/image-resolver';
 import { splitFilename, toForwardSlashes } from '../utils/image-file-utils';
+import { nativeFs } from './nativeFs';
 
 const IMAGES_DIR = 'images';
 /** Where images dropped/pasted into an unsaved document are parked. */
@@ -27,12 +28,33 @@ export interface ImportedImage {
   altText: string;
 }
 
+export interface ImageImportSelection {
+  expectedGrantId: string;
+  isCurrent: () => boolean;
+}
+
+function assertCurrent(selection?: ImageImportSelection): void {
+  if (selection && !selection.isCurrent()) {
+    throw new DOMException('Image drop is no longer current', 'AbortError');
+  }
+}
+
 /**
  * Imports a dropped image. If the host document is saved, copies the image into
  * `<docDir>/images/` (creating the directory + resolving name collisions) and
  * returns a relative path. Otherwise returns the absolute source path.
  */
-export async function importImage(srcPath: string, docPath: string | null): Promise<ImportedImage> {
+export async function importImage(
+  srcPath: string,
+  docPath: string | null,
+  selection?: ImageImportSelection,
+): Promise<ImportedImage> {
+  assertCurrent(selection);
+  // Validate the OS selection even when an unsaved document keeps a source link.
+  const sourceBytes = selection
+    ? await nativeFs.readPathBytes(srcPath, undefined, selection.expectedGrantId)
+    : undefined;
+  assertCurrent(selection);
   const { stem, ext } = splitFilename(srcPath);
   const altText = stem;
 
@@ -47,11 +69,15 @@ export async function importImage(srcPath: string, docPath: string | null): Prom
 
   const targetDir = `${docDir}/${IMAGES_DIR}`;
   await mkdir(targetDir, { recursive: true });
+  assertCurrent(selection);
 
-  const finalName = await resolveCollision(targetDir, stem, ext);
+  const finalName = await resolveCollision(targetDir, stem, ext, selection);
+  assertCurrent(selection);
   const targetPath = `${targetDir}/${finalName}`;
 
-  await copyFile(srcPath, targetPath);
+  if (sourceBytes) await writeFile(targetPath, sourceBytes);
+  else await copyFile(srcPath, targetPath);
+  assertCurrent(selection);
 
   return {
     markdownPath: `${IMAGES_DIR}/${finalName}`,
@@ -109,14 +135,25 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-async function resolveCollision(dir: string, stem: string, ext: string): Promise<string> {
+async function resolveCollision(
+  dir: string,
+  stem: string,
+  ext: string,
+  selection?: ImageImportSelection,
+): Promise<string> {
+  const available = async (name: string) => {
+    assertCurrent(selection);
+    const found = await exists(`${dir}/${name}`);
+    assertCurrent(selection);
+    return !found;
+  };
   const suffix = ext ? `.${ext}` : '';
   const initial = `${stem}${suffix}`;
-  if (!(await exists(`${dir}/${initial}`))) return initial;
+  if (await available(initial)) return initial;
 
   for (let i = 1; i < 1000; i++) {
     const candidate = `${stem} (${i})${suffix}`;
-    if (!(await exists(`${dir}/${candidate}`))) return candidate;
+    if (await available(candidate)) return candidate;
   }
 
   return `${stem}-${Date.now()}${suffix}`;

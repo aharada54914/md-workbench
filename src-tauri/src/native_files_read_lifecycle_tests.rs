@@ -35,7 +35,7 @@ impl Drop for Fixture {
 }
 
 fn read(state: &NativeState, label: &str, path: &str) -> Result<Vec<u8>, String> {
-    state.read_path(label, state.generation(label)?, path, 100)
+    state.read_path(label, state.generation(label)?, path, 100, None)
 }
 fn code(error: String) -> String {
     serde_json::to_value(NativeCommandError::from(error)).unwrap()["code"]
