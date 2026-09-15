@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { probeNativePreview } from './native_preview_boundary.mjs';
 
 const digest = bytes => createHash('sha256').update(Buffer.from(bytes)).digest('hex');
 const invoke = (page, command, args = {}) => page.evaluate(
@@ -70,9 +71,11 @@ export async function exerciseNativeAuthority(browser, fixture, unselectedPath) 
   assert.equal(digest(await invoke(startup, 'native_read_grant', { ...readArgs, id: started.id })), fixture.sha256);
   assert.deepEqual(await invoke(startup, 'native_get_pending_transfers'), []);
   assert.equal(await invoke(source, 'check_file_open', { filePath: fixture.path }), 'main');
+  const previewBoundary = await probeNativePreview(source, unselectedPath, invoke);
   return {
     status: 'passed', source: 'main', target: targetLabel, startup_target: startupLabel,
     fixture_sha256: fixture.sha256,
+    preview_boundary: previewBoundary,
     checks: ['owned read', 'unselected path denied', 'unknown grant denied',
       'foreign caller and spoofed label denied', 'metadata grants no authority',
       'existing target ACK', 'source authority retained', 'new target startup ACK'],
