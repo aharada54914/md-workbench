@@ -2,20 +2,35 @@ import { expect, type Page } from '@playwright/test';
 
 export const codeEditor = (page: Page) => page.locator('.code-editor .cm-content');
 
+/** Disk documents start in isolated reading; explicit editing is a user action. */
+export async function startEditing(page: Page): Promise<void> {
+  await expect(page.locator('.isolated-preview-toggle')).toBeVisible({ timeout: 10_000 });
+  const toggle = page.locator('.isolated-preview-toggle');
+  if ((await toggle.textContent())?.trim() !== 'Isolated read-only preview') await toggle.click();
+  await expect(page.locator('.ProseMirror').first()).toBeVisible({ timeout: 10_000 });
+}
+
 export async function openCodeView(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Code', exact: true }).click();
   await expect(codeEditor(page)).toBeVisible({ timeout: 3_000 });
 }
 
 export async function openVisualView(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Visual', exact: true }).click();
-  await expect(page.locator('.ProseMirror')).toBeVisible({ timeout: 3_000 });
+  if (await page.getByRole('button', { name: 'Visual', exact: true }).isVisible()) {
+    await page.getByRole('button', { name: 'Visual', exact: true }).click();
+  } else {
+    await startEditing(page);
+  }
+  await expect(page.locator('.ProseMirror').first()).toBeVisible({ timeout: 10_000 });
 }
 
 export async function fillCodeEditor(page: Page, value: string): Promise<void> {
   const editor = codeEditor(page);
   await editor.click();
   await page.keyboard.press('ControlOrMeta+a');
+  // Chromium insertText treats CR and LF as separate DOM line breaks. Feed the
+  // editor logical newlines; its source adapter retains the document separator.
+  value = value.replace(/\r\n?/g, '\n');
   const trailingNewlines = value.match(/\n+$/)?.[0].length ?? 0;
   const body = trailingNewlines > 0 ? value.slice(0, -trailingNewlines) : value;
   if (body) await page.keyboard.insertText(body);

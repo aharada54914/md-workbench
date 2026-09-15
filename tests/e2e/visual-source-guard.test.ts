@@ -1,12 +1,13 @@
 import { test, expect } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
-import { codeEditor } from './helpers/code-editor';
+import { codeEditor, startEditing } from './helpers/code-editor';
 
 test('unsupported source rejects Visual commands and offers exact Source editing', async ({ page }) => {
   const path = '/test/unsupported.md';
   const source = '\uFEFF# 日本語\r\n\r\n<!-- untouched -->\r\n\r\n[text][ref]  \r\n\r\n[ref]: https://example.com\r\n';
   const fs = await setupTauriMocks(page, { initialFs: { [path]: source }, openFilePath: path });
   await page.goto('/');
+  await startEditing(page);
   await expect(page.getByRole('button', { name: 'Edit source', exact: true })).toBeVisible();
   await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
   await page.locator('.ProseMirror').evaluate(element => {
@@ -29,6 +30,7 @@ test('safe Visual edit preserves the surrounding document bytes and Undo', async
   const source = '\uFEFF\r\n日本語の本文  \r\n\t';
   const fs = await setupTauriMocks(page, { initialFs: { [path]: source }, openFilePath: path });
   await page.goto('/');
+  await startEditing(page);
   const editor = page.locator('.ProseMirror');
   await expect(editor).toHaveAttribute('contenteditable', 'true');
   await editor.locator('p').last().click();
@@ -49,6 +51,7 @@ test('a delayed image paste cannot import into a subsequently selected document'
     initialFs: { [first]: 'First', [second]: 'Second' }, openFilePath: first,
   });
   await page.goto('/');
+  await startEditing(page);
   await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
   await page.locator('.ProseMirror').evaluate(element => {
     const file = new File(['image'], 'paste.png', { type: 'image/png' });
@@ -61,6 +64,8 @@ test('a delayed image paste cannot import into a subsequently selected document'
   });
   await expect.poll(() => page.evaluate(() => typeof (window as any).__finishDelayedPaste)).toBe('function');
   await fs.triggerOpenFiles([second]);
+  await expect(page.locator('.tab.active')).toContainText('second.md');
+  await startEditing(page);
   await expect(page.locator('.ProseMirror')).toHaveText('Second');
   await page.evaluate(async () => {
     (window as any).__finishDelayedPaste();

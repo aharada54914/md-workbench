@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
+import { startEditing } from './helpers/code-editor';
 
 test('Undo cannot apply a previous tab edit to a different file with identical content', async ({ page }) => {
   const first = '/test/undo-first.md';
@@ -8,6 +9,7 @@ test('Undo cannot apply a previous tab edit to a different file with identical c
     initialFs: { [first]: 'Same', [second]: 'Same local' }, openFilePath: first,
   });
   await page.goto('/');
+  await startEditing(page);
   const editor = page.locator('.ProseMirror');
   await expect(editor).toHaveAttribute('contenteditable', 'true');
   await editor.evaluate(element => (element as any).editor.commands.focus('end'));
@@ -16,6 +18,7 @@ test('Undo cannot apply a previous tab edit to a different file with identical c
   await expect(editor).toHaveText('Same local');
   await fs.triggerOpenFiles([second]);
   await expect(page.locator('.tab.active')).toContainText('undo-second.md');
+  await startEditing(page);
   await expect(editor).toHaveText('Same local');
   await editor.click();
   await page.keyboard.press('ControlOrMeta+z');

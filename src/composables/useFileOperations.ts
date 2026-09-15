@@ -3,7 +3,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, rename, remove, exists } from '@tauri-apps/plugin-fs';
 import { readTextFile } from '../services/documentText';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
-import { markdownToHtml, generateSlug } from '../utils/markdown-converter';
+import { generateSlug } from '../utils/markdown-converter';
 import { serializeVisualMarkdown } from '../utils/visual-source';
 import { aiCommands } from '../services/aiCommands';
 import type { Tab } from './useTabs';
@@ -24,9 +24,8 @@ export interface UseFileOperationsOptions {
   markSaveStart?: (filePath: string) => void;
   markSaveEnd?: (filePath: string, content: string) => void;
   onFileOpened?: (filePath: string, content: string) => void;
-  /** Fired when a file above LARGE_FILE_CHAR_THRESHOLD was opened markdown-first
-   *  (tab.pendingMarkdown set, no HTML generated) — the host must present it in
-   *  code view because the visual editor has nothing to show. */
+  /** Notifies hosts of a large raw document. Opening does not activate an editor;
+   *  the host can page its source until the user chooses an editing mode. */
   onLargeFileOpened?: (filePath: string, markdown: string) => void;
   /** Called after a successful save / save-as so the host can register a
    *  file watcher for new paths. Safe to call repeatedly — the watcher
@@ -66,7 +65,6 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     switchToTab,
     getEditorHtml,
     getMarkdownOverride,
-    setEditorContent,
     markSaveStart,
     markSaveEnd,
     onAfterSave,
@@ -108,7 +106,8 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
 
     const fileContent = await readTextFile(filePath);
     const isLarge = fileContent.length > LARGE_FILE_CHAR_THRESHOLD;
-    const htmlContent = isLarge ? '' : markdownToHtml(fileContent);
+    // Keep disk source inert until an explicit edit action.
+    const htmlContent = '';
     const fileName = extractFileName(filePath);
 
     const activeIdx = findActiveTabIndex();
@@ -119,8 +118,9 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       tabs.value[activeIdx].hasChanges = false;
       tabs.value[activeIdx].originalMarkdown = fileContent;
       tabs.value[activeIdx].largeFile = isLarge || undefined;
-      tabs.value[activeIdx].pendingMarkdown = isLarge ? fileContent : undefined;
-      if (!isLarge) setEditorContent(htmlContent);
+      tabs.value[activeIdx].pendingMarkdown = fileContent;
+      tabs.value[activeIdx].editorMode = null;
+      tabs.value[activeIdx].readOnly = true;
     } else {
       const newTabId = createNewTab(filePath, htmlContent, fileName);
       if (!newTabId) return;
@@ -128,7 +128,9 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       if (newTab) {
         newTab.originalMarkdown = fileContent;
         newTab.largeFile = isLarge || undefined;
-        newTab.pendingMarkdown = isLarge ? fileContent : undefined;
+        newTab.pendingMarkdown = fileContent;
+        newTab.editorMode = null;
+        newTab.readOnly = true;
       }
       await switchToTab(newTabId);
     }
@@ -376,7 +378,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       // Read the file
       const fileContent = await readTextFile(fullPath);
       const isLarge = fileContent.length > LARGE_FILE_CHAR_THRESHOLD;
-      const htmlContent = isLarge ? '' : markdownToHtml(fileContent);
+      const htmlContent = '';
       const fileName = extractFileName(fullPath);
 
       // Create new tab and switch to it
@@ -385,7 +387,9 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       if (newTab) {
         newTab.originalMarkdown = fileContent;
         newTab.largeFile = isLarge || undefined;
-        newTab.pendingMarkdown = isLarge ? fileContent : undefined;
+        newTab.pendingMarkdown = fileContent;
+        newTab.editorMode = null;
+        newTab.readOnly = true;
       }
       await switchToTab(newTabId);
       if (isLarge) onLargeFileOpened?.(fullPath, fileContent);

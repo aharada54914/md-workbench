@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
-import { codeEditor } from './helpers/code-editor';
+import { codeEditor, startEditing } from './helpers/code-editor';
 
 // ============================================================
 // Test suite: Large file open (#129)
 // Files above LARGE_FILE_CHAR_THRESHOLD (1M chars) must open
-// markdown-first: straight into section-virtualized visual editing, without
+// markdown-first: read-only until Edit explicitly starts section-virtualized editing, without
 // converting or mounting the complete document in a single TipTap instance.
 // ============================================================
 
@@ -44,18 +44,22 @@ const BIG_MD = buildLargeDoc(1_050_000);
 const PATH_BIG = '/test/big.md';
 
 test.describe('Large file open (#129)', () => {
-  test('opens above-threshold file directly in editable lazy visual mode', async ({ page }) => {
+  test('Edit opens an above-threshold file in bounded editable lazy visual mode', async ({ page }) => {
     await setupTauriMocks(page, {
       initialFs: { [PATH_BIG]: BIG_MD },
       openFilePath: PATH_BIG,
     });
 
     await page.goto('/');
+    await expect(page.locator('iframe[title="Isolated document preview"]')).toBeVisible();
+    await expect(page.locator('.ProseMirror')).toHaveCount(0);
+    await startEditing(page);
     await page.waitForSelector('.tab-bar', { timeout: 10_000 });
     await expect(page.locator('.tab-bar .tab')).toContainText('big.md', { timeout: 8_000 });
 
     await expect(page.locator('.lazy-editor')).toBeVisible({ timeout: 10_000 });
     const visualChunks = page.locator('.lazy-editor .ProseMirror');
+    await expect(visualChunks.first()).toHaveAttribute('contenteditable', 'true');
     await expect(visualChunks.first()).toBeEditable();
     await expect(visualChunks.first().locator('h1').first()).toContainText('Section header');
     expect(await visualChunks.count()).toBeLessThan(10);
@@ -68,9 +72,11 @@ test.describe('Large file open (#129)', () => {
     });
 
     await page.goto('/');
+    await startEditing(page);
     await page.waitForSelector('.tab-bar', { timeout: 10_000 });
     await expect(page.locator('.lazy-editor')).toBeVisible({ timeout: 10_000 });
     const visualChunks = page.locator('.lazy-editor .ProseMirror');
+    await expect(visualChunks.first()).toHaveAttribute('contenteditable', 'true');
     await expect(visualChunks.first()).toBeEditable();
     await expect(visualChunks.first().locator('h1').first()).toContainText('Section header');
     expect(await visualChunks.count()).toBeLessThan(10);
@@ -87,6 +93,7 @@ test.describe('Large file open (#129)', () => {
       element.dispatchEvent(new Event('scroll'));
     });
     const firstChunkEditor = page.locator('.lazy-editor-chunk[data-lazy-chunk="0"] .ProseMirror');
+    await expect(firstChunkEditor).toHaveAttribute('contenteditable', 'true');
     await expect(firstChunkEditor).toBeEditable();
     await expect(firstChunkEditor.locator('h1').first()).toContainText('Section header');
     await firstChunkEditor.focus();
@@ -118,6 +125,7 @@ test.describe('Large file open (#129)', () => {
     const copy = '/test/big-copy.md';
     const mocks = await setupTauriMocks(page, { initialFs: { [PATH_BIG]: source }, openFilePath: PATH_BIG });
     await page.goto('/');
+    await startEditing(page);
     const visual = page.locator('.lazy-editor .ProseMirror').first();
     await expect(visual).toBeVisible({ timeout: 10_000 });
     await expect.poll(() => visual.evaluate(element => (element as HTMLElement).isContentEditable)).toBe(false);
@@ -142,6 +150,7 @@ test.describe('Large file open (#129)', () => {
     });
 
     await page.goto('/');
+    await startEditing(page);
     await page.waitForSelector('.tab-bar', { timeout: 10_000 });
     await expect(page.locator('.lazy-editor')).toBeVisible({ timeout: 10_000 });
 
@@ -162,6 +171,7 @@ test.describe('Large file open (#129)', () => {
     });
 
     await page.goto('/');
+    await startEditing(page);
     const lazyWrapper = page.locator('.lazy-editor-chunk[data-lazy-chunk="0"] .editor-content-wrapper');
     await expect(lazyWrapper).toBeVisible({ timeout: 10_000 });
     const lazyWidth = await lazyWrapper.evaluate(element => element.getBoundingClientRect().width);
@@ -182,6 +192,7 @@ test.describe('Large file open (#129)', () => {
     });
 
     await page.goto('/');
+    await startEditing(page);
     await expect(page.locator('.lazy-editor')).toBeVisible({ timeout: 10_000 });
     await page.locator('.toc-toggle-btn').first().click();
 
@@ -211,6 +222,7 @@ test.describe('Large file open (#129)', () => {
     });
 
     await page.goto('/');
+    await startEditing(page);
     await page.waitForSelector('.tab-bar', { timeout: 10_000 });
     await expect(page.locator('.lazy-editor')).toBeVisible({ timeout: 10_000 });
 

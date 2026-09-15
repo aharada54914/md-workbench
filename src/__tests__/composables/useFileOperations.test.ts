@@ -644,7 +644,7 @@ describe('useFileOperations', () => {
       expect(onLargeFileOpened).toHaveBeenCalledWith('/big/big.md', bigContent);
     });
 
-    it('opens a file below the threshold exactly as before', async () => {
+    it('opens an ordinary file inertly with exact source and no editor conversion', async () => {
       mockReadTextFile.mockResolvedValue('# small');
       const onLargeFileOpened = vi.fn();
 
@@ -655,8 +655,12 @@ describe('useFileOperations', () => {
 
       const tab = tabs.value[0];
       expect(tab.largeFile).toBeUndefined();
-      expect(tab.pendingMarkdown).toBeUndefined();
-      expect(tab.content).toBe('<p># small</p>');
+      expect(tab.pendingMarkdown).toBe('# small');
+      expect(tab.content).toBe('');
+      expect(tab.editorMode).toBeNull();
+      expect(tab.readOnly).toBe(true);
+      expect(markdownToHtml).not.toHaveBeenCalled();
+      expect(options.setEditorContent).not.toHaveBeenCalled();
       expect(onLargeFileOpened).not.toHaveBeenCalled();
     });
 

@@ -186,6 +186,10 @@ foreach ($format in @('lf','crlf','bom-crlf')) {
     if ((Get-FileHash $document -Algorithm SHA256).Hash -ne $originalHash) { throw 'Viewing changed source bytes' }
     $result.render = 'native UIA heading/end text plus nonblank OS heading capture; not glyph or IME acceptance'
     if ($VerifyEditor) {
+      # Disk documents initially show the isolated preview. Activate Visual
+      # explicitly before exercising the return-to-editor lifecycle.
+      Invoke-Button $root 'Edit'
+      [void](Wait-Name $root $marker)
       Invoke-Button $root 'Isolated read-only preview'
       [void](Wait-Name $root $marker)
       Invoke-Button $root 'Return to editor'

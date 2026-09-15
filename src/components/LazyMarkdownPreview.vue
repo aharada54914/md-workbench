@@ -11,7 +11,7 @@ interface EditableChunk {
   lineCount: number;
 }
 
-const props = defineProps<{ markdown: string; filePath?: string | null; documentId?: string }>();
+const props = defineProps<{ markdown: string; filePath?: string | null; documentId?: string; readOnly?: boolean }>();
 const emit = defineEmits<{
   'update:markdown': [markdown: string];
   'update:hasChanges': [changed: boolean];
@@ -222,7 +222,7 @@ onBeforeUnmount(() => {
           :document-id="`${documentId ?? ''}:${index}`"
           :file-path="filePath"
           :source-markdown="chunks[index].markdown"
-          :editable="true"
+          :editable="!readOnly"
           @update:model-value="(html: string) => htmlCache.set(index, html)"
           @update:source-markdown="(markdown: string) => handleChunkUpdate(index, markdown)"
           @edit-source="emit('edit-source')"

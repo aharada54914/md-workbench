@@ -33,6 +33,8 @@ test.describe('Tab Close in Code View (#36)', () => {
     });
     await page.goto('/');
     await waitForTab(page, 'file-a.md');
+    // Explicit Source intent belongs to A and must be restored after closing B.
+    await openCodeView(page);
     await mock.triggerOpenFiles([PATH_B]);
     await expect(page.locator('.tab-bar .tab')).toHaveCount(2);
     await openCodeView(page);

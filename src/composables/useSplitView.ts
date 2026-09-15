@@ -183,6 +183,8 @@ export function useSplitView(): UseSplitViewReturn {
       hasChanges: false,
       scrollTop: 0,
       originalMarkdown: null,
+      editorMode: filePath ? null : 'visual',
+      readOnly: !!filePath,
     };
 
     pane.tabs.push(newTab);

@@ -7,7 +7,9 @@ test('cross-pane close selection and Cancel preserve the live Source document', 
   const source = '\uFEFF# Right\r\n\r\n:::unknown  \r\n';
   const fs = await setupTauriMocks(page, { initialFs: { [leftPath]: '# Left\n', [rightPath]: source }, openFilePath: leftPath });
   await page.goto('/');
-  await expect(page.locator('.ProseMirror')).toContainText('Left');
+  await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toContainText('Left');
+  // Both panes explicitly enter Source before the close flow selects the left tab.
+  await openCodeView(page);
   await page.evaluate(async ({ path, source }) => {
     const splitPath = '/src/composables/useSplitView.ts';
     const markdownPath = '/src/utils/markdown-converter.ts';
@@ -53,7 +55,7 @@ for (const [name, newline, bom] of [['LF', '\n', ''], ['CRLF', '\r\n', ''], ['BO
     const source = bom + ['# 日本語', '', ':::unknown untouched', '', '$$a+b$$  ', '', ''].join(newline);
     const fs = await setupTauriMocks(page, { initialFs: { [path]: source }, openFilePath: path });
     await page.goto('/');
-    await expect(page.locator('.ProseMirror')).toContainText('日本語');
+    await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toContainText('日本語');
     await openCodeView(page);
     await codeEditor(page).click();
     await page.keyboard.press('Control+End');
@@ -67,7 +69,7 @@ for (const [name, newline, bom] of [['LF', '\n', ''], ['CRLF', '\r\n', ''], ['BO
     const source = bom + ['# 日本語', '', ':::unknown untouched', '', '$$a+b$$  ', '', ''].join(newline);
     const fs = await setupTauriMocks(page, { initialFs: { [path]: source }, openFilePath: path });
     await page.goto('/');
-    await expect(page.locator('.ProseMirror')).toContainText('日本語');
+    await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toContainText('日本語');
     await openCodeView(page);
     await codeEditor(page).click();
     await page.keyboard.press('Control+End');

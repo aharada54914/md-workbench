@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
+import { startEditing } from './helpers/code-editor';
 
 test('a saved Visual edit cannot overwrite a later external reload with stale source', async ({ page }) => {
   const path = '/test/visual-reload.md';
@@ -7,6 +8,7 @@ test('a saved Visual edit cannot overwrite a later external reload with stale so
   const external = '\uFEFF\r\nExternal replacement  \r\n\t';
   const fs = await setupTauriMocks(page, { initialFs: { [path]: source }, openFilePath: path });
   await page.goto('/');
+  await startEditing(page);
   const editor = page.locator('.ProseMirror');
   await expect(editor).toHaveAttribute('contenteditable', 'true');
   await editor.locator('p').last().click();
@@ -35,6 +37,7 @@ test('a watcher conflict merge stays dirty and can be saved against the actual d
   const path = '/test/visual-merge.md';
   const fs = await setupTauriMocks(page, { initialFs: { [path]: 'Original' }, openFilePath: path });
   await page.goto('/');
+  await startEditing(page);
   const editor = page.locator('.ProseMirror');
   await expect(editor).toHaveAttribute('contenteditable', 'true');
   await editor.locator('p').click();

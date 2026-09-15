@@ -3,6 +3,10 @@ import { t } from '../i18n';
 import { EMPTY_TAB_CONTENT } from '../constants';
 
 export interface Tab {
+  /** null means this disk document has never activated an editor in this session. */
+  editorMode?: 'visual' | 'source' | 'split' | null;
+  /** Display isolation is separate from activation so returning preserves Undo. */
+  readOnly?: boolean;
   id: string;
   filePath: string | null;
   fileName: string;
@@ -51,6 +55,8 @@ export function useTabs(): UseTabsReturn {
     hasChanges: false,
     scrollTop: 0,
     originalMarkdown: null,
+    editorMode: 'visual',
+    readOnly: false,
   }]);
 
   const activeTabId = ref('tab-1');
@@ -78,6 +84,8 @@ export function useTabs(): UseTabsReturn {
       hasChanges: false,
       scrollTop: 0,
       originalMarkdown: null,
+      editorMode: filePath ? null : 'visual',
+      readOnly: !!filePath,
     });
     return newTabId;
   };

@@ -11,7 +11,7 @@ import { useSettings } from '../composables/useSettings';
 import type { CodeEditorHandle } from '../types/code-editor';
 import { applySourceEdits, sourceOffset, editorOffset, type SourceEdit } from '../utils/source-edits';
 
-const props = defineProps<{ modelValue: string }>();
+const props = defineProps<{ modelValue: string; readOnly?: boolean }>();
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 
 const { zoomScale } = useEditorZoom();
@@ -19,6 +19,7 @@ const { settings } = useSettings();
 const hostRef = ref<HTMLDivElement | null>(null);
 const wrapConfig = new Compartment();
 const gutterConfig = new Compartment();
+const editingConfig = new Compartment();
 let view: EditorView | null = null;
 let applyingExternalValue = false;
 let lastSyncedValue = props.modelValue;
@@ -143,11 +144,17 @@ defineExpose({ editor });
 
 onMounted(() => {
   if (!hostRef.value) return;
+  // Props can change after setup while an async parent finishes opening a file.
+  // The preserved source and the visible document must start from the same value.
+  lastSyncedValue = props.modelValue;
   view = new EditorView({
     parent: hostRef.value,
     state: EditorState.create({
       doc: props.modelValue,
       extensions: [
+        editingConfig.of([EditorState.readOnly.of(!!props.readOnly), EditorView.editable.of(!props.readOnly)]),
+        EditorState.transactionFilter.of(transaction =>
+          props.readOnly && transaction.docChanged && !applyingExternalValue ? [] : transaction),
         history(),
         markdown(),
         syntaxHighlighting(markdownHighlightStyle),
@@ -191,11 +198,21 @@ onMounted(() => {
 });
 
 watch(() => props.modelValue, (value) => {
-  if (!view || value === lastSyncedValue) return;
+  if (!view) {
+    lastSyncedValue = value;
+    return;
+  }
+  if (value === lastSyncedValue) return;
   applyingExternalValue = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
   lastSyncedValue = value;
   applyingExternalValue = false;
+});
+
+watch(() => props.readOnly, (readOnly) => {
+  view?.dispatch({ effects: editingConfig.reconfigure([
+    EditorState.readOnly.of(!!readOnly), EditorView.editable.of(!readOnly),
+  ]) });
 });
 
 watch(() => settings.value.codeWordWrap, (enabled) => {

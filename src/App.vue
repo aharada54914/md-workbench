@@ -8,7 +8,6 @@ import { copyFile, exists, remove } from '@tauri-apps/plugin-fs';
 import { readTextFile } from './services/documentText';
 import { open } from '@tauri-apps/plugin-dialog';
 import { htmlToMarkdown, markdownToHtml } from './utils/markdown-converter';
-import { serializeVisualMarkdown } from './utils/visual-source';
 import { inlineMarkdownImages, getDirectoryFromFilePath } from './utils/image-resolver';
 import type { Editor as TiptapEditor } from '@tiptap/vue-3';
 
@@ -77,6 +76,7 @@ import { useDocxExport } from './composables/useDocxExport';
 import { serializeEditorContent } from './utils/documentSerializer';
 import { DOM_SELECTORS } from './constants';
 import type { CodeEditorHandle } from './types/code-editor';
+import type { Tab } from './composables/useTabs';
 
 // ============ Split View & Tab Management ============
 const {
@@ -113,12 +113,15 @@ const {
 // Compatibility layer for legacy code
 const tabs = computed(() => activePane.value?.tabs || []);
 const activeTabId = computed(() => activePane.value?.activeTabId || '');
-const activeTab = computed(() => {
+const activeTab = computed<Tab>(() => {
   const tab = getActiveTabForPane(activePaneId.value);
   // Return a default tab if none exists (should never happen in practice)
   return tab || { id: '', filePath: null, fileName: t.value.newDocument, content: '<p></p>', hasChanges: false, scrollTop: 0, originalMarkdown: null };
 });
-const isolatedReadMode = ref(false);
+// Wait for URL/native/session opens before creating even the initial blank editor.
+const initialFilesReady = ref(false);
+const isolatedReadMode = computed(() => activeTab.value.readOnly === true);
+const editingEnabled = computed(() => initialFilesReady.value && !isolatedReadMode.value && !!activeTab.value.editorMode);
 const isolatedReadMarkdown = computed(() => {
   if (codeView.value) return codeContent.value;
   if (splitEditorActive.value) return splitMarkdownSource.value;
@@ -139,16 +142,9 @@ const editorInstance = ref<TiptapEditor | null>(null);
 // Use watchEffect to automatically re-run when any reactive dependency changes
 // This handles async editor initialization properly
 watchEffect(() => {
-  if (splitContainerRef.value) {
-    const paneRef = activePaneId.value === 'left'
-      ? splitContainerRef.value.leftPaneRef
-      : splitContainerRef.value.rightPaneRef;
-    // Vue automatically unwraps ComputedRef from defineExpose, so paneRef.editor is already Editor | undefined
-    const editor = paneRef?.editor;
-    if (editor) {
-      editorInstance.value = editor;
-    }
-  }
+  const paneRef = activePaneId.value === 'left'
+    ? splitContainerRef.value?.leftPaneRef : splitContainerRef.value?.rightPaneRef;
+  editorInstance.value = editingEnabled.value ? paneRef?.editor ?? null : null;
 });
 
 provide('editor', editorInstance);
@@ -176,7 +172,7 @@ const getEditorContent = () => {
   if (splitContainerRef.value) {
     return splitContainerRef.value.getActiveEditorContent();
   }
-  return '<p></p>';
+  return activeTab.value.content || '<p></p>';
 };
 
 const setEditorContent = (content: string) => {
@@ -511,30 +507,13 @@ const {
     watchFile(filePath, content);
     const fileName = filePath.split(/[/\\]/).pop() ?? filePath;
     addRecentFile(filePath, fileName);
-    // Only the same-tab content-replacement case; tab-id changes are seeded by
-    // the activeTabId watch, and this tag guard avoids a double-seed race.
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    if (splitEditorActive.value && splitSourceTabId.value === activeTabId.value) {
-      // eslint-disable-next-line @typescript-eslint/no-use-before-define
-      enterSplitEditor(activeTab.value?.content || '<p></p>');
-    }
-  },
-  onLargeFileOpened: (_filePath: string, markdown: string) => {
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    if (splitEditorActive.value) {
-      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    // Reusing an empty tab does not change its id, so also reset its layout here.
+    if (activeTab.value.filePath === filePath && !activeTab.value.editorMode) {
       scrollSync.detach();
-      // eslint-disable-next-line @typescript-eslint/no-use-before-define
       splitEditorActive.value = false;
+      codeView.value = false;
+      largeFileVisualMode.value = false;
     }
-    // Large files open directly in the editable, section-virtualized visual
-    // mode. Keep the raw Markdown as the source of truth until code mode,
-    // save, or an explicit full-document operation needs it.
-    void markdown;
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    codeView.value = false;
-    // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    largeFileVisualMode.value = true;
   },
   onAfterSave: (filePath: string, content: string) => {
     // New file just got a path (Save / Save As on a fresh tab) — ensure
@@ -739,14 +718,16 @@ let marpLiveTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Visible only in the plain WYSIWYG editor mode for a Marp doc.
 const marpPreviewVisible = computed(
-  () => showMarpPreview.value && isMarp.value && !codeView.value && !splitEditorActive.value
+  () => editingEnabled.value && showMarpPreview.value && isMarp.value && !codeView.value && !splitEditorActive.value
 );
 
 async function refreshMarpLive() {
+  if (!editingEnabled.value) return;
   const tab = activeTab.value;
   const raw = htmlToMarkdown(getEditorContent() ?? '');
   const baseDir = tab?.filePath ? getDirectoryFromFilePath(tab.filePath) : undefined;
-  marpLiveMarkdown.value = await inlineMarkdownImages(raw, baseDir);
+  const rendered = await inlineMarkdownImages(raw, baseDir);
+  if (editingEnabled.value && activeTab.value === tab) marpLiveMarkdown.value = rendered;
 }
 
 function scheduleMarpLive() {
@@ -763,6 +744,7 @@ function attachMarpScroll() {
 }
 
 async function toggleMarpPreview() {
+  if (!editingEnabled.value) return;
   showMarpPreview.value = !showMarpPreview.value;
   if (showMarpPreview.value) {
     await refreshMarpLive();
@@ -800,8 +782,6 @@ const isMarkdownFirst = (tab: { largeFile?: boolean; pendingMarkdown?: string | 
   !!tab && tab.largeFile === true && tab.pendingMarkdown != null;
 const largeFileVisualMode = ref(false);
 // Only tabs parked before converting their Source buffer have a stale HTML cache.
-const parkedSourceTabs = new Set<string>();
-
 const {
   codeView,
   codeContent,
@@ -819,7 +799,6 @@ const {
     if (activeTab.value) {
       activeTab.value.content = content;
       activeTab.value.pendingMarkdown = markdown;
-      parkedSourceTabs.delete(activeTabId.value);
     }
   },
   markAsChanged: () => {
@@ -835,14 +814,21 @@ const {
 watch(
   () => codeEditorComponentRef.value?.editor,
   (editor) => {
-    if (editor) {
-      codeEditorRef.value = editor;
-    }
+    codeEditorRef.value = editor ?? null;
   },
   { immediate: true }
 );
 
 const toggleCodeView = async () => {
+  const tab = activeTab.value;
+  tab.readOnly = false;
+  if (!tab.editorMode) {
+    tab.editorMode = 'source';
+    await enterCodeViewWithMarkdown(tab.pendingMarkdown ?? tab.originalMarkdown ?? '');
+    isLoadingContent.value = false;
+    return;
+  }
+  tab.editorMode = codeView.value ? 'visual' : 'source';
   isLoadingContent.value = true;
 
   if (splitEditorActive.value) {
@@ -912,67 +898,53 @@ const enterSplitEditor = (html: string): void => {
   splitSourceTabId.value = activeTabId.value;
 };
 
-// Single authoritative commit + re-seed for every active-tab change, covering
-// every open/switch path (cross-window already-open, focus listener, dropped
-// files, normal TabBar) uniformly.
-//
-// TIMING: nothing may overwrite splitMarkdownSource synchronously between the
-// activeTabId change and this flush, or the commit-old step would persist the
-// new edit into the old tab. This is why manual enter/exit seeding was removed
-// from switchToTabFromSplitEditor and onFileOpened.
+// Park buffers under their owning tab before restoring the next tab's chosen mode.
+// An untouched disk tab always returns to isolated reading, regardless of the
+// previous tab's Source/Split/large-file layout.
 watch(activeTabId, (_newId, oldId) => {
-  if (!splitEditorActive.value) return;
-  if (splitSourceTabId.value === oldId) {
-    const oldTab = splitState.value.panes.flatMap(pane => pane.tabs).find(tab => tab.id === oldId);
-    if (oldTab) {
-      oldTab.content = markdownToHtml(splitMarkdownSource.value);
+  const oldTab = splitState.value.panes.flatMap(pane => pane.tabs).find(tab => tab.id === oldId);
+  if (oldTab) {
+    if (splitEditorActive.value && splitSourceTabId.value === oldId) {
       oldTab.pendingMarkdown = splitMarkdownSource.value;
+      oldTab.content = markdownToHtml(splitMarkdownSource.value);
+    } else if (codeView.value) {
+      oldTab.pendingMarkdown = codeContent.value;
+    } else if (largeFileVisualMode.value) {
+      oldTab.pendingMarkdown = lazyMarkdownEditorRef.value?.getMarkdown() ?? oldTab.pendingMarkdown;
     }
   }
-  enterSplitEditor(activeTab.value?.content || '<p></p>');
-});
-
-// Markdown-first activation rule (issue #129): large tabs keep Markdown as
-// their source of truth and open in the section-virtualized visual editor.
-watch(activeTabId, (_newId, oldId) => {
-  const oldTab = splitState.value.panes.flatMap(pane => pane.tabs).find(t => t.id === oldId);
-  if (largeFileVisualMode.value && oldTab) {
-    oldTab.pendingMarkdown = lazyMarkdownEditorRef.value?.getMarkdown() ?? oldTab.pendingMarkdown;
-  }
-  largeFileVisualMode.value = false;
-  if (codeView.value && oldTab) {
-    oldTab.pendingMarkdown = codeContent.value;
-    parkedSourceTabs.add(oldTab.id);
-  }
-
+  scrollSync.detach();
   const tab = activeTab.value;
-  if (isMarkdownFirst(tab)) {
-    if (splitEditorActive.value) {
-      scrollSync.detach();
-      splitEditorActive.value = false;
-    }
-    codeView.value = false;
-    largeFileVisualMode.value = true;
-    return;
-  }
-
-  // Resume a Source buffer whose HTML cache has not been regenerated yet.
-  // Visual edits also carry pendingMarkdown, so raw presence alone cannot
-  // determine whether a tab should return to Source.
-  if (tab?.pendingMarkdown != null && parkedSourceTabs.has(tab.id) && !splitEditorActive.value) {
-    seedCodeContent(tab.pendingMarkdown);
-    codeView.value = true;
-    return;
-  }
-
-  if (codeView.value) {
-    seedCodeContent(tab?.pendingMarkdown
-      ?? (!tab?.hasChanges ? tab?.originalMarkdown : null)
-      ?? serializeVisualMarkdown(tab?.content || '<p></p>', tab?.originalMarkdown));
-  }
+  codeView.value = tab.editorMode === 'source';
+  splitEditorActive.value = tab.editorMode === 'split';
+  largeFileVisualMode.value = tab.editorMode === 'visual' && isMarkdownFirst(tab);
+  if (codeView.value) seedCodeContent(tab.pendingMarkdown ?? tab.originalMarkdown ?? '');
+  if (splitEditorActive.value) enterSplitEditor(tab.content || '<p></p>');
 });
+
+const startVisualEditing = async () => {
+  const tab = activeTab.value;
+  if (!tab.editorMode && !tab.largeFile) tab.content = markdownToHtml(tab.pendingMarkdown ?? tab.originalMarkdown ?? '');
+  tab.editorMode = 'visual';
+  tab.readOnly = false;
+  codeView.value = false;
+  splitEditorActive.value = false;
+  largeFileVisualMode.value = isMarkdownFirst(tab);
+  await nextTick();
+};
+
+const toggleIsolatedPreview = async () => {
+  const tab = activeTab.value;
+  if (!tab.editorMode) {
+    await startVisualEditing();
+    return;
+  }
+  // Keep the mounted instance and its Undo history for this document.
+  tab.readOnly = !tab.readOnly;
+};
 
 const toggleSplitEditor = async () => {
+  activeTab.value.readOnly = false;
   if (!splitEditorActive.value) {
     if (codeView.value) {
       await toggleCodeView();
@@ -985,6 +957,7 @@ const toggleSplitEditor = async () => {
     }
     isLoadingContent.value = true;
     enterSplitEditor(html);
+    activeTab.value.editorMode = 'split';
     splitEditorActive.value = true;
     await nextTick();
     const codeEl = document.querySelector<HTMLElement>('#code-editor-textarea');
@@ -1002,6 +975,7 @@ const toggleSplitEditor = async () => {
   }
   isLoadingContent.value = true;
   splitEditorActive.value = false;
+  activeTab.value.editorMode = 'visual';
   await nextTick();
   isLoadingContent.value = false;
 };
@@ -1126,13 +1100,9 @@ watch(
   }
 );
 
-// Switch tab while in code view: exit code view first to commit edits, then switch
+// The active-tab watcher parks raw source and restores the target's own mode.
 const switchToTabFromCodeView = async (tabId: string) => {
-  // Markdown-first tabs stay in code view — the activeTabId watcher commits the
-  // leaving tab and reseeds codeContent for the target without any conversion.
-  if (codeView.value && !isMarkdownFirst(activeTab.value)) {
-    await toggleCodeView();
-  }
+  if (tabId === activeTabId.value) return;
   await switchToTab(tabId);
 };
 
@@ -1231,6 +1201,7 @@ const aiPanelOpen = ref(false);
 const aiPanelReservedSide = ref<'left' | 'right' | null>(null);
 
 function toggleAiPanel() {
+  if (!editingEnabled.value) return;
   aiPanelOpen.value = !aiPanelOpen.value;
   if (!aiPanelOpen.value) aiPanelReservedSide.value = null;
 }
@@ -1244,14 +1215,19 @@ function closeAiPanel() {
 // The diagram pinning, preamble augmentation, and reply routing live inside
 // AiPanel — App.vue just makes sure the panel is visible when work starts.
 const aiMermaid = useAiMermaidTarget();
+watch([editingEnabled, activeTabId], () => {
+  closeAiPanel();
+  aiMermaid.clear();
+});
 watch(
   () => aiMermaid.target.value,
   (t) => {
-    if (t) aiPanelOpen.value = true;
+    if (t && editingEnabled.value) aiPanelOpen.value = true;
   },
 );
 
 function onAiApplyContent(content: string) {
+  if (!editingEnabled.value) return;
   // Reload-only — no auto-diff (revert flow already matches disk).
   setEditorContent(content);
   // Mark editor state as "saved" so the next file-watcher fire (we just
@@ -1265,6 +1241,7 @@ function onAiApplyContent(content: string) {
 }
 
 function onAiShowDiff(_orig: string, candidate: string) {
+  if (!editingEnabled.value) return;
   // Write the candidate into the editor so the existing change-tracking
   // machinery computes the diff vs the on-disk original, then surface
   // the DiffPreview modal immediately.
@@ -1363,18 +1340,20 @@ const aiWorkspaceRoot = computed<string>(() => {
 // ============ AI Tmp Recovery ============
 const tmpRecovery = ref<{ tmpPath: string; content: string; modifiedAt: string } | null>(null);
 
-watch(() => activeTab.value?.filePath, async (path) => {
-  if (!path) { tmpRecovery.value = null; return; }
+watch([() => activeTab.value?.filePath, editingEnabled], async ([path, enabled], _previous, onCleanup) => {
+  let cancelled = false;
+  onCleanup(() => { cancelled = true; });
+  tmpRecovery.value = null;
+  if (!path || !enabled) return;
   const tmpPath = `${path}.mermark-ai.tmp`;
   try {
     if (await exists(tmpPath)) {
+      if (cancelled) return;
       const content = await readTextFile(tmpPath);
-      tmpRecovery.value = { tmpPath, content, modifiedAt: new Date().toISOString() };
-    } else {
-      tmpRecovery.value = null;
+      if (!cancelled) tmpRecovery.value = { tmpPath, content, modifiedAt: new Date().toISOString() };
     }
   } catch {
-    tmpRecovery.value = null;
+    // A failed/stale recovery lookup cannot change the next document.
   }
 });
 
@@ -1957,28 +1936,35 @@ onMounted(async () => {
     console.error('Błąd nasłuchiwania zdarzeń:', error);
   }
 
-  if (urlFilePath) {
-    hasExplicitFile = true;
-    await nextTick();
-    await openFileWithCrossWindowCheck(urlFilePath);
-  }
-  await drainNativeOpens();
-
-  // Restore previous session if no explicit file was provided
-  if (!hasExplicitFile) {
-    const session = getSavedSession();
-    if (session) {
+  try {
+    if (urlFilePath) {
+      hasExplicitFile = true;
       await nextTick();
-      for (const pane of session.panes) {
-        for (const tab of pane.tabs) {
-          try {
-            await openFileWithCrossWindowCheck(tab.filePath);
-          } catch {
-            // File may have been deleted since last session
+      await openFileWithCrossWindowCheck(urlFilePath);
+    }
+    await drainNativeOpens();
+
+    // Restore previous session if no explicit file was provided
+    if (!hasExplicitFile) {
+      const session = getSavedSession();
+      if (session) {
+        await nextTick();
+        for (const pane of session.panes) {
+          for (const tab of pane.tabs) {
+            try {
+              await openFileWithCrossWindowCheck(tab.filePath);
+            } catch {
+              // File may have been deleted since last session
+            }
           }
         }
       }
     }
+
+  } catch (error) {
+    console.error('[App] Could not restore initial document:', error);
+  } finally {
+    initialFilesReady.value = true;
   }
 
   // Start persisting session state
@@ -2150,7 +2136,7 @@ onUnmounted(async () => {
 
     <!-- Marp strip: extra deck actions, only when the active doc is a Marp deck -->
     <MarpToolbar
-      v-if="isMarp && !codeView && !splitEditorActive"
+      v-if="editingEnabled && isMarp && !codeView && !splitEditorActive"
       :preview-active="showMarpPreview"
       @new-slide="marpNewSlide"
       @set-theme="(v) => marpUpdateFrontmatter('theme', v)"
@@ -2163,8 +2149,8 @@ onUnmounted(async () => {
       @toggle-preview="toggleMarpPreview"
     />
 
-    <button type="button" class="isolated-preview-toggle" :aria-pressed="isolatedReadMode" @click="isolatedReadMode = !isolatedReadMode">
-      {{ isolatedReadMode ? 'Return to editor' : 'Isolated read-only preview' }}
+    <button v-if="initialFilesReady" type="button" class="isolated-preview-toggle" :aria-pressed="isolatedReadMode" @click="toggleIsolatedPreview">
+      {{ isolatedReadMode ? (activeTab.editorMode ? 'Return to editor' : 'Edit') : 'Isolated read-only preview' }}
     </button>
 
     <!-- Main content area with optional left bar -->
@@ -2218,9 +2204,14 @@ onUnmounted(async () => {
         @toggle-ai="toggleAiPanel"
       />
 
-      <IsolatedPreview v-if="isolatedReadMode" :markdown="isolatedReadMarkdown" />
+      <template v-if="initialFilesReady">
+      <div v-if="isolatedReadMode && (codeView || splitEditorActive || largeFileVisualMode)" class="code-view-area">
+        <TabBar :tabs="tabs" :active-tab-id="activeTabId" :pane-id="activePaneId"
+          @switch-tab="switchToTab" @close-tab="handleCloseTabRequest(activePaneId, $event)" />
+        <IsolatedPreview :markdown="isolatedReadMarkdown" />
+      </div>
 
-      <div v-show="!isolatedReadMode" style="display: contents">
+      <div v-show="!(isolatedReadMode && (codeView || splitEditorActive || largeFileVisualMode))" style="display: contents">
       <!-- Code + Preview split: raw markdown (left) -> live WYSIWYG render (right) -->
       <div v-if="splitEditorActive && !codeView" class="split-editor-area" :class="{ 'is-marp': isMarp }">
         <TabBar
@@ -2233,7 +2224,9 @@ onUnmounted(async () => {
         <div class="split-editor-panes">
           <div class="split-editor-code">
             <CodeEditor
+            :key="activeTab.id"
               ref="codeEditorComponentRef"
+              :read-only="isolatedReadMode"
               :model-value="splitMarkdownSource"
               @update:model-value="handleSplitMarkdownInput"
             />
@@ -2273,6 +2266,7 @@ onUnmounted(async () => {
             :key="activeTab?.id"
             ref="lazyMarkdownEditorRef"
             :document-id="activeTab?.id"
+            :read-only="isolatedReadMode"
             :markdown="activeTab?.pendingMarkdown ?? ''"
             :file-path="activeTab?.filePath ?? null"
             @update:markdown="(markdown: string) => { if (activeTab) activeTab.pendingMarkdown = markdown; }"
@@ -2330,13 +2324,16 @@ onUnmounted(async () => {
             @close-tab="closeTabFromCodeView"
           />
           <CodeEditor
+            :key="activeTab.id"
             ref="codeEditorComponentRef"
+            :read-only="isolatedReadMode"
             v-model="codeContent"
             @update:model-value="onCodeContentUpdate"
           />
         </div>
       </template>
       </div>
+      </template>
     </div>
 
     <!-- Status Bar (configurable) -->
@@ -2484,7 +2481,7 @@ onUnmounted(async () => {
     <!-- AI Assistant Panel (fixed overlay; reports whether main content should
          reserve its width while the panel is neither minimized nor fullscreen) -->
     <AiPanel
-      v-if="aiPanelOpen"
+      v-if="editingEnabled && aiPanelOpen"
       :open="aiPanelOpen"
       :doc-path="aiDocPath"
       :doc-content="aiDocContent"
@@ -2501,11 +2498,11 @@ onUnmounted(async () => {
     />
 
     <!-- AI First-run tooltip (auto-shows once) -->
-    <AiFirstRunTooltip @open-settings="showSettingsModal = true" />
+    <AiFirstRunTooltip v-if="editingEnabled" @open-settings="showSettingsModal = true" />
 
     <!-- AI Tmp Recovery Modal -->
     <AiTmpRecoveryModal
-      v-if="tmpRecovery"
+      v-if="editingEnabled && tmpRecovery"
       :tmp-path="tmpRecovery.tmpPath"
       :modified-at="tmpRecovery.modifiedAt"
       @restore="onTmpRestore"

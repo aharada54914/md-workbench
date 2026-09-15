@@ -13,7 +13,7 @@ for (const mode of ['Source', 'Split']) {
         : '\uFEFFnew first\nanchor\r\nold last\t local';
       const fs = await setupTauriMocks(page, { initialFs: { [path]: source }, openFilePath: path });
       await page.goto('/');
-      await expect(page.locator('.ProseMirror')).toContainText('old first');
+      await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toContainText('old first');
       if (mode === 'Source') await openCodeView(page);
       else await page.locator('.split-editor-toggle-btn').first().click();
       await codeEditor(page).click();

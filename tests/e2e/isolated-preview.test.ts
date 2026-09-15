@@ -1,11 +1,13 @@
 import { test, expect } from '@playwright/test';
 import { setupTauriMocks } from './helpers/tauri-mock';
+import { startEditing } from './helpers/code-editor';
 
 test('preview toggle keeps the editor undo history and original file unchanged', async ({ page }) => {
   const path = '/test/isolated.md';
   const source = '日本語の本文  \r\n';
   const fs = await setupTauriMocks(page, { initialFs: { [path]: source }, openFilePath: path });
   await page.goto('/');
+  await startEditing(page);
   const editor = page.locator('.ProseMirror').first();
   await expect(editor).toContainText('日本語の本文');
   await expect(editor).toHaveAttribute('contenteditable', 'true');

@@ -3,6 +3,7 @@ import { ref, computed } from 'vue';
 import type { Pane } from '../types/pane';
 import TabBar from './TabBar.vue';
 import Editor from './Editor.vue';
+import IsolatedPreview from './IsolatedPreview.vue';
 import { useTabDrag } from '../composables/useTabDrag';
 import { useWorkspace } from '../composables/useWorkspace';
 import { useI18n } from '../i18n';
@@ -100,14 +101,14 @@ const handlePaneMouseLeave = () => {
 };
 
 defineExpose({
-  editor: computed(() => editorRef.value?.editor),
+  editor: computed(() => activeTab.value?.readOnly ? undefined : editorRef.value?.editor),
   paneId: computed(() => props.pane.id),
   getFilePath: () => activeTab.value?.filePath ?? null,
   insertImagesByPath: (items: { path: string; alt: string }[]) =>
-    editorRef.value?.insertImagesByPath?.(items),
-  getEditorContent: () => editorRef.value?.editor?.getHTML() || '',
+    !activeTab.value?.readOnly && editorRef.value?.insertImagesByPath?.(items),
+  getEditorContent: () => editorRef.value?.editor?.getHTML() ?? activeTab.value?.content ?? '',
   setEditorContent: (_content: string) => { /* handled reactively via modelValue prop */ },
-  getSearchTextMap: () => editorRef.value?.getSearchTextMap?.() ?? null,
+  getSearchTextMap: () => activeTab.value?.readOnly ? null : editorRef.value?.getSearchTextMap?.() ?? null,
   setSearchHighlights: (...args: Parameters<NonNullable<InstanceType<typeof Editor>['setSearchHighlights']>>) =>
     editorRef.value?.setSearchHighlights?.(...args),
   clearSearchHighlights: () => editorRef.value?.clearSearchHighlights?.(),
@@ -147,8 +148,14 @@ defineExpose({
 
     <!-- Editor content or empty state -->
     <div class="editor-wrapper">
+      <IsolatedPreview
+        v-if="activeTab && (activeTab.readOnly || activeTab.editorMode !== 'visual')"
+        :markdown="editorSource ?? ''"
+      />
       <Editor
-        v-if="!isEmpty"
+        v-if="!isEmpty && activeTab?.editorMode === 'visual'"
+        v-show="!activeTab?.readOnly"
+        :editable="!activeTab?.readOnly"
         :key="activeTab?.id"
         ref="editorRef"
         :model-value="editorContent"
@@ -163,7 +170,7 @@ defineExpose({
       />
 
       <!-- Empty state - shown when no tabs -->
-      <div v-else class="empty-pane">
+      <div v-if="isEmpty" class="empty-pane">
         <div class="empty-icon">📄</div>
         <div class="empty-title">{{ t.dragTabHere }}</div>
         <div class="empty-subtitle">{{ t.orOpenFileInPane }}</div>

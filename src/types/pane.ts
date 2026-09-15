@@ -55,6 +55,8 @@ export function createDefaultPane(id: string): Pane {
       hasChanges: false,
       scrollTop: 0,
       originalMarkdown: null,
+      editorMode: 'visual',
+      readOnly: false,
     }],
     activeTabId: `${id}-tab-1`,
     scrollTop: 0,

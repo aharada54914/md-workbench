@@ -22,30 +22,30 @@ test('drains every startup file in order without duplicate tabs', async ({ page 
   const fs = await setupTauriMocks(page, { initialFs: documents, openFilePaths: [paths[0], paths[1], paths[0], paths[2]] });
   await page.goto('/');
   await expect.poll(() => openTabPaths(page)).toEqual(paths);
-  await expect(page.locator('.ProseMirror')).toHaveText('Third');
+  await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toHaveText('Third');
   expect(fs.getCalls().filter(call => call.cmd === 'read').map(call => call.args)).toEqual(paths);
 });
 
 test('opens a warm native batch while keeping existing tabs', async ({ page }) => {
   const fs = await setupTauriMocks(page, { initialFs: documents, openFilePath: '/test/start.md' });
   await page.goto('/');
-  await expect(page.locator('.ProseMirror')).toHaveText('Start');
+  await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toHaveText('Start');
   await fs.triggerOpenFiles(['/test/日本語 one.md', '/test/two.md']);
   await expect.poll(() => openTabPaths(page)).toEqual(['/test/start.md', '/test/日本語 one.md', '/test/two.md']);
-  await expect(page.locator('.ProseMirror')).toHaveText('Second');
+  await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toHaveText('Second');
 });
 
 test('overlapping native notifications drain queued files once in order', async ({ page }) => {
   const fs = await setupTauriMocks(page, { initialFs: documents, openFilePath: '/test/start.md' });
   await page.goto('/');
-  await expect(page.locator('.ProseMirror')).toHaveText('Start');
+  await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toHaveText('Start');
   await Promise.all([
     fs.triggerOpenFiles(['/test/日本語 one.md', '/test/two.md']),
     fs.triggerOpenFiles(['/test/two.md', '/test/three.md']),
   ]);
   const paths = ['/test/start.md', '/test/日本語 one.md', '/test/two.md', '/test/three.md'];
   await expect.poll(() => openTabPaths(page)).toEqual(paths);
-  await expect(page.locator('.ProseMirror')).toHaveText('Third');
+  await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toHaveText('Third');
   // A notification with an empty queue must neither reopen nor reread a file.
   await fs.triggerOpenFiles([]);
   expect(fs.getCalls().filter(call => call.cmd === 'read').map(call => call.args)).toEqual(paths);
@@ -79,7 +79,7 @@ test('a replacement owner drains cold requests after registering its consumer', 
     windowLabels: ['window-print', 'window-3'],
   });
   await page.goto('/');
-  await expect(page.locator('.ProseMirror')).toHaveText('Start');
+  await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toHaveText('Start');
   expect(fs.getCalls().filter(call => call.cmd === 'read').map(call => call.args)).toEqual(['/test/start.md']);
 });
 

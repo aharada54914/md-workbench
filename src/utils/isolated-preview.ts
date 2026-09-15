@@ -70,5 +70,15 @@ export function buildIsolatedPreviewDocument(markdown: string): string {
       : block.hasAttribute('data-code') ? decodeSafeHtmlSource(block.getAttribute('data-code')!) : block.getAttribute('code') ?? block.textContent;
     block.replaceWith(replacement);
   }
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><style>body{font:16px/1.65 system-ui,sans-serif;margin:24px;color:#182230;background:#fff;overflow-wrap:anywhere}pre{white-space:pre-wrap;background:#f3f5f7;padding:12px}img{max-width:100%;height:auto}table{border-collapse:collapse}td,th{border:1px solid #ccd3dc;padding:6px}blockquote{border-left:3px solid #ccd3dc;margin-left:0;padding-left:16px}</style></head><body>${sanitizePreviewHtml(template.innerHTML)}</body></html>`;
+  return previewDocument(sanitizePreviewHtml(template.innerHTML));
+}
+
+/** Bounded large-file pages are plain text, with no Markdown/HTML parser. */
+export function buildIsolatedSourceDocument(source: string): string {
+  const escaped = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return previewDocument(`<pre>${escaped}</pre>`);
+}
+
+function previewDocument(body: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><style>body{font:16px/1.65 system-ui,sans-serif;margin:24px;color:#182230;background:#fff;overflow-wrap:anywhere}pre{white-space:pre-wrap;background:#f3f5f7;padding:12px}img{max-width:100%;height:auto}table{border-collapse:collapse}td,th{border:1px solid #ccd3dc;padding:6px}blockquote{border-left:3px solid #ccd3dc;margin-left:0;padding-left:16px}</style></head><body>${body}</body></html>`;
 }

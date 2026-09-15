@@ -242,7 +242,7 @@ const findVisualTargetAt = (x: number, y: number) => {
   const panes = Array.from(container.querySelectorAll(':scope > .editor-pane')) as HTMLElement[];
   const idx = panes.indexOf(paneEl);
   const targetRef = idx === 0 ? leftPaneRef.value : rightPaneRef.value;
-  if (!targetRef) return null;
+  if (!targetRef?.editor) return null;
 
   return {
     filePath: targetRef.getFilePath?.() ?? null,
