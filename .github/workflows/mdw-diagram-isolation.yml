@@ -31,7 +31,7 @@ jobs:
       - run: npm install --global pnpm@11.3.0 --ignore-scripts
       - run: pnpm install --frozen-lockfile
       - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
-      - run: node --test scripts/diagram-isolation/protocol.test.mjs
+      - run: node --test scripts/diagram-isolation/protocol.test.mjs scripts/diagram-isolation/native-receipts.test.mjs
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --features diagram-isolation-spike diagram_spike
       - name: Default binary has no fixture despite launch flag
         run: |
