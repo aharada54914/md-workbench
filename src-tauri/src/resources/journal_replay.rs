@@ -113,7 +113,7 @@ pub fn replay_metadata(input: &[u8]) -> MetadataOnlyHistory {
     history
 }
 
-fn valid_progress(previous: Option<&JournalRecord>, candidate: &JournalRecord) -> bool {
+pub(super) fn valid_progress(previous: Option<&JournalRecord>, candidate: &JournalRecord) -> bool {
     let Some(previous) = previous else {
         return candidate.stage() == Stage::Prepared
             && candidate

@@ -1,4 +1,4 @@
-# Windows storage API probe
+# Native storage API probe
 
 This independent diagnostic measures API return values. It does not activate the
 editor's journal or Save code, and does not establish power-loss durability,
@@ -13,7 +13,7 @@ cargo test --locked --manifest-path scripts/native-storage-probe/Cargo.toml
 cargo run --quiet --locked --manifest-path scripts/native-storage-probe/Cargo.toml
 ```
 
-No arguments are accepted. On Windows the probe exclusively creates one UUID
+The default API-support mode accepts no arguments. On Windows the probe exclusively creates one UUID
 directory under the OS temporary directory, then creates a fixed child directory
 and a bounded synthetic BOM/CRLF file. It queries the filesystem through the open
 directory handle. Only NTFS proceeds to the API matrix. The temp location is a
@@ -143,3 +143,43 @@ Primary API contracts used by this slice:
 - [FSCTL_SET_REPARSE_POINT](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_set_reparse_point)
   and [REPARSE_DATA_BUFFER](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_reparse_data_buffer)
   define the mount-point fixture and its byte offsets.
+
+
+## Inactive shared metadata-store consumer
+
+On macOS or Windows, run `cargo run --quiet --locked --manifest-path
+scripts/native-storage-probe/Cargo.toml -- --metadata` to exercise the product's
+crate-private `resources::private_store` source directly. The existing no-argument
+API report remains separate. This mode creates only one new synthetic UUID session
+in the actual native account's application-data directory, appends four existing
+journal frames, closes the writer, reopens in this process and a fresh child, then
+performs nonrecursive owned-session cleanup. It never uses user document content,
+registers IPC, calls Save, repairs an existing store, or resumes an old writer.
+
+Output is a separate bounded JSON object with `scope: inactive_metadata_store`,
+sequence/validated extent, typed failures and cleanup outcome. No paths, IDs,
+SIDs or content are logged. Exit 0 requires the four-record observation and
+successful cleanup; failures exit 1. The internal `--metadata-read <UUID>` consumer
+can only independently validate/replay an existing session; it cannot append or
+acquire cleanup ownership. CI exercises Windows Server 2022, Windows 11 ARM and
+macOS 15. Cross-compilation alone does not validate native API behavior.
+
+All results retain namespace `unestablished` and snapshots `unverified`. A flush
+return and fresh-process read are not power-loss evidence; actual kill-at-barrier
+tests remain outstanding. Failed bootstrap or abrupt termination can leave a
+synthetic session. The diagnostic does not enumerate/remove such leftovers or
+weaken security to clean them up. Same-user hostile native mutation is excluded;
+macOS locks are advisory and final unlink operations cannot defeat that actor.
+See RESOURCE_JOURNAL.md for the full inactive boundary.
+
+Primary native contracts additionally used here:
+
+- [SHGetKnownFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath)
+  resolves the process user's application-data location; returned memory is freed
+  with CoTaskMemFree.
+- [Apple ACL descriptor acquisition](https://github.com/apple-oss-distributions/Libc/blob/main/posix1e/acl_file.c)
+  and [security-property presence](https://github.com/apple-oss-distributions/Libc/blob/main/gen/filesec.c)
+  explain why missing ACL properties must be distinguished from a failed FD query.
+- [Apple fsync](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)
+  and [fcntl](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)
+  describe fsync and F_FULLFSYNC; successful calls do not certify namespace durability.

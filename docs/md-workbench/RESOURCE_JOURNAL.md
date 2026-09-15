@@ -96,7 +96,7 @@ records against an actor who can rewrite the checksum.
 transactions, keeping only each transaction's latest validated record. It stops
 at the first error and never searches for a later magic marker. Failure leaves
 the preceding validated prefix available for diagnostics, not recovery execution.
-There is no truncation, eviction, compaction, append I/O or disk reservation.
+Replay performs no truncation, eviction, compaction, append I/O or disk reservation.
 
 The first record for an ID must be PREPARED with all assets PLANNED. Subsequent
 records retain the same document and ordered asset targets, including display
@@ -132,3 +132,61 @@ Focused native tests cover strict parsing, limits, stage transitions,
 non-mutating failures and recovery classification, plus frame golden bytes,
 every-byte mutation/truncation and bounded history replay. The modules make no
 tested claim about disk persistence or platform filesystem behavior.
+
+
+## Inactive private metadata store
+
+`resources::private_store` is crate-private and has no IPC registration or Save
+caller. The standalone native-storage diagnostic compiles this same source. It
+adds fresh-session append I/O to the existing frame format; it does not change
+that format, the transaction contract, or the recovery classifier.
+
+A writer can only be constructed by exclusive native session creation. No caller
+path selects the base, and a reopened UUID can only produce metadata observations,
+never a writer or cleanup owner. Existing empty, torn, invalid, or complete-prefix
+streams are never repaired, initialized, resumed or truncated. Append validates
+bounded history progression and encoded size before writing. Short writes are
+completed at the acknowledged offset; write or flush failure poisons the writer.
+Only a successful file barrier followed by a returned receipt acknowledges a new
+sequence/extent. An allocation abort after the barrier can leave an unacknowledged
+frame; replay still supplies metadata only. There is no automatic retry of an
+uncertain append, snapshot storage, compaction or capacity reservation.
+
+Windows resolves the actual process user's LocalAppData via the native known-folder
+API, accepts local NTFS with persistent ACLs, retains every opened non-reparse
+ancestor without delete sharing, and creates a new UUID directory and one journal
+file with the protected process-user + SYSTEM DACL. The common strict ACL inspector
+rejects broad, NULL, unprotected, foreign-owner and unexpected-entry forms. It
+rejects SYSTEM and already enabled Backup/Restore privileges, without elevation
+or privilege adjustment. File, private-directory and parent-directory flushes
+must all return success during bootstrap; unsupported/error results are typed.
+
+macOS resolves the actual account's home through `getpwuid_r`, then opens its
+existing `Library/Application Support` components relative to retained directory
+FDs. It requires local writable APFS, no symlink traversal, checked ownership and
+permissions, private directory 0700/file 0600, and no private extended ACL. An
+absent ACL is established through successful `fstatx_np` and security-property
+presence inspection, not by treating an arbitrary ACL-query error as absence.
+Read opens are nonblocking before same-FD regular-file/link checks, so a FIFO
+replacement cannot wait indefinitely. File flush uses fsync plus F_FULLFSYNC;
+bootstrap also fsyncs the private directory and parent. Advisory locks reject
+cooperating concurrent readers while the fresh writer is live.
+
+Every append receipt retains `NamespaceDurability::Unestablished` and
+`SnapshotVerification::Unverified`. Successful native API returns and fresh-process
+reopen are observations, not proof that a newly created namespace survives power
+loss. Complete suffix loss remains undetectable from this format alone. No
+COMPLETED metadata record establishes commit/recovery eligibility. Hostile
+same-user native processes, advisory-lock bypass and renderer isolation are outside
+this primitive's guarantee. In particular, macOS cleanup's final path unlink is
+not safe against a hostile same-user namespace race; cleanup is limited to the
+current diagnostic's exclusively created synthetic entries and is nonrecursive.
+Failed bootstrap may leave such an entry; there is no scan/adopt/delete fallback.
+
+Scoped checks cover fake-backend short/zero/partial writes, flush failure and
+poisoning, invalid transitions, changed extents, incomplete tails and complete
+suffix loss. Real macOS tests use only owned synthetic sessions for ACL/mode,
+symlink/hardlink/FIFO/replacement rejection, locking, flush and cleanup. The
+three-platform diagnostic appends four records and observes them in a new process.
+These checks do not yet inject process termination at append barriers or test
+power loss; those remain separate evidence before enabling a durable Save protocol.
