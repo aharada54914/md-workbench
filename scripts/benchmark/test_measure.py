@@ -92,7 +92,7 @@ class SummaryTests(unittest.TestCase):
         with self.assertRaises(ValueError): measure.summarize([item])
         item = result(); del item['metadata']['environment']['power']
         with self.assertRaises(ValueError): measure.summarize([item])
-        item = result(); item['schema'] = 2
+        item = result(); item['schema'] = 3
         with self.assertRaises(ValueError): measure.summarize([item])
 
 
@@ -148,8 +148,10 @@ class TreeTests(unittest.TestCase):
 
     def test_access_denied_does_not_report_partial_memory_as_complete(self):
         nodes, psutil = self.fake_psutil(); nodes[2]['denied'] = True
-        sample = measure.sample_tree(psutil, {1: 1}, {})
+        with patch.object(measure.sys, 'platform', 'linux'):
+            sample = measure.sample_tree(psutil, {1: 1}, {})
         self.assertFalse(sample['complete'])
+        self.assertEqual(sample['totals'], {})
         self.assertEqual(sample['errors'][0]['pid'], 2)
 
 
@@ -178,6 +180,10 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 recorded = json.loads((out / 'result.json').read_text(encoding='utf-8'))
                 self.assertEqual(recorded['status'], 'success')
+                self.assertEqual(recorded['schema'], 2)
+                self.assertEqual(recorded['argv'][-1], str(fixture.resolve()))
+                self.assertTrue(Path(recorded['resolved_executable']).is_absolute())
+                self.assertEqual(set(recorded['memory_peak']), set(recorded['memory_method']['metrics']))
                 samples = [json.loads(line) for line in (out / 'samples.jsonl').read_text().splitlines()]
                 self.assertTrue(any(p['pid'] == app.pid for s in samples for p in s['processes']))
                 self.assertGreater(recorded['sample_count'], 0)
