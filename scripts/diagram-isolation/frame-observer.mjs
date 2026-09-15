@@ -2,6 +2,21 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { commands, nativeDenialCounts, observeNativeDenials } from './native-receipts.mjs';
 
+export async function instrumentWrapperBridge(fixture) {
+  const instrumented = await fixture.evaluate(() => {
+    const bridge = window.chrome?.webview;
+    if (!bridge) return false;
+    const original = bridge.postMessage;
+    let calls = 0;
+    const observed = function(...args) { calls++; return Reflect.apply(original, this, args); };
+    try { bridge.postMessage = observed; } catch { return false; }
+    if (bridge.postMessage !== observed) return false;
+    window.__diagramBridgeObservation = { count:() => calls, restore:() => { bridge.postMessage = original; } };
+    return true;
+  });
+  assert.equal(instrumented, true, 'Wrapper bridge observation unavailable');
+}
+
 // Only called against a fresh, owned feature-only native process.
 export async function observeFrames({ fixture, main, report, until, readLog, active }) {
   const hostOrigin = 'http://mdwdiagramhost.localhost';
@@ -28,18 +43,7 @@ export async function observeFrames({ fixture, main, report, until, readLog, act
   });
   assert.ok(key, 'Genuine native positive control required');
   report.checks.genuineNativeControl = true;
-  const instrumented = await fixture.evaluate(() => {
-    const bridge = window.chrome?.webview;
-    if (!bridge) return false;
-    const original = bridge.postMessage;
-    let calls = 0;
-    const observed = function(...args) { calls++; return Reflect.apply(original, this, args); };
-    try { bridge.postMessage = observed; } catch { return false; }
-    if (bridge.postMessage !== observed) return false;
-    window.__diagramBridgeObservation = { count:() => calls, restore:() => { bridge.postMessage = original; } };
-    return true;
-  });
-  assert.equal(instrumented, true, 'Wrapper bridge observation unavailable');
+  await instrumentWrapperBridge(fixture);
   try {
     const wrapper = await observeNativeDenials({
       contexts:[{ name:'wrapper', send:() => fixture.evaluate(({key, commands}) => {
@@ -51,6 +55,7 @@ export async function observeFrames({ fixture, main, report, until, readLog, act
     assert.equal(wrapper.wrapper.status, 'passed');
     const wrapperBaseline = await fixture.evaluate(() => window.__diagramBridgeObservation.count());
     assert.equal(wrapperBaseline, commands.length, 'Wrapper hook positive control required');
+    report.checks.wrapperCounterPositive = true;
     const before = nativeDenialCounts(readLog());
     const started = Date.now();
     report.childBridge = await child.evaluate(({key, commands}) => {
@@ -67,6 +72,7 @@ export async function observeFrames({ fixture, main, report, until, readLog, act
     };
     assert.equal(report.childDirectIpc.wrapperCalls, 0);
     assert.ok(Object.values(report.childDirectIpc.nativeReceiptDelta).every(count => count === 0));
+    report.nativeChild = {bridge:report.childBridge, status:'unsupported', reason:'no_native_receipt', receipts:report.childDirectIpc.nativeReceiptDelta};
     // Absence during this bounded interval is evidence of this path only, not rejection.
     report.missing.push('child native IPC rejection receipt (transport dispatch observed; no native receipt in bounded interval)');
     const parentObservationStarted = Date.now();
@@ -96,6 +102,7 @@ export async function observeFrames({ fixture, main, report, until, readLog, act
     report.parentMessageObservationMs = Date.now() - parentObservationStarted;
     report.checks.parentMessageWrapperCalls = (await fixture.evaluate(() => window.__diagramBridgeObservation.count())) - wrapperBaseline;
     assert.equal(report.checks.parentMessageWrapperCalls, 0);
+    report.finalNativeReceiptDelta = Object.fromEntries(commands.map(command => [command, nativeDenialCounts(readLog())[command] - before[command]]));
     assert.deepEqual(nativeDenialCounts(readLog()), before);
     report.checks.noForwardingOnObservedPaths = true;
   } finally {

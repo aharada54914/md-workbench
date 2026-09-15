@@ -31,7 +31,7 @@ jobs:
       - run: npm install --global pnpm@11.3.0 --ignore-scripts
       - run: pnpm install --frozen-lockfile
       - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
-      - run: node --test scripts/diagram-isolation/protocol.test.mjs scripts/diagram-isolation/native-receipts.test.mjs
+      - run: node --test scripts/diagram-isolation/protocol.test.mjs scripts/diagram-isolation/native-receipts.test.mjs scripts/diagram-isolation/observation-profile.test.mjs
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --features diagram-isolation-spike diagram_spike
       - name: Default binary has no fixture despite launch flag
         run: |
@@ -39,20 +39,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe diagram-default --expect-disabled
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build and observe opt-in synthetic fixture
+      - name: Build and measure opt-in fixture (v2 bounded observations; acceptance unverified)
         id: fixture
         run: |
           pnpm tauri build --no-bundle --features diagram-isolation-spike
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "built=true" >> $env:GITHUB_OUTPUT
-          node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe diagram-spike
+          node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe diagram-spike --observations-only
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Observe genuine frame provenance and no forwarding
+      - name: Measure genuine frame provenance and no forwarding (v2 bounded observations)
         if: always() && steps.fixture.outputs.built == 'true'
         run: |
           $probeFailed = $false
           foreach ($case in @('roundtrip', 'active')) {
-            node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe "diagram-frame-$case" "--frame-$case"
+            node scripts/diagram-isolation/windows.mjs src-tauri/target/release/md-workbench.exe "diagram-frame-$case" "--frame-$case" --observations-only
             if ($LASTEXITCODE -ne 0) { $probeFailed = $true }
           }
           if ($probeFailed) { exit 1 }

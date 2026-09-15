@@ -6,14 +6,15 @@ import { createHash } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
-import { commands, observeNativeDenials } from './native-receipts.mjs';
-import { observeFrames } from './frame-observer.mjs';
-const [binaryArg, outArg, mode] = process.argv.slice(2);
+import { commands, nativeDenialCounts, observeNativeDenials } from './native-receipts.mjs';
+import { observeFrames, instrumentWrapperBridge } from './frame-observer.mjs';
+import { parseOptions, profileVersion, wryLockEvidence, classifyReport } from './observation-profile.mjs';
+const {binary:binaryArg, out:outArg, mode, observationsOnly} = parseOptions(process.argv.slice(2));
 const frameProbe = mode === '--frame-active' || mode === '--frame-roundtrip';
 if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') throw Error('Requires hosted Windows CI');
 const binary=resolve(binaryArg), out=resolve(outArg);
 await mkdir(out,{recursive:false});
-const report={version:1,status:'failed',platform:process.platform,osRelease:process.env.ImageOS,commit:process.env.GITHUB_SHA,checks:{},missing:['macOS WKWebView runtime','Linux WebKitGTK runtime','real draw.io runtime'],errors:[]};
+const report={version:2,profileVersion,profile:observationsOnly?'windows-wry-bounded-observations':'strict-receipts',mode,productAcceptance:'unverified',nativeReceiptCoverage:'unsupported',sessionNegativeCoverage:'unit_only',status:'failed',platform:process.platform,osRelease:process.env.ImageOS,commit:process.env.GITHUB_SHA,checks:{},missing:['macOS WKWebView runtime','Linux WebKitGTK runtime','real draw.io runtime'],errors:[]};
 let child, browser, stdout='', stderr='';
 let requiredFailure=false, requiredUnsupported=false;
 async function requiredObservation(name, observe) {
@@ -23,6 +24,7 @@ async function requiredObservation(name, observe) {
 const bounded=(current, chunk)=>(current+chunk.toString()).slice(-262144);
 async function until(fn, ms=15000) { const deadline=Date.now()+ms; do { const value=await fn(); if(value)return value; await delay(100); }while(Date.now()<deadline); throw Error('Observation timeout'); }
 try {
+ report.wryLock=wryLockEvidence(await readFile(new URL('../../src-tauri/Cargo.lock',import.meta.url),'utf8'));
  report.fixtureHashes={};
  for(const name of ['host.html','child.html','host.mjs','child.mjs','protocol.mjs',...(frameProbe?['peer.html','peer.mjs']:[])])report.fixtureHashes[name]=createHash('sha256').update(await readFile(new URL(`../../src-tauri/src/diagram_spike/${name}`,import.meta.url))).digest('hex');
  report.binarySha256=createHash('sha256').update(await readFile(binary)).digest('hex');
@@ -60,17 +62,35 @@ try {
   let timer;try{const label=await Promise.race([ti.invoke('get_current_window_label'),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Control receipt timeout')),2000)})]);if(label!=='main')throw Error('Wrong main')}finally{clearTimeout(timer);window.fetch=saved}return key;
  });assert.ok(key,'Genuine positive native control required');
  report.checks.genuineNativeControl=true;
+ if(observationsOnly)await instrumentWrapperBridge(fixture);
+ let wrapperBaseline, childStarted, beforeChild;
  report.nativeCustom=await observeNativeDenials({
-  contexts:[['wrapper',fixture],['child',frame]].map(([name,target])=>({name,send:()=>target.evaluate(({key,commands})=>{
-   const bridge=window.chrome?.webview;if(!bridge)return 'unavailable';
-   for(const cmd of commands)bridge.postMessage(JSON.stringify({cmd,payload:{path:'fixture-unselected',windowLabel:'main'},callback:1,error:2,options:{customProtocolIpcBlocked:true},__TAURI_INVOKE_KEY__:key}));return 'sent';
-  },{key,commands})})),readLog:()=>stderr,waitFor:until,
+  contexts:[['wrapper',fixture],['child',frame]].map(([name,target])=>({name,send:async()=>{
+   if(observationsOnly && name==='child'){
+    wrapperBaseline=await fixture.evaluate(()=>window.__diagramBridgeObservation.count());
+    assert.equal(wrapperBaseline,commands.length,'Wrapper hook positive control required');
+    report.checks.wrapperCounterPositive=true;
+    beforeChild=nativeDenialCounts(stderr);childStarted=Date.now();
+   }
+   return target.evaluate(({key,commands})=>{
+    const bridge=window.chrome?.webview;if(!bridge)return 'unavailable';
+    for(const cmd of commands)bridge.postMessage(JSON.stringify({cmd,payload:{path:'fixture-unselected',windowLabel:'main'},callback:1,error:2,options:{customProtocolIpcBlocked:true},__TAURI_INVOKE_KEY__:key}));return 'sent';
+   },{key,commands});
+  }})),readLog:()=>stderr,waitFor:until,
  });
  for(const [context,observation] of Object.entries(report.nativeCustom)){
   report.checks[`${context}Bridge`]=observation.bridge;
   if(observation.status==='passed')continue;
   if(observation.status==='unsupported')requiredUnsupported=true;else requiredFailure=true;
   report.missing.push(`${context} native custom IPC rejection receipt: ${observation.reason}`);
+ }
+ if(observationsOnly){
+  report.childDirectIpc={observedMs:Date.now()-childStarted,
+   wrapperCalls:(await fixture.evaluate(()=>window.__diagramBridgeObservation.count()))-wrapperBaseline,
+   nativeReceiptDelta:report.nativeCustom.child.receipts};
+  assert.equal(report.childDirectIpc.wrapperCalls,0);
+  assert.ok(commands.every(command=>report.childDirectIpc.nativeReceiptDelta[command]===0));
+  report.checks.noForwardingOnObservedPaths=true;
  }
  // Plugins use Tauri's own promise callbacks: require an ACL denial receipt,
  // rather than treating CSP or malformed-argument failures as ACL proof.
@@ -83,7 +103,9 @@ try {
    catch(error){return [command,typeof error==='string'?error:JSON.stringify(error)]}finally{clearTimeout(timer)}
   })));
  });
+ assert.equal(Object.keys(report.pluginReceipts).length,6,'All plugin ACL observations required');
  for(const [command,receipt] of Object.entries(report.pluginReceipts))assert.match(receipt,/not allowed|denied|forbidden|not permitted|capabilit/i,`${command}: native ACL receipt required`);
+ report.checks.pluginAclDenied=true;
  });
  // Real DOM resource actions remain subject to CSP despite CDP's own ability
  // to evaluate JavaScript. No arbitrary remote host or user path is requested.
@@ -104,18 +126,26 @@ try {
  await requiredObservation('popup',async()=>{
  const before=pages().length;await fixture.evaluate(()=>window.open('https://example.invalid/diagram-spike','_blank'));await delay(200);assert.equal(pages().length,before);report.checks.popupDenied=true;
  });
+ if(observationsOnly)await fixture.evaluate(()=>window.__diagramBridgeObservation.restore());
  // A reload must never start another exchange with the old nonce.
  await requiredObservation('reload',async()=>{
  await fixture.reload({waitUntil:'domcontentloaded'}).catch(()=>{});
- assert.equal(await fixture.evaluate(()=>window.__diagramReport?.status).catch(()=>undefined),undefined);
+ const reloaded=observationsOnly
+  ? await fixture.evaluate(()=>({status:window.__diagramReport?.status}))
+  : {status:await fixture.evaluate(()=>window.__diagramReport?.status).catch(()=>undefined)};
+ assert.equal(reloaded.status,undefined);
  report.checks.reloadRetired=true;
  });
+ if(observationsOnly)report.finalNativeReceiptDelta=Object.fromEntries(commands.map(command=>[command,nativeDenialCounts(stderr)[command]-(beforeChild?.[command]??NaN)]));
  report.missing.push('download native callback runtime receipt','all network vectors/socket capture','destroy/recreate runtime observer');
  // This is a bounded first observer, not complete T04/T16 or platform acceptance.
  report.status=requiredFailure?'failed':requiredUnsupported?'unsupported':'passed_measured_subset';
  if(requiredFailure||requiredUnsupported)process.exitCode=1;
  }
  }
+ assert.ok(child && child.exitCode===null && child.signalCode===null,'Owned process exited before observations completed');
+ report.checks.ownedProcessAliveAfterObservations=true;
+ report.observationCompleted=true;
 } catch(error) { if(report.status!=='unsupported')report.status='failed';report.errors.push(String(error?.stack??error));process.exitCode=1; }
 finally {
  if(browser)await Promise.race([browser.close().catch(()=>{}),delay(5000)]);
@@ -125,6 +155,9 @@ finally {
   report.cleanup={ownedProcessExited:child.exitCode!==null || child.signalCode!==null};
   if(!report.cleanup.ownedProcessExited){report.status='failed';report.errors.push('Owned process exit unconfirmed');process.exitCode=1}
  }
+ const verdict=classifyReport(report);
+ report.status=verdict.status;process.exitCode=verdict.exitCode;
+ if(verdict.reason)report.errors.push(`result profile: ${verdict.reason}`);
  await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));
  // Logs omit captured invoke key and nonce. Native receipt logs contain only
  // constant command names; do not emit CDP contents, requests, or fixture HTML.
