@@ -1,13 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { commands } from './native-receipts.mjs';
 import { parseOptions, wryLockEvidence, classifyReport, profileVersion } from './observation-profile.mjs';
+
+// Unit tests run before Cargo generates the ignored lockfile on a clean checkout.
+// The native runner must still read and validate its actual build's Cargo.lock.
+const lockFixture = [
+  'version = 4', '', '[[package]]', 'name = "wry"', 'version = "0.55.1"',
+  'source = "registry+https://github.com/rust-lang/crates.io-index"',
+  'checksum = "186f9871daa55fd9c016578b810d149de58367113db7fb72b462d2323ce19514"', '',
+].join('\n');
 
 const counts = n => Object.fromEntries(commands.map(command => [command, n]));
 const baseline = (mode='--spike') => ({
   profile:'windows-wry-bounded-observations', profileVersion, mode, platform:'win32', osRelease:'win22', engine:'131.0.2903.86',
-  wryLock:wryLockEvidence(readFileSync(new URL('../../src-tauri/Cargo.lock',import.meta.url),'utf8')),
+  wryLock:wryLockEvidence(lockFixture),
   status:'unsupported', errors:[], cleanup:{ownedProcessExited:true}, observationCompleted:true,
   productAcceptance:'unverified', nativeReceiptCoverage:'unsupported', sessionNegativeCoverage:'unit_only',
   checks:{ownedProcessAliveAfterObservations:true,genuineNativeControl:true, wrapperCounterPositive:true, noForwardingOnObservedPaths:true,
@@ -33,10 +40,15 @@ test('CLI is strict by default; explicit profile composes with one mode in eithe
     assert.throws(()=>parseOptions(args),/Usage/);
 });
 test('lock evidence records exact Wry entry and full lock hash, rejecting ambiguous or missing provenance',()=>{
-  const lock=readFileSync(new URL('../../src-tauri/Cargo.lock',import.meta.url),'utf8');
+  const lock=lockFixture;
   const evidence=wryLockEvidence(lock);assert.equal(evidence.version,'0.55.1');assert.match(evidence.cargoLockSha256,/^[a-f0-9]{64}$/);
   assert.notEqual(wryLockEvidence(lock+'\n').cargoLockSha256,evidence.cargoLockSha256);
   for(const value of ['',lock+'\n[[package]]\nname = "wry"\n', '[[package]]\nname = "wry"\nversion = "0.55.1"\n']) assert.throws(()=>wryLockEvidence(value));
+});
+test('LF and CRLF lock evidence preserve provenance and distinct full-file hashes',()=>{
+  const lf=wryLockEvidence(lockFixture), crlf=wryLockEvidence(lockFixture.replaceAll('\n','\r\n'));
+  assert.equal(crlf.version,lf.version);assert.equal(crlf.source,lf.source);assert.equal(crlf.checksum,lf.checksum);
+  assert.notEqual(crlf.cargoLockSha256,lf.cargoLockSha256);
 });
 test('all three completed bounded modes pass only the measured profile; coverage stays unsupported',()=>{
   for(const mode of ['--spike','--frame-active','--frame-roundtrip']){
