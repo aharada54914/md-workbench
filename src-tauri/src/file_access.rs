@@ -16,6 +16,10 @@ use uuid::Uuid;
 mod policy;
 use policy::{supported_platform, validate_native_selection, validate_relative};
 
+#[path = "file_access_directory.rs"]
+mod directory;
+pub(crate) use directory::{DirectoryEntry, DirectoryListing, MAX_DIRECTORY_ENTRIES};
+
 pub(crate) const MAX_IO_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
