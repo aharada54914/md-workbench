@@ -61,8 +61,12 @@ Private storage and ACL validation, snapshot retention, actual hash computation,
 source-revision checks, retained filesystem authority, publication ordering,
 crash recovery and Save/Resource UI integration remain open T08 work. Current
 wildcard renderer filesystem permissions must not be mistaken for isolation of
-private records. Windows directory flush support and namespace durability need
-native evidence; a process-kill test alone does not prove power-loss survival.
+private records. The isolated native API probe succeeded with read-write
+directory handles on Windows Server 2022 and Windows 11 ARM NTFS; read-only
+handles returned access denied. See [recorded observations](storage-api-observations/README.md).
+This establishes API support on those runners. Namespace durability, private
+ACLs and recovery ordering still need evidence; a process-kill test alone does
+not prove power-loss survival.
 
 ## Verification
 
