@@ -165,8 +165,7 @@ acquire cleanup ownership. CI exercises Windows Server 2022, Windows 11 ARM and
 macOS 15. Cross-compilation alone does not validate native API behavior.
 
 All results retain namespace `unestablished` and snapshots `unverified`. A flush
-return and fresh-process read are not power-loss evidence; actual kill-at-barrier
-tests remain outstanding. Failed bootstrap or abrupt termination can leave a
+return and fresh-process read are not power-loss evidence; the optional kill-at-boundary slice below measures process termination only. Failed bootstrap or abrupt termination can leave a
 synthetic session. The diagnostic does not enumerate/remove such leftovers or
 weaken security to clean them up. Same-user hostile native mutation is excluded;
 macOS locks are advisory and final unlink operations cannot defeat that actor.
@@ -183,3 +182,60 @@ Primary native contracts additionally used here:
 - [Apple fsync](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)
   and [fcntl](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)
   describe fsync and F_FULLFSYNC; successful calls do not certify namespace durability.
+
+
+## Explicit process-termination diagnostic
+
+Build with `--features private-store-probe` and run `--metadata-kill`. This feature
+is absent from both crates' default features. Its shared-code seams only cap the
+first append fragment and invoke an installed diagnostic callback. Normal product
+builds contain neither these callbacks nor process/stdio/environment hooks.
+All process creation, handshake waiting and termination is in this standalone
+consumer. No environment variable enables this behavior.
+
+Each boundary first runs a normal continue-to-completion control, then a second
+child is terminated while blocked at the identical handshake:
+
+| Boundary | Reached point | Exact post-termination observation |
+| --- | --- | --- |
+| bootstrap | New private directory and empty file checked, before first bootstrap file flush | Empty byte stream, metadata sequence 0 |
+| partial_append | Exactly 17 frame bytes written, before any append flush | Exact 17-byte prefix, incomplete tail, sequence 0 |
+| flushed_before_ack | Frame file barrier returned, before writer state/receipt update | Exact full frame, metadata sequence 1 |
+| after_ack | Append returned its receipt to the diagnostic caller | Exact full frame, metadata sequence 1 |
+
+The parent receives a bounded boundary/UUID handshake over a private child pipe,
+validates the boundary and canonical UUID, then acts only on its retained Child
+handle. No PID or path from a message selects a termination target. The child is
+confirmed live before termination, and exit is reaped with a deadline. macOS also
+checks SIGKILL exit status. Handshake/read/exit waits have 15-second bounds; timeout,
+closed/malformed messages and unexpected exits fail the case. The successful
+control continues from the handshake, checks the complete synthetic frame, and
+cleans its own session using its existing ownership.
+
+A separately spawned reader independently revalidates the native base/root and
+compares bounded exact bytes using a feature-only equality method; it also checks
+the existing MetadataOnlyHistory result. It gains no writer, cleanup ownership or
+verified snapshot. The two complete-frame observations explicitly do not prove
+whether any acknowledgement or namespace survived a system crash.
+
+The report has `scope: process_kill_visibility_only`, per-boundary/control pass
+results and a residual-synthetic-store flag. Paths, UUIDs and contents stay out of
+the emitted report. **Four killed synthetic sessions intentionally remain** per
+successful run. This consumer does not enumerate or remove them, assign cleanup
+ownership to the observer, or recursively clean any directory. A failed handshake
+conservatively reports possible residual storage. Use disposable CI runners for
+repeated experiments. These are process-visibility tests, not power-loss,
+namespace durability, renderer-isolation or recovery certification.
+
+Rust's [Child contract](https://doc.rust-lang.org/std/process/struct.Child.html)
+requires explicit termination/reaping; Child itself has no automatic Drop cleanup.
+The diagnostic wrapper applies that lifecycle only to children it created.
+
+Windows CI invokes the native consumer directly from PowerShell. MSYS2's
+[`set_cygwin_privileges`](https://github.com/msys2/msys2-runtime/blob/master/winsup/cygwin/sec_helper.cc)
+enables backup/restore privileges during process initialization; invoking through
+that shell can therefore violate this probe's token policy. The primitive keeps
+rejecting these tokens. Typed `windows_security` failures retain their operation
+and exact bounded policy reason, without logging SIDs or privilege lists.
+Run 35012508629 reported only the earlier generic `unsafe/permissions`; the shell
+explanation remains a hypothesis until the direct native invocation is measured.

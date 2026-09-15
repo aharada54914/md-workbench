@@ -28,6 +28,8 @@ impl Backend for NativeFile {
     }
     fn write(&mut self, offset: u64, bytes: &[u8]) -> io::Result<usize> {
         self.0.seek(SeekFrom::Start(offset))?;
+        #[cfg(feature = "private-store-probe")]
+        let bytes = &bytes[..super::probe::write_limit(offset, bytes.len())];
         self.0.write(bytes)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -62,12 +64,21 @@ impl PrivateSession {
         let root = native::Root::existing(identifier)?;
         read(root.open_file()?)
     }
+    /// Diagnostic-only byte equality; grants no writer, snapshot or cleanup authority.
+    #[cfg(feature = "private-store-probe")]
+    pub fn probe_matches(identifier: &str, expected: &[u8]) -> Result<bool, StoreError> {
+        let root = native::Root::existing(identifier)?;
+        Ok(read_bytes(root.open_file()?)? == expected)
+    }
     /// Only exclusive-created sessions have this ownership; never recursive.
     pub fn cleanup(self) -> Result<(), StoreError> {
         self.root.cleanup()
     }
 }
-fn read(mut file: File) -> Result<MetadataOnlyHistory, StoreError> {
+fn read(file: File) -> Result<MetadataOnlyHistory, StoreError> {
+    Ok(replay_metadata(&read_bytes(file)?))
+}
+fn read_bytes(mut file: File) -> Result<Vec<u8>, StoreError> {
     if file
         .metadata()
         .map_err(|e| StoreError::io(Operation::Read, e))?
@@ -84,5 +95,5 @@ fn read(mut file: File) -> Result<MetadataOnlyHistory, StoreError> {
     if bytes.len() > MAX_HISTORY_BYTES {
         return Err(StoreError::LimitExceeded);
     }
-    Ok(replay_metadata(&bytes))
+    Ok(bytes)
 }

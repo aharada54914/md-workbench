@@ -1,5 +1,6 @@
 //! Shared strict private-store policy. Unknown ACE forms fail closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Reason {
     InvalidSecurityDescriptor,
     BoundedBufferExceeded,

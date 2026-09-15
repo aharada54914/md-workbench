@@ -77,7 +77,13 @@ impl<B: Backend> Writer<B> {
                 .backend
                 .write(self.extent + written as u64, &bytes[written..])
             {
-                Ok(n) if n > 0 && n <= bytes.len() - written => written += n,
+                Ok(n) if n > 0 && n <= bytes.len() - written => {
+                    written += n;
+                    #[cfg(feature = "private-store-probe")]
+                    if written == super::probe::FIRST_FRAGMENT && written < bytes.len() {
+                        super::probe::notify(super::probe::Boundary::PartialAppend, None);
+                    }
+                }
                 Ok(_) => {
                     self.poisoned = true;
                     return Err(StoreError::WriteUncertain {
@@ -102,6 +108,8 @@ impl<B: Backend> Writer<B> {
                 code: e.raw_os_error(),
             });
         }
+        #[cfg(feature = "private-store-probe")]
+        super::probe::notify(super::probe::Boundary::FlushedBeforeAck, None);
         self.extent = end;
         self.frames += 1;
         self.latest.insert(key, candidate);

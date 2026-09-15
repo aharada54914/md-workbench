@@ -188,5 +188,13 @@ poisoning, invalid transitions, changed extents, incomplete tails and complete
 suffix loss. Real macOS tests use only owned synthetic sessions for ACL/mode,
 symlink/hardlink/FIFO/replacement rejection, locking, flush and cleanup. The
 three-platform diagnostic appends four records and observes them in a new process.
-These checks do not yet inject process termination at append barriers or test
-power loss; those remain separate evidence before enabling a durable Save protocol.
+The optional `private-store-probe` build now injects actual child-process
+termination after checked empty-file creation, after an exact 17-byte append
+prefix, after file flush before acknowledgement, and after acknowledgement.
+Normal controls continue through each same seam and clean their owned session.
+Killed cases use an independent metadata-only reader with exact-byte comparison;
+no reader obtains a writer or cleanup owner. Each successful run explicitly leaves
+four synthetic sessions. No scan or recursive cleanup is performed. This explicit
+feature is default-off, with process/stdio waiting only in the standalone consumer.
+The observed process-visibility results do not establish power-loss or namespace
+durability, and do not promote snapshots from Unverified.

@@ -37,6 +37,9 @@ pub struct AppendObservation {
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     ResolveBase,
+    QueryIdentity,
+    InspectRoot,
+    InspectFile,
     Inspect,
     CreateRoot,
     CreateFile,
@@ -63,6 +66,11 @@ pub enum Policy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StoreError {
+    #[cfg(windows)]
+    WindowsSecurity {
+        operation: Operation,
+        reason: windows_acl::Reason,
+    },
     Unsafe {
         reason: Policy,
     },
@@ -107,3 +115,6 @@ impl std::fmt::Display for StoreError {
     }
 }
 impl std::error::Error for StoreError {}
+
+#[cfg(feature = "private-store-probe")]
+pub(crate) mod probe;

@@ -1,3 +1,7 @@
+#[cfg(all(feature = "private-store-probe", any(windows, target_os = "macos")))]
+mod kill_probe;
+#[cfg(all(feature = "private-store-probe", any(windows, target_os = "macos")))]
+mod kill_process;
 #[cfg(any(windows, target_os = "macos"))]
 mod metadata;
 mod report;
@@ -12,6 +16,10 @@ mod windows_acl_fixtures;
 use std::io::Write;
 
 fn main() {
+    #[cfg(all(feature = "private-store-probe", any(windows, target_os = "macos")))]
+    if kill_probe::dispatch() {
+        return;
+    }
     #[cfg(any(windows, target_os = "macos"))]
     if metadata::dispatch() {
         return;

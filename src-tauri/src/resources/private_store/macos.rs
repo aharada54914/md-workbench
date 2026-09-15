@@ -284,6 +284,8 @@ impl Root {
         }
         cv(unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) })
             .map_err(|e| StoreError::io(Op::Lock, e))?;
+        #[cfg(feature = "private-store-probe")]
+        super::probe::notify(super::probe::Boundary::Bootstrap, Some(&root.id));
         flush_file(&file).map_err(|e| StoreError::io(Op::FlushFile, e))?;
         barrier(&root.dir, Op::FlushRoot)?;
         barrier(root.parents.last().unwrap(), Op::FlushParent)?;

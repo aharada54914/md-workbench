@@ -6,6 +6,8 @@ authors = ["you"]
 edition = "2021"
 
 [features]
+# Explicit diagnostic compilation only; never enabled by default.
+private-store-probe = []
 default = []
 diagram-isolation-spike = []
 

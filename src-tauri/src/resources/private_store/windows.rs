@@ -31,13 +31,13 @@ fn err(op: Op, error: io::Error) -> StoreError {
     if error.raw_os_error() == Some(32) || error.raw_os_error() == Some(33) {
         return StoreError::Busy;
     }
-    if error
+    if let Some(reason) = error
         .get_ref()
         .and_then(|e| e.downcast_ref::<acl::Reason>())
-        .is_some()
     {
-        return StoreError::Unsafe {
-            reason: Policy::Permissions,
+        return StoreError::WindowsSecurity {
+            operation: op,
+            reason: *reason,
         };
     }
     StoreError::io(op, error)
@@ -246,7 +246,7 @@ impl Root {
         &self.id
     }
     pub(super) fn create() -> Result<(Self, File), StoreError> {
-        let user = acl::identity().map_err(|e| err(Op::ResolveBase, e))?.sid;
+        let user = acl::identity().map_err(|e| err(Op::QueryIdentity, e))?.sid;
         let parents = account_base(true)?;
         let id = uuid::Uuid::new_v4().to_string();
         let path = handle_path(parents.last().unwrap())
@@ -266,8 +266,10 @@ impl Root {
             Some(&sd),
         )
         .map_err(|e| err(Op::CreateFile, e))?;
-        check_file(&file).map_err(|e| err(Op::Inspect, e))?;
+        check_file(&file).map_err(|e| err(Op::InspectFile, e))?;
         root.file_identity = Some(identity(&file, false).map_err(|e| err(Op::Inspect, e))?);
+        #[cfg(feature = "private-store-probe")]
+        super::probe::notify(super::probe::Boundary::Bootstrap, Some(&root.id));
         flush_file(&file).map_err(|e| err(Op::FlushFile, e))?;
         flush_file(&root.dir).map_err(|e| err(Op::FlushRoot, e))?;
         flush_file(root.parents.last().unwrap()).map_err(|e| err(Op::FlushParent, e))?;
@@ -283,7 +285,7 @@ impl Root {
                 reason: Policy::Identity,
             });
         }
-        let user = acl::identity().map_err(|e| err(Op::ResolveBase, e))?.sid;
+        let user = acl::identity().map_err(|e| err(Op::QueryIdentity, e))?.sid;
         Self::open(account_base(false)?, id.to_owned(), user, false)
     }
     fn open(
@@ -303,7 +305,7 @@ impl Root {
         let dir = open(&path, access, FILE_SHARE_READ | FILE_SHARE_WRITE, None)
             .map_err(|e| err(Op::Inspect, e))?;
         info(&dir, true).map_err(|e| err(Op::Inspect, e))?;
-        acl::inspect(&dir, &user, true).map_err(|e| err(Op::Inspect, e))?;
+        acl::inspect(&dir, &user, true).map_err(|e| err(Op::InspectRoot, e))?;
         filesystem(&dir)?;
         Ok(Self {
             parents,
@@ -325,7 +327,7 @@ impl Root {
             None,
         )
         .map_err(|e| err(Op::Read, e))?;
-        check_file(&file).map_err(|e| err(Op::Inspect, e))?;
+        check_file(&file).map_err(|e| err(Op::InspectFile, e))?;
         if self
             .file_identity
             .is_some_and(|v| identity(&file, false).ok() != Some(v))
@@ -379,4 +381,36 @@ fn delete_handle(file: &File) -> Result<(), StoreError> {
         )
     })
     .map_err(|e| err(Op::Cleanup, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn security_errors_keep_the_operation_and_exact_reason() {
+        for operation in [Op::QueryIdentity, Op::InspectRoot, Op::InspectFile] {
+            for reason in [acl::Reason::PrivilegedToken, acl::Reason::UnexpectedAcl] {
+                assert_eq!(
+                    err(operation, acl::error(reason)),
+                    StoreError::WindowsSecurity { operation, reason }
+                );
+            }
+        }
+        let json = serde_json::to_value(err(
+            Op::QueryIdentity,
+            acl::error(acl::Reason::PrivilegedToken),
+        ))
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind":"windows_security", "operation":"query_identity", "reason":"privileged_token"})
+        );
+        assert_eq!(
+            err(Op::FlushFile, io::Error::from_raw_os_error(5)),
+            StoreError::Io {
+                operation: Op::FlushFile,
+                code: Some(5)
+            }
+        );
+    }
 }

@@ -86,15 +86,46 @@ jobs:
       - run: rustup toolchain install 1.93.0 --profile minimal --no-self-update
       - name: Test the shared product primitive
         run: cargo test --locked --manifest-path scripts/native-storage-probe/Cargo.toml
-      - name: Exercise native bootstrap, append, flush and fresh process observation
+      - name: Test explicit process-boundary diagnostic build
+        run: cargo test --locked --manifest-path scripts/native-storage-probe/Cargo.toml --features private-store-probe
+      - name: Exercise native bootstrap, append, flush and fresh process observation (macOS)
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           cargo run --quiet --locked --manifest-path scripts/native-storage-probe/Cargo.toml -- --metadata > metadata-store-probe.json
           echo 'Inactive metadata only. Namespace durability is unestablished and snapshots are unverified; this is not a power-loss or renderer-isolation certification.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Exercise native bootstrap, append, flush and fresh process observation (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Invoke directly: an MSYS shell can enable backup/restore privileges.
+          # The native primitive still rejects such tokens, with no fallback.
+          $report = & cargo run --quiet --locked --manifest-path scripts/native-storage-probe/Cargo.toml -- --metadata
+          $probeExit = $LASTEXITCODE
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'metadata-store-probe.json'), ($report -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
+          if ($probeExit -ne 0) { throw 'Inactive metadata probe failed; see typed report' }
+          'Inactive metadata only. Namespace durability is unestablished and snapshots are unverified; this is not a power-loss or renderer-isolation certification.' | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Observe termination at fixed private-store boundaries (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cargo run --quiet --locked --manifest-path scripts/native-storage-probe/Cargo.toml --features private-store-probe -- --metadata-kill > metadata-kill-probe.json
+          echo 'Four owned child processes are terminated at explicit boundaries; four synthetic sessions remain on this disposable runner. Reopen stays metadata-only. Process kill does not simulate power loss.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Observe termination at fixed private-store boundaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $report = & cargo run --quiet --locked --manifest-path scripts/native-storage-probe/Cargo.toml --features private-store-probe -- --metadata-kill
+          $probeExit = $LASTEXITCODE
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'metadata-kill-probe.json'), ($report -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
+          if ($probeExit -ne 0) { throw 'Process-boundary probe failed; see typed report' }
+          'Four owned child processes are terminated at explicit boundaries; four synthetic sessions remain on this disposable runner. Reopen stays metadata-only. Process kill does not simulate power loss.' | Add-Content $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: mdw-metadata-store-${{ matrix.os }}-${{ github.sha }}
-          path: metadata-store-probe.json
+          path: |
+            metadata-store-probe.json
+            metadata-kill-probe.json
           retention-days: 14
           if-no-files-found: error
