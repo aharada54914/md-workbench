@@ -1,0 +1,281 @@
+{
+  "mode": "approved-xml-negative",
+  "version": "31.4.5",
+  "environment": {
+    "node": "v24.13.0",
+    "os": "darwin",
+    "architecture": "arm64",
+    "osRelease": "25.6.0",
+    "playwright": "1.58.2",
+    "chromium": "145.0.7632.6"
+  },
+  "origins": {
+    "host": "http://127.0.0.1:16631",
+    "editor": "http://127.0.0.1:16632"
+  },
+  "policy": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'; manifest-src 'none'",
+  "events": [
+    {
+      "event": "init",
+      "keys": [
+        "event"
+      ],
+      "bytes": 16
+    },
+    {
+      "event": "load",
+      "keys": [
+        "event",
+        "pageVisible",
+        "translate",
+        "bounds",
+        "currentPage",
+        "scale",
+        "page",
+        "modelBounds",
+        "containerSize",
+        "xml"
+      ],
+      "bytes": 947
+    },
+    {
+      "event": "save",
+      "keys": [
+        "event",
+        "pageVisible",
+        "translate",
+        "bounds",
+        "currentPage",
+        "scale",
+        "page",
+        "modelBounds",
+        "containerSize",
+        "xml"
+      ],
+      "bytes": 1276
+    },
+    {
+      "event": "exit",
+      "keys": [
+        "event",
+        "modified"
+      ],
+      "bytes": 33
+    }
+  ],
+  "errors": [],
+  "failed": [
+    {
+      "url": "http://127.0.0.1:16633/__drawio_negative__-xml-image",
+      "error": "csp"
+    },
+    {
+      "url": "http://127.0.0.1:16633/__drawio_negative__-image",
+      "error": "csp"
+    },
+    {
+      "url": "http://127.0.0.1:16633/__drawio_negative__-css",
+      "error": "csp"
+    }
+  ],
+  "routeBlocked": [],
+  "wire": [
+    {
+      "origin": "host",
+      "method": "GET",
+      "path": "/"
+    },
+    {
+      "origin": "host",
+      "method": "GET",
+      "path": "/host.js"
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/",
+      "query": "?embed=1&proto=json&stealth=1&local=1&plugins=0&math=0&pwa=0&drafts=0&sync=none&lang=en&libraries=0&saveAndExit=1"
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/styles/grapheditor.css",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/js/bootstrap.js",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/images/spin.gif",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/js/main.js",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/styles/high-contrast.css",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/js/PreConfig.js",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/js/app.min.js",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/mxgraph/css/common.css",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/js/PostConfig.js",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/resources/dia.txt",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/js/shapes-14-6-5.min.js",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/js/stencils.min.js",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/js/extensions.min.js",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/null",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/images/github-logo.svg",
+      "query": ""
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/resources/dia.txt",
+      "query": "?positive-control"
+    },
+    {
+      "origin": "editor",
+      "method": "GET",
+      "path": "/__outside_manifest__",
+      "query": ""
+    }
+  ],
+  "missing": [
+    "/null",
+    "/__outside_manifest__"
+  ],
+  "violations": [
+    {
+      "directive": "img-src",
+      "uri": "http://127.0.0.1:16633/__drawio_negative__-xml-image",
+      "line": 0,
+      "source": ""
+    },
+    {
+      "directive": "connect-src",
+      "uri": "http://127.0.0.1:16633/__drawio_negative__-fetch",
+      "line": 4,
+      "source": ""
+    },
+    {
+      "directive": "connect-src",
+      "uri": "ws://127.0.0.1:16633/__drawio_negative__-ws",
+      "line": 5,
+      "source": ""
+    },
+    {
+      "directive": "worker-src",
+      "uri": "http://127.0.0.1:16632/__drawio_negative__-sw.js",
+      "line": 8,
+      "source": ""
+    },
+    {
+      "directive": "img-src",
+      "uri": "http://127.0.0.1:16633/__drawio_negative__-image",
+      "line": 0,
+      "source": ""
+    },
+    {
+      "directive": "worker-src",
+      "uri": "http://127.0.0.1:16632/__drawio_negative__-worker.js",
+      "line": 9,
+      "source": ""
+    },
+    {
+      "directive": "script-src-elem",
+      "uri": "inline",
+      "line": 10,
+      "source": ""
+    },
+    {
+      "directive": "img-src",
+      "uri": "http://127.0.0.1:16633/__drawio_negative__-css",
+      "line": 0,
+      "source": ""
+    }
+  ],
+  "result": "edited-saved-exited",
+  "upstream": {
+    "sync": "manual",
+    "compressed": false,
+    "nullImages": []
+  },
+  "saved": [
+    {
+      "bytes": 824,
+      "uncompressed": true,
+      "before": false,
+      "after": true
+    }
+  ],
+  "negativeResults": {
+    "fetch": "TypeError",
+    "websocket": "constructed",
+    "serviceWorker": "SecurityError",
+    "worker": "constructed",
+    "inlineExecuted": false,
+    "registrations": 0,
+    "positive": 200,
+    "manifestDenied": 403
+  },
+  "provenance": "Actual repository runner Chromium reproduction, 2026-09-16; artificial XML only; not T16 acceptance."
+}
