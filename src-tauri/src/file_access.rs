@@ -24,6 +24,10 @@ pub(crate) use directory::{DirectoryEntry, DirectoryListing, MAX_DIRECTORY_ENTRI
 #[path = "file_access_create.rs"]
 mod create;
 
+#[path = "file_access_mutation.rs"]
+mod mutation;
+pub(crate) use mutation::{mutation_error_message, DeleteFailure};
+
 pub(crate) const MAX_IO_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -354,8 +358,9 @@ impl FileAccess {
         Ok(bytes)
     }
 
-    /// Exclusive new-file creation only. There is deliberately no overwrite,
-    /// rename or delete API until host CAS/journaling is implemented. On an I/O
+    /// Exclusive new-file creation only; document overwrite/transaction APIs
+    /// still require host conflict and journal handling. Workspace name mutations
+    /// are separate permanent operations. On an I/O
     /// failure a partial newly created file may remain; no unsafe path cleanup.
     pub(crate) fn create_new(
         &self,

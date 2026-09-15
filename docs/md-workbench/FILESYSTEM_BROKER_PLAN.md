@@ -11,14 +11,17 @@ are not a description of the current implementation. The retained-handle core,
 native authority ingress, acknowledged window transfers, owned path reads and
 bounded workspace trees and content search are implemented. Native drops use an
 owned queue with current grant identity checks. Workspace file/folder creation
-uses current Workspace WRITE grants and exclusive creation. Document and workspace Open actions
+uses current Workspace WRITE grants and exclusive creation. Rename requires
+WRITE at both endpoints and prevents destination replacement; permanent deletion
+uses a bounded nofollow walker and reports partial failures. Document and workspace Open actions
 now use native pickers. See [FILESYSTEM_BROKER_API.md](FILESYSTEM_BROKER_API.md)
 [NATIVE_DOCUMENT_OPEN.md](NATIVE_DOCUMENT_OPEN.md) and
 [NATIVE_WORKSPACE_SEARCH.md](NATIVE_WORKSPACE_SEARCH.md),
 [NATIVE_DROP.md](NATIVE_DROP.md) and
-[NATIVE_WORKSPACE_CREATE.md](NATIVE_WORKSPACE_CREATE.md) for their exact scope.
+[NATIVE_WORKSPACE_CREATE.md](NATIVE_WORKSPACE_CREATE.md) and
+[NATIVE_WORKSPACE_MUTATION.md](NATIVE_WORKSPACE_MUTATION.md) for their exact scope.
 
-Rename/deletion/save, OS reveal, subscriptions/reload, images, exports,
+Document save, OS reveal, subscriptions/reload, images, exports,
 AI writes, recovery and app-private grant restoration still need migration.
 Broad plugin-fs permissions remain until those callers have moved. Native Windows
 validation and the real packaged preview IPC probes are separate from browser

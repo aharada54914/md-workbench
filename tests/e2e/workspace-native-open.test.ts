@@ -140,3 +140,53 @@ test('cancelling reselection after permission denial keeps the error and recent 
   await expect(page.locator('.ws-section')).toHaveCount(0);
   expect(fs.getCalls().filter(call => call.cmd === 'read_tree' || call.cmd === 'read')).toEqual([]);
 });
+
+test('multi-delete reports failed items once and refreshes after each result', async ({ page }) => {
+  const other = `${root}/other.md`;
+  const mutableTree: WorkspaceNode = {
+    ...tree, children: [...tree.children!, { name: 'other.md', path: other, kind: 'file' }],
+  };
+  const fs = await setupTauriMocks(page, {
+    initialFs: { [file]: '# Keep current\n', [other]: '# Other\n' },
+    workspaceTrees: { [root]: mutableTree },
+  });
+  const deleted: string[] = [];
+  await page.exposeFunction('__testDeleteWorkspaceItem', (path: string) => {
+    deleted.push(path);
+    if (path === file) return false;
+    mutableTree.children = mutableTree.children!.filter(child => child.path !== path);
+    return true;
+  });
+  await seedWorkspace(page);
+  await page.goto('/');
+  await openFolder(page, root);
+  await page.locator('.tree-row', { hasText: 'note.md' }).dblclick();
+  await page.evaluate(() => {
+    const host = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+      __testDeleteWorkspaceItem: (path: string) => Promise<boolean>;
+    };
+    const invoke = host.__TAURI_INTERNALS__.invoke;
+    host.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === 'delete_path') {
+        if (!await host.__testDeleteWorkspaceItem(args!.path as string)) {
+          throw { code: 'filesystem_error', partial: true, removed: 0 };
+        }
+        return;
+      }
+      return invoke(command, args);
+    };
+  });
+  await page.locator('.tree-row', { hasText: 'other.md' }).click({ modifiers: ['ControlOrMeta'] });
+  await page.locator('.tree-row', { hasText: 'note.md' }).click({ button: 'right' });
+  await page.locator('.workspace-context-menu').getByRole('button', { name: 'Delete', exact: true }).click();
+  const messages: string[] = [];
+  page.on('dialog', async dialog => { messages.push(dialog.message()); await dialog.accept(); });
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect.poll(() => messages.length).toBe(1);
+  expect(messages[0]).toBe(`${file}: Deletion stopped and some items may have been removed. Check the refreshed folder before trying again.`);
+  expect(deleted).toEqual([file, other]);
+  await expect(page.locator('.tree-label')).toHaveText('note.md');
+  expect(fs.getCalls().filter(call => call.cmd === 'read_tree')).toHaveLength(3);
+  await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toContainText('Keep current');
+});

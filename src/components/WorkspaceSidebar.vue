@@ -245,14 +245,17 @@ async function onConfirmDelete() {
     return;
   }
   if (a.kind === 'delete-many') {
+    const failures: string[] = [];
     for (const p of a.paths) {
       try {
         await ws.deletePath(p);
       } catch (e) {
         console.error('delete:', p, e);
+        failures.push(`${p}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     ws.clearSelection();
+    if (failures.length > 0) window.alert(failures.join('\n'));
   }
 }
 

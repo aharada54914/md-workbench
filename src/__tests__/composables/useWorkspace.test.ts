@@ -12,8 +12,10 @@ vi.mock('@tauri-apps/api/window', () => ({
 import { useWorkspace, type WorkspaceNode } from '../../composables/useWorkspace';
 import { useSettings, RECENT_WORKSPACES_LIMIT, OPEN_WORKSPACES_LIMIT } from '../../composables/useSettings';
 
-function makeFolderNode(path: string): WorkspaceNode {
-  return { name: path, path, kind: 'folder', children: [] };
+function makeFolderNode(path: string, files: string[] = []): WorkspaceNode {
+  return { name: path, path, kind: 'folder', children: files.map(name => ({
+    name, path: `${path}/${name}`, kind: 'file',
+  })) };
 }
 
 function resetWorkspaceState() {
@@ -436,6 +438,53 @@ describe('useWorkspace', () => {
       await ws.revealInOs('/r/a.md');
       expect(invokeMock).toHaveBeenCalledTimes(1);
       expect(invokeMock).toHaveBeenCalledWith('reveal_in_os', { path: '/r/a.md' });
+    });
+
+    it('rename denial preserves the tree and explains destination collisions', async () => {
+      const ws = useWorkspace();
+      const before = makeFolderNode('/r');
+      invokeMock.mockResolvedValueOnce(before);
+      await ws.openWorkspace('/r');
+      invokeMock.mockClear();
+      invokeMock.mockRejectedValueOnce({ code: 'already_exists', message: 'native diagnostic' });
+      await expect(ws.renamePath('/r/a.md', '/r/b.md')).rejects.toThrow(
+        'An item already exists at the destination. Choose another name or location.',
+      );
+      expect(invokeMock.mock.calls).toEqual([['rename_path', { from: '/r/a.md', to: '/r/b.md' }]]);
+      expect(ws.tree.value).toEqual(before);
+    });
+
+    it.each([false, true])('delete failure refreshes every tree and reports partial=%s', async partial => {
+      const ws = useWorkspace();
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/r1'));
+      await ws.openWorkspace('/r1');
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/r2'));
+      await ws.openWorkspace('/r2');
+      invokeMock.mockReset();
+      invokeMock.mockRejectedValueOnce({ code: 'permission_required', partial, removed: partial ? 1 : 0 });
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/r1', ['remaining.md']));
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/r2', ['other.md']));
+      await expect(ws.deletePath('/r1/folder')).rejects.toThrow(partial
+        ? 'Deletion stopped and some items may have been removed. Check the refreshed folder before trying again.'
+        : 'Choose this folder again with Open Folder to grant access.');
+      expect(invokeMock.mock.calls).toEqual([
+        ['delete_path', { path: '/r1/folder' }],
+        ['read_workspace_tree', { root: '/r1' }],
+        ['read_workspace_tree', { root: '/r2' }],
+      ]);
+      expect(ws.tree.value).toEqual(makeFolderNode('/r2', ['other.md']));
+    });
+
+    it('a failed refresh cannot hide the partial deletion error', async () => {
+      const ws = useWorkspace();
+      invokeMock.mockResolvedValueOnce(makeFolderNode('/r'));
+      await ws.openWorkspace('/r');
+      invokeMock.mockRejectedValueOnce({ code: 'file_too_large', partial: true, removed: 1 });
+      invokeMock.mockRejectedValueOnce({ code: 'permission_required' });
+      await expect(ws.deletePath('/r/folder')).rejects.toThrow(
+        'Deletion stopped and some items may have been removed. Check the refreshed folder before trying again.',
+      );
+      expect(ws.tree.value).toBeNull();
     });
   });
 

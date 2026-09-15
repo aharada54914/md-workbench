@@ -16,6 +16,8 @@ impl From<String> for NativeCommandError {
             "unsupported_platform" => "unsupported_platform",
             "file_too_large" => "file_too_large",
             "file_not_found" => "file_not_found",
+            "already_exists" => "already_exists",
+            "unsupported_operation" => "unsupported_operation",
             "native_state_unavailable" => "native_state_unavailable",
             "dialog_unavailable" => "dialog_unavailable",
             _ => "filesystem_error",

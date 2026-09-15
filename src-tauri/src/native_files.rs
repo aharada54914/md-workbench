@@ -293,3 +293,7 @@ pub(crate) use drops::*;
 #[path = "native_files_create.rs"]
 mod create;
 pub(crate) use create::*;
+
+#[path = "native_files_mutation.rs"]
+mod mutation;
+pub(crate) use mutation::*;

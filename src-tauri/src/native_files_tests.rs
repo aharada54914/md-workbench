@@ -255,6 +255,10 @@ fn ipc_metadata_and_errors_use_the_documented_shape() {
     );
     let io_error = serde_json::to_value(NativeCommandError::from("filesystem: gone")).unwrap();
     assert_eq!(io_error["code"], "filesystem_error");
+    for code in ["already_exists", "unsupported_operation"] {
+        let error = serde_json::to_value(NativeCommandError::from(code)).unwrap();
+        assert_eq!(error["code"], code);
+    }
 }
 
 #[test]

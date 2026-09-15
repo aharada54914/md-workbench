@@ -188,6 +188,11 @@ export interface Translations {
   workspaceOpenFailed: string;
   workspaceInvalidName: string;
   workspaceCreateFailed: string;
+  workspaceRenameFailed: string;
+  workspaceDeleteFailed: string;
+  workspaceDeletePartial: string;
+  workspaceDestinationExists: string;
+  workspaceMutationUnsupported: string;
   openPermissionRequired: string;
   openDocumentFailed: string;
   openFile: string;

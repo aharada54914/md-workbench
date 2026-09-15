@@ -73,11 +73,17 @@ export function useWorkspace() {
     }
     return error instanceof Error ? error.message : t.value.workspaceOpenFailed;
   };
-  const describeCreateError = (error: unknown): string => {
+  const describeMutationError = (error: unknown, operation: 'create' | 'rename' | 'delete'): string => {
+    if (operation === 'delete' && typeof error === 'object' && error !== null &&
+        'partial' in error && error.partial === true) return t.value.workspaceDeletePartial;
     if (typeof error === 'object' && error !== null && 'code' in error) {
       if (error.code === 'permission_required') return t.value.workspacePermissionRequired;
       if (error.code === 'invalid_path') return t.value.workspaceInvalidName;
+      if (error.code === 'already_exists') return t.value.workspaceDestinationExists;
+      if (error.code === 'unsupported_operation') return t.value.workspaceMutationUnsupported;
     }
+    if (operation === 'rename') return t.value.workspaceRenameFailed;
+    if (operation === 'delete') return t.value.workspaceDeleteFailed;
     return t.value.workspaceCreateFailed;
   };
   const {
@@ -383,7 +389,7 @@ export function useWorkspace() {
     try {
       created = await workspaceFs.createFile(parent, name);
     } catch (error) {
-      throw new Error(describeCreateError(error));
+      throw new Error(describeMutationError(error, 'create'));
     }
     await refreshAll();
     return created;
@@ -394,19 +400,30 @@ export function useWorkspace() {
     try {
       created = await workspaceFs.createFolder(parent, name);
     } catch (error) {
-      throw new Error(describeCreateError(error));
+      throw new Error(describeMutationError(error, 'create'));
     }
     await refreshAll();
     return created;
   }
 
   async function renamePath(from: string, to: string): Promise<void> {
-    await workspaceFs.rename(from, to);
+    try {
+      await workspaceFs.rename(from, to);
+    } catch (error) {
+      throw new Error(describeMutationError(error, 'rename'));
+    }
     await refreshAll();
   }
 
   async function deletePath(path: string): Promise<void> {
-    await workspaceFs.remove(path);
+    try {
+      await workspaceFs.remove(path);
+    } catch (error) {
+      // Native recursive deletion can stop after removing some entries.
+      // Refresh even after failure so the tree does not show the old contents.
+      await refreshAll();
+      throw new Error(describeMutationError(error, 'delete'));
+    }
     await refreshAll();
   }
 

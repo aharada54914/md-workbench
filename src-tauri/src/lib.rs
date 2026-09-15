@@ -317,35 +317,6 @@ fn is_workspace_hidden(name: &str) -> bool {
     name.starts_with('.') || name == "node_modules"
 }
 
-#[tauri::command]
-fn rename_path(from: String, to: String) -> Result<(), String> {
-    let from_path = Path::new(&from);
-    let to_path = Path::new(&to);
-    if !from_path.exists() {
-        return Err(format!("source does not exist: {}", from));
-    }
-    if to_path.exists() {
-        return Err(format!("destination already exists: {}", to));
-    }
-    std::fs::rename(from_path, to_path).map_err(|e| format!("rename: {}", e))?;
-    Ok(())
-}
-
-#[tauri::command]
-fn delete_path(path: String) -> Result<(), String> {
-    let target = Path::new(&path);
-    if !target.exists() {
-        return Err(format!("path does not exist: {}", path));
-    }
-    let metadata = std::fs::metadata(target).map_err(|e| format!("stat: {}", e))?;
-    if metadata.is_dir() {
-        std::fs::remove_dir_all(target).map_err(|e| format!("remove dir: {}", e))?;
-    } else {
-        std::fs::remove_file(target).map_err(|e| format!("remove file: {}", e))?;
-    }
-    Ok(())
-}
-
 /// `Some(open target)` when `path` is a filesystem root — a drive (`C:`) or a UNC
 /// share (`\\server\share`). A root cannot be selected inside a parent, and
 /// `/select,` on one drops explorer at "This PC", so roots get opened directly.
@@ -617,8 +588,8 @@ pub fn run() {
             native_files::read_workspace_tree,
             native_files::create_md_file,
             native_files::create_folder,
-            rename_path,
-            delete_path,
+            native_files::rename_path,
+            native_files::delete_path,
             reveal_in_os,
             native_files::search_workspace_content,
             ai_health_check,
