@@ -26,3 +26,49 @@ this change only separates callback exceptions from read failures. Save As clean
 of the old path's watch is also deferred. Browser/unit event simulations validate
 application lifecycle handling, not OS-specific notification delivery after a
 file is atomically replaced or recreated.
+
+
+## Duplicate tabs and external conflict queue
+
+A watcher event captures every current tab object with the affected path across
+all panes. Each clean object is reloaded independently; each dirty object retains
+its local buffer and gets its own conflict. The active editor alone is reseeded.
+Manual reload still selects only the captured active object, even when another
+tab has the same path.
+
+Conflicts wait in FIFO order. The displayed diff remains unchanged while other
+events arrive. Each queued object retains only its latest pending disk version;
+repeated observations do not accumulate a history of dialogs. A new observation
+for the displayed object invalidates the old answer and queues its latest
+version. Resolving that obsolete dialog advances to the current candidates
+without changing the buffer. Each displayed candidate has a new Vue component
+key, so merge selections from the previous dialog cannot carry over.
+
+Before showing or applying a candidate, the editor checks the same live tab
+object, its path, source/visual buffer, original baseline, dirty state, and disk
+observation identity. Closed, replaced, rebound, or subsequently edited objects
+are skipped. Moving the same object between panes remains valid. Queue pruning
+runs on observations and consumption; pending entries are bounded by current
+eligible tab objects, plus at most one displayed stale object. Unwatching a path
+removes its pending/displayed conflicts; stopping all watches clears the queue.
+Each pending manual read also captures a path-wide observation token. A newer
+watcher event, direct/manual reload, or successful save in any same-path tab
+invalidates both its delayed success and failure. Unwatching invalidates pending
+reads even when that path had no earlier observation.
+
+Delayed conflict answers also require the candidate to equal the most recently
+observed/accepted same-path disk content before applying buffer changes or
+updating the shared watcher baseline. This prevents a dialog for one duplicate
+from rewinding a newer manual reload, direct reload, or successful save associated
+with another duplicate. If disk content changes away and back to the identical
+candidate, that candidate is usable only while its individual tab identity and
+snapshot checks still hold; this is byte equality, not filesystem revision
+identity. The path-wide token still invalidates a pending manual read in that case.
+
+Validation: `useFileReload-fanout.test.ts` reproduces the former first-match
+reload and modal-overwrite failures and covers mixed clean/dirty duplicates,
+multiple paths, repeated newer disk versions, all conflict actions, stale queued
+objects, pane moves, watch cleanup, and pending manual reads. Existing manual
+identity and watcher lifecycle tests remain required. These are simulated editor
+and filesystem notifications; actual OS notification delivery is not established
+by these unit tests.

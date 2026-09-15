@@ -54,6 +54,8 @@ export interface UseFileReloadOptions {
   hasChanges: ComputedRef<boolean>;
   /** With expectedTab, resolve that exact object across all live panes. */
   findTabByFilePathSplit: (filePath: string, expectedTab?: Tab) => PaneTabResult | undefined;
+  /** All current same-path objects; single-pane callers may use the exact finder only. */
+  findTabsByFilePathSplit?: (filePath: string) => PaneTabResult[];
   setEditorContent: (content: string) => void;
   /** Reseed active Source/Split editors with the exact reloaded Markdown. */
   setCodeMarkdown?: (markdown: string) => void;
@@ -91,8 +93,52 @@ export function useFileReload(options: UseFileReloadOptions) {
   const conflictDiffLines = ref<DiffLine[]>([]);
   const conflictDiffStats = ref<DiffStats>({ additions: 0, deletions: 0 });
   const conflictFilePath = ref('');
-  const conflictNewContent = ref('');
-  let conflictTarget: TabSnapshot | null = null;
+  const conflictKey = ref(0);
+  type Conflict = { snapshot: TabSnapshot; diskContent: string; version: symbol };
+  let activeConflict: Conflict | null = null;
+  const pendingConflicts = new Map<Tab, Conflict>();
+  const observedVersions = new WeakMap<Tab, symbol>();
+  const latestDiskContent = new Map<string, string>();
+  const diskVersions = new Map<string, symbol>();
+  const diskVersion = (filePath: string) => {
+    let version = diskVersions.get(filePath);
+    if (!version) diskVersions.set(filePath, version = Symbol());
+    return version;
+  };
+  const observeDisk = (filePath: string, content: string) => {
+    diskVersions.set(filePath, Symbol());
+    latestDiskContent.set(filePath, content);
+  };
+  const currentConflictTarget = (conflict: Conflict) =>
+    observedVersions.get(conflict.snapshot.tab) === conflict.version
+      && latestDiskContent.get(conflict.snapshot.filePath) === conflict.diskContent
+      ? currentSnapshotTarget(conflict.snapshot) : undefined;
+  const prunePendingConflicts = () => {
+    for (const [tab, conflict] of pendingConflicts) {
+      if (!currentConflictTarget(conflict)) pendingConflicts.delete(tab);
+    }
+  };
+  const showNextConflict = () => {
+    if (activeConflict) return;
+    prunePendingConflicts();
+    const next = pendingConflicts.values().next().value;
+    if (!next) {
+      showConflictModal.value = false;
+      return;
+    }
+    pendingConflicts.delete(next.snapshot.tab);
+    const { snapshot, diskContent } = next;
+    const localMarkdown = snapshot.pendingMarkdown
+      ?? serializeVisualMarkdown(snapshot.content, snapshot.originalMarkdown);
+    const diff = generateDiff(localMarkdown, diskContent);
+    activeConflict = next;
+    conflictFilePath.value = snapshot.filePath;
+    conflictFileName.value = snapshot.tab.fileName;
+    conflictDiffLines.value = diff.lines;
+    conflictDiffStats.value = diff.stats;
+    conflictKey.value++;
+    showConflictModal.value = true;
+  };
 
   const showToastNotification = (message: string, type: 'info' | 'success' | 'warning' = 'info') => {
     toastMessage.value = message;
@@ -107,7 +153,16 @@ export function useFileReload(options: UseFileReloadOptions) {
   // File watcher — callbacks are arrow functions so handlers are resolved at call time
   const fileWatcher = useFileWatcher({
     onExternalChange: (filePath: string, newDiskContent: string) => {
-      handleExternalFileChange(filePath, newDiskContent);
+      const first = findTarget(filePath);
+      const targets = options.findTabsByFilePathSplit?.(filePath) ?? (first ? [first] : []);
+      // Capture before changing any editor: duplicate paths still have independent buffers.
+      const snapshots = [...new Set(targets.map(result => result.tab))]
+        .map(tab => captureTab(tab, filePath));
+      for (const snapshot of snapshots) {
+        if (currentSnapshotTarget(snapshot)) {
+          handleExternalFileChange(filePath, newDiskContent, snapshot.tab);
+        }
+      }
     },
     onFileDeleted: (filePath: string) => {
       const result = findTabByFilePathSplit(filePath);
@@ -119,17 +174,18 @@ export function useFileReload(options: UseFileReloadOptions) {
     },
   });
 
-  const reloadTabContent = (filePath: string, newContent: string, expectedTab?: Tab) => {
+  const reloadTabContent = (filePath: string, newContent: string, expectedTab?: Tab, acceptDisk = true) => {
     const result = findTarget(filePath, expectedTab);
     if (!result) return;
 
     const { pane, tab } = result;
+    if (acceptDisk) observeDisk(filePath, newContent);
 
     if (tab.largeFile && tab.pendingMarkdown != null) {
       tab.pendingMarkdown = newContent;
       tab.originalMarkdown = newContent;
       tab.hasChanges = false;
-      fileWatcher.updateKnownContent(filePath, newContent);
+      if (acceptDisk) fileWatcher.updateKnownContent(filePath, newContent);
       const isActiveTab = tab.id === pane.activeTabId && pane.id === activePaneId.value;
       if (isActiveTab) setCodeMarkdown?.(newContent);
       return;
@@ -147,7 +203,7 @@ export function useFileReload(options: UseFileReloadOptions) {
     tab.originalMarkdown = newContent;
     tab.hasChanges = false;
 
-    fileWatcher.updateKnownContent(filePath, newContent);
+    if (acceptDisk) fileWatcher.updateKnownContent(filePath, newContent);
 
     if (isActive) {
       setCodeMarkdown?.(newContent);
@@ -159,52 +215,70 @@ export function useFileReload(options: UseFileReloadOptions) {
   const handleExternalFileChange = (filePath: string, newDiskContent: string, expectedTab?: Tab) => {
     const result = findTarget(filePath, expectedTab);
     if (!result) return;
-
     const { tab } = result;
-
+    const version = Symbol();
+    observedVersions.set(tab, version);
+    observeDisk(filePath, newDiskContent);
+    prunePendingConflicts();
     if (!tab.hasChanges) {
       reloadTabContent(filePath, newDiskContent, tab);
       showToastNotification(t.value.fileReloadedExternally(filePath), 'info');
     } else {
-      // Diff shows local (current editor) → disk so the user sees their changes vs external changes.
-      const localMarkdown = tab.pendingMarkdown ?? serializeVisualMarkdown(tab.content, tab.originalMarkdown);
-      const diffResult = generateDiff(localMarkdown, newDiskContent);
-      conflictTarget = captureTab(tab, filePath);
-      conflictFilePath.value = filePath;
-      conflictFileName.value = tab.fileName;
-      conflictDiffLines.value = diffResult.lines;
-      conflictDiffStats.value = diffResult.stats;
-      conflictNewContent.value = newDiskContent;
-      showConflictModal.value = true;
+      // At most one pending version per live object. Keep the displayed version
+      // stable; a newer observation invalidates its answer and waits its turn.
+      pendingConflicts.set(tab, { snapshot: captureTab(tab, filePath), diskContent: newDiskContent, version });
+      showNextConflict();
     }
   };
 
-  const takeConflictTarget = () => {
-    const target = conflictTarget && currentSnapshotTarget(conflictTarget);
-    conflictTarget = null;
+  const resolveConflict = (apply: (conflict: Conflict, target: PaneTabResult) => void) => {
+    const conflict = activeConflict;
+    if (!conflict) return;
+    const target = currentConflictTarget(conflict);
+    activeConflict = null;
     showConflictModal.value = false;
-    return target;
+    try {
+      if (target) apply(conflict, target);
+    } finally {
+      showNextConflict();
+    }
   };
-
-  const handleConflictKeepLocal = () => {
-    if (!takeConflictTarget()) return;
-    fileWatcher.updateKnownContent(conflictFilePath.value, conflictNewContent.value);
+  const acceptConflictDisk = ({ snapshot, diskContent }: Conflict) => {
+    // A delayed answer must not rewind the shared watch baseline after another
+    // duplicate has observed a newer disk version (including manual reload).
+    if (latestDiskContent.get(snapshot.filePath) === diskContent) {
+      fileWatcher.updateKnownContent(snapshot.filePath, diskContent);
+    }
   };
+  const handleConflictKeepLocal = () => resolveConflict(conflict => acceptConflictDisk(conflict));
+  const handleConflictLoadExternal = () => resolveConflict((conflict, target) => {
+    reloadTabContent(conflict.snapshot.filePath, conflict.diskContent, target.tab, false);
+    acceptConflictDisk(conflict);
+  });
+  const handleConflictMerge = (mergedContent: string) => resolveConflict((conflict, target) => {
+    reloadTabContent(conflict.snapshot.filePath, mergedContent, target.tab, false);
+    // A manual merge edits the buffer; the observed external version is the baseline.
+    target.tab.originalMarkdown = conflict.diskContent;
+    target.tab.hasChanges = mergedContent !== conflict.diskContent;
+    acceptConflictDisk(conflict);
+  });
 
-  const handleConflictLoadExternal = () => {
-    const target = takeConflictTarget();
-    if (target) reloadTabContent(conflictFilePath.value, conflictNewContent.value, target.tab);
-  };
-
-  const handleConflictMerge = (mergedContent: string) => {
-    const target = takeConflictTarget();
-    if (!target) return;
-    const filePath = conflictFilePath.value;
-    reloadTabContent(filePath, mergedContent, target.tab);
-    // A manual merge edits the buffer; the external version is still on disk.
-    target.tab.originalMarkdown = conflictNewContent.value;
-    target.tab.hasChanges = mergedContent !== conflictNewContent.value;
-    fileWatcher.updateKnownContent(filePath, conflictNewContent.value);
+  const clearConflicts = (filePath?: string) => {
+    for (const [tab, conflict] of pendingConflicts) {
+      if (!filePath || conflict.snapshot.filePath === filePath) pendingConflicts.delete(tab);
+    }
+    if (!filePath || activeConflict?.snapshot.filePath === filePath) {
+      activeConflict = null;
+      showConflictModal.value = false;
+    }
+    if (filePath) {
+      latestDiskContent.delete(filePath);
+      diskVersions.delete(filePath);
+    } else {
+      latestDiskContent.clear();
+      diskVersions.clear();
+    }
+    showNextConflict();
   };
 
   const manualReads = new WeakMap<Tab, symbol>();
@@ -216,12 +290,16 @@ export function useFileReload(options: UseFileReloadOptions) {
     const target = findTarget(filePath, activeTab);
     if (!target) return;
     const { tab } = target;
-    const snapshot = captureTab(tab, filePath);
+    const snapshot = { ...captureTab(tab, filePath), diskVersion: diskVersion(filePath) };
     const request = Symbol();
+    const observedVersion = observedVersions.get(tab);
     manualReads.set(tab, request);
     // A path can be reopened into a different tab while this read is pending.
     // Buffer comparison also protects edits before the dirty flag is updated.
+    // A same-path save or read in another tab invalidates this result as well.
     const isCurrent = () => manualReads.get(tab) === request
+      && observedVersions.get(tab) === observedVersion
+      && diskVersions.get(filePath) === snapshot.diskVersion
       && !!currentSnapshotTarget(snapshot);
 
     try {
@@ -231,6 +309,7 @@ export function useFileReload(options: UseFileReloadOptions) {
       if (tab.hasChanges) {
         handleExternalFileChange(filePath, newContent, tab);
       } else {
+        observedVersions.set(tab, Symbol());
         reloadTabContent(filePath, newContent, tab);
         showToastNotification(t.value.fileReloaded, 'success');
       }
@@ -253,6 +332,7 @@ export function useFileReload(options: UseFileReloadOptions) {
 
     // Conflict modal
     showConflictModal: computed(() => showConflictModal.value),
+    conflictKey: computed(() => conflictKey.value),
     conflictFileName: computed(() => conflictFileName.value),
     conflictFilePath: computed(() => conflictFilePath.value),
     conflictDiffLines: computed(() => conflictDiffLines.value),
@@ -269,10 +349,19 @@ export function useFileReload(options: UseFileReloadOptions) {
 
     // File watcher controls (exposed for App.vue integration)
     watchFile: fileWatcher.watchFile,
-    unwatchFile: fileWatcher.unwatchFile,
-    unwatchAll: fileWatcher.unwatchAll,
+    unwatchFile: (filePath: string) => {
+      clearConflicts(filePath);
+      return fileWatcher.unwatchFile(filePath);
+    },
+    unwatchAll: () => {
+      clearConflicts();
+      return fileWatcher.unwatchAll();
+    },
     markSaveStart: fileWatcher.markSaveStart,
-    markSaveEnd: fileWatcher.markSaveEnd,
+    markSaveEnd: (filePath: string, newContent: string) => {
+      observeDisk(filePath, newContent);
+      return fileWatcher.markSaveEnd(filePath, newContent);
+    },
     markSaveAbort: fileWatcher.markSaveAbort,
   };
 }

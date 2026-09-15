@@ -262,7 +262,7 @@ const isTabOpen = (tab: Tab): boolean => splitState.value.panes.some((pane) => p
 // ============ File Watcher & Reload ============
 const {
   showToast, toastMessage, toastType, dismissToast, showToastNotification,
-  showConflictModal, conflictFileName, conflictFilePath, conflictDiffLines, conflictDiffStats,
+  showConflictModal, conflictKey, conflictFileName, conflictFilePath, conflictDiffLines, conflictDiffStats,
   handleConflictKeepLocal, handleConflictLoadExternal, handleConflictMerge,
   manualReload,
   reloadTabContent,
@@ -272,6 +272,8 @@ const {
   currentFile,
   activeTab,
   hasChanges,
+  findTabsByFilePathSplit: filePath => splitState.value.panes.flatMap(pane =>
+    pane.tabs.filter(tab => tab.filePath === filePath).map(tab => ({ pane, tab }))),
   findTabByFilePathSplit: (filePath, expectedTab) => {
     if (!expectedTab) return findTabByFilePathSplit(filePath);
     const pane = splitState.value.panes.find(pane => pane.tabs.includes(expectedTab));
@@ -2610,6 +2612,7 @@ onUnmounted(async () => {
     <!-- File Conflict Modal (watcher-based external change) -->
     <FileConflictModal
       v-if="showConflictModal"
+      :key="conflictKey"
       :file-name="conflictFileName"
       :file-path="conflictFilePath"
       :diff-lines="conflictDiffLines"
