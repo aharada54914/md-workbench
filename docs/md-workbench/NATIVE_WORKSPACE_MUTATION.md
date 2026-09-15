@@ -31,8 +31,17 @@ there is no ordinary rename, copy/delete or existence-check fallback.
 
 Windows uses the separate `file_access_rename_windows.rs` adapter: a nofollow
 source handle with DELETE access, retained destination directory handle and
-`SetFileInformationByHandle(FileRenameInfo)` with ReplaceIfExists false. The
-adapter rejects source reparse objects. Unix may rename a final symlink itself;
+`NtSetInformationFile(FileRenameInformation)` with ReplaceIfExists false. The
+adapter rejects source reparse objects. Pinned cap-std opens this source with
+`SYNCHRONIZE` and `FILE_SYNCHRONOUS_IO_NONALERT`; all I/O through that handle
+completes synchronously before the aligned buffer and IO status block are
+released. Only `STATUS_SUCCESS` is accepted; native errors are translated with
+`RtlNtStatusToDosError`, including destination collisions. Windows tests inspect
+the actual source handle's synchronous mode as well as collision behavior. See
+[the native rename contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)
+and [synchronous handle semantics](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwcreatefile).
+
+Unix may rename a final symlink itself;
 intermediate links are rejected everywhere. Case-only moves on a case-insensitive
 filesystem may conservatively fail. Cross-filesystem moves return an OS error
 without a copy/unlink fallback. Existing destinations, including links and

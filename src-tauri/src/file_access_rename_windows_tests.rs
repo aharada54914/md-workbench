@@ -177,12 +177,12 @@ fn windows_rename_buffer_matches_sdk_layout_alignment_and_utf16_length() {
     let buffer = RenameBuffer::new(&parent, OsStr::new("文書-🦀.md")).unwrap();
     let expected: Vec<u16> = OsStr::new("文書-🦀.md").encode_wide().collect();
     assert_eq!(
-        buffer.words.as_ptr() as usize % std::mem::align_of::<FILE_RENAME_INFO>(),
+        buffer.words.as_ptr() as usize % std::mem::align_of::<FILE_RENAME_INFORMATION>(),
         0
     );
     // SAFETY: inspecting the same initialized/aligned allocation passed to FFI.
     unsafe {
-        let header = &*buffer.words.as_ptr().cast::<FILE_RENAME_INFO>();
+        let header = &*buffer.words.as_ptr().cast::<FILE_RENAME_INFORMATION>();
         assert!(!header.Anonymous.ReplaceIfExists);
         assert_eq!(header.RootDirectory, parent.as_raw_handle());
         assert_eq!(header.FileNameLength as usize, expected.len() * 2);
@@ -190,7 +190,7 @@ fn windows_rename_buffer_matches_sdk_layout_alignment_and_utf16_length() {
             .words
             .as_ptr()
             .cast::<u8>()
-            .add(offset_of!(FILE_RENAME_INFO, FileName))
+            .add(offset_of!(FILE_RENAME_INFORMATION, FileName))
             .cast::<u16>();
         assert_eq!(
             std::slice::from_raw_parts(payload, expected.len()),
@@ -255,4 +255,49 @@ fn windows_rename_rejects_source_file_symlink_and_preserves_destination_junction
     assert!(fs::read_link(root.0.join("link")).is_ok());
     assert!(!root.0.join("new-name").exists());
     fs::remove_dir(root.0.join("destination-junction")).unwrap();
+}
+
+#[test]
+fn windows_native_status_preserves_collision_and_rejects_pending() {
+    use windows_sys::Win32::Foundation::{
+        ERROR_IO_PENDING, STATUS_OBJECT_NAME_COLLISION, STATUS_PENDING,
+    };
+    assert!(rename_status(STATUS_SUCCESS).is_ok());
+    assert_eq!(
+        rename_status(STATUS_OBJECT_NAME_COLLISION)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(
+        rename_status(STATUS_PENDING).unwrap_err().raw_os_error(),
+        Some(ERROR_IO_PENDING as i32)
+    );
+}
+
+#[test]
+fn windows_source_handle_is_synchronous_for_stack_io_status_lifetime() {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FileModeInformation, NtQueryInformationFile, FILE_MODE_INFORMATION,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    let root = TempRoot::new();
+    fs::write(root.0.join("source"), b"source").unwrap();
+    let parent = root.dir("");
+    let source = open_source(&parent, OsStr::new("source")).unwrap();
+    let mut completion = IO_STATUS_BLOCK::default();
+    let mut mode = FILE_MODE_INFORMATION::default();
+    // SAFETY: the live handle and initialized fixed-size SDK output structures
+    // remain valid throughout this synchronous metadata query.
+    let status = unsafe {
+        NtQueryInformationFile(
+            source.as_raw_handle(),
+            &mut completion,
+            (&mut mode as *mut FILE_MODE_INFORMATION).cast(),
+            size_of::<FILE_MODE_INFORMATION>() as u32,
+            FileModeInformation,
+        )
+    };
+    assert_eq!(status, STATUS_SUCCESS);
+    assert_ne!(mode.Mode & FILE_SYNCHRONOUS_IO_NONALERT, 0);
 }

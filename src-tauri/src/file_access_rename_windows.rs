@@ -7,11 +7,15 @@ use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::AsRawHandle;
-use windows_sys::Win32::Storage::FileSystem::{
-    FileRenameInfo, SetFileInformationByHandle, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-    FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE,
+use windows_sys::Wdk::Storage::FileSystem::{
+    FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION,
 };
+use windows_sys::Win32::Foundation::{RtlNtStatusToDosError, NTSTATUS, STATUS_SUCCESS};
+use windows_sys::Win32::Storage::FileSystem::{
+    DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+};
+use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 // Windows filesystem component limit, expressed in UTF-16 code units.
 const MAX_NAME_UNITS: usize = 255;
@@ -48,6 +52,9 @@ fn open_source(parent: &Dir, name: &OsStr) -> io::Result<std::fs::File> {
         // cap directory handle that would block its own rename. No truncation.
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .follow(FollowSymlinks::No);
+    // cap-std 4.0.3 CreateFileAtW adds SYNCHRONIZE and, because OVERLAPPED
+    // is absent, FILE_SYNCHRONOUS_IO_NONALERT. The native rename therefore
+    // completes synchronously before its stack IO_STATUS_BLOCK is released.
     // cap-std opens this single leaf relative to the parent's native handle.
     let source = parent.open_with(name, &options)?.into_std();
     let metadata = source.metadata()?;
@@ -65,7 +72,7 @@ fn open_source(parent: &Dir, name: &OsStr) -> io::Result<std::fs::File> {
 }
 
 struct RenameBuffer {
-    // u8 storage would not guarantee FILE_RENAME_INFO's pointer alignment.
+    // u8 storage would not guarantee FILE_RENAME_INFORMATION's pointer alignment.
     words: Vec<usize>,
     byte_len: u32,
 }
@@ -74,11 +81,11 @@ impl RenameBuffer {
     fn new(target_parent: &Dir, target_name: &OsStr) -> io::Result<Self> {
         let name = encode_leaf(target_name)?;
         let name_bytes = name.len() * size_of::<u16>();
-        let name_offset = offset_of!(FILE_RENAME_INFO, FileName);
+        let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
         // Include a zero terminator for API implementations that inspect it,
         // but FileNameLength is bytes excluding that terminator.
         let byte_len =
-            (name_offset + name_bytes + size_of::<u16>()).max(size_of::<FILE_RENAME_INFO>());
+            (name_offset + name_bytes + size_of::<u16>()).max(size_of::<FILE_RENAME_INFORMATION>());
         let mut buffer = Self {
             words: vec![0; byte_len.div_ceil(size_of::<usize>())],
             byte_len: u32::try_from(byte_len).map_err(|_| invalid_name())?,
@@ -88,7 +95,7 @@ impl RenameBuffer {
         // Both pointer writes stay within this allocation. No Rust reference
         // to a variable-length struct or its one-element array is constructed.
         unsafe {
-            let header = buffer.words.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+            let header = buffer.words.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
             (*header).Anonymous.ReplaceIfExists = false;
             (*header).RootDirectory = target_parent.as_raw_handle();
             (*header).FileNameLength = name_bytes as u32;
@@ -110,23 +117,36 @@ fn rename_open_source(
     target_name: &OsStr,
 ) -> io::Result<()> {
     let buffer = RenameBuffer::new(target_parent, target_name)?;
-    // SAFETY: the source has DELETE access; source, target parent and aligned
-    // buffer remain alive throughout this synchronous call. The buffer uses
-    // the SDK layout and contains only a basename relative to target_parent.
-    let result = unsafe {
-        SetFileInformationByHandle(
+    let mut completion = IO_STATUS_BLOCK::default();
+    // SAFETY: source comes only from open_source, with DELETE access and
+    // synchronous IO (no OVERLAPPED). Both handles, the aligned SDK buffer and
+    // completion remain alive until the kernel completes this call. Native
+    // FileRenameInformation resolves the basename against RootDirectory;
+    // no Win32 path translation or process current-directory lookup occurs.
+    let status = unsafe {
+        NtSetInformationFile(
             source.as_raw_handle(),
-            FileRenameInfo,
+            &mut completion,
             buffer.words.as_ptr().cast(),
             buffer.byte_len,
+            FileRenameInformation,
         )
     };
-    if result == 0 {
-        // Preserve the OS failure, including destination collision. Never
-        // retry with replacement, ambient paths, or copy/unlink semantics.
-        Err(io::Error::last_os_error())
-    } else {
+    rename_status(status)
+}
+
+fn rename_status(status: NTSTATUS) -> io::Result<()> {
+    // Require completed success, not NT_SUCCESS(status): STATUS_PENDING is
+    // nonnegative but must never be reported as a completed rename. Our
+    // synchronous source handle prevents that asynchronous return in practice.
+    if status == STATUS_SUCCESS {
         Ok(())
+    } else {
+        // Native calls do not set GetLastError. Preserve the translated native
+        // failure (including collision); never retry with weaker semantics.
+        Err(io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(status) } as i32,
+        ))
     }
 }
 

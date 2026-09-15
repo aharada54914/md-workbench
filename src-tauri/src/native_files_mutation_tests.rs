@@ -159,10 +159,12 @@ fn roots_and_invalid_endpoint_names_are_rejected_before_io() {
     let source = f.path("work/source.md");
     for path in [
         f.path("work"),
-        f.path("work/../outside"),
+        // PathBuf::join normalizes dots for Windows verbatim prefixes. Keep
+        // renderer input literal so this tests rejection before native I/O.
+        format!("{}/../outside", f.path("work")),
         f.path("work/CON"),
         f.path("work/a:ads"),
-        f.path("work/./new.md"),
+        format!("{}/./new.md", f.path("work")),
     ] {
         assert_eq!(
             code(rename(&s, "main", &source, &path).unwrap_err()),
