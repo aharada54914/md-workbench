@@ -72,3 +72,9 @@ objects, pane moves, watch cleanup, and pending manual reads. Existing manual
 identity and watcher lifecycle tests remain required. These are simulated editor
 and filesystem notifications; actual OS notification delivery is not established
 by these unit tests.
+
+Chromium integration in `watcher-conflict-queue.test.ts` passed three scenarios:
+FIFO dialogs for dirty documents, reset merge selections between candidates,
+and stale Load/Merge answers advancing without changing the local buffer.
+These tests use the actual App and modal with mocked native watch callbacks;
+they also verify saved source and dirty state. They do not exercise OS delivery.
