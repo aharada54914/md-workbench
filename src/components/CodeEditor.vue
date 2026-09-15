@@ -97,13 +97,16 @@ const editor: CodeEditorHandle = {
     // CodeMirror may still be completing its scroll/layout measure after a
     // maximized window or viewport resize. Start the animation in its next
     // synchronized write phase so none of it is consumed off-screen.
-    view.requestMeasure<HTMLElement | null>({
-      read: (measuredView) => {
+    view.requestMeasure({
+      read: () => null,
+      write: (_, measuredView) => {
+        if (view !== measuredView) return;
+        // CodeMirror can redraw docView between its read and write phases.
+        // Resolve the current line here; retaining the read-phase DOM node can
+        // silently skip the highlight when that node was replaced by the redraw.
         const domAtCursor = measuredView.domAtPos(measuredView.state.selection.main.head).node;
         const cursorElement = domAtCursor instanceof Element ? domAtCursor : domAtCursor.parentElement;
-        return cursorElement?.closest<HTMLElement>('.cm-line') ?? null;
-      },
-      write: (line) => {
+        const line = cursorElement?.closest<HTMLElement>('.cm-line');
         if (!line || !line.isConnected) return;
         line.classList.add('code-cursor-highlight-line');
         highlightedLine = line;

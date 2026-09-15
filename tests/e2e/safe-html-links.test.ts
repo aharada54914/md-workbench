@@ -41,6 +41,16 @@ const selectedCodeLine = (page: Page) => page.evaluate(() => {
   return element?.closest('.cm-line')?.textContent ?? '';
 });
 
+const selectionIsSecondRepeatedLine = (page: Page) => page.evaluate(() => {
+  const anchor = window.getSelection()?.anchorNode;
+  const element = anchor instanceof Element ? anchor : anchor?.parentElement;
+  const repeated = [...document.querySelectorAll('.code-editor .cm-line')]
+    .filter(line => line.textContent?.includes('<strong>A modern, open-source Markdown editor'));
+  // A pending CodeMirror scroll can move both nodes between separate browser
+  // calls. Compare their identity in one observation, including the duplicate.
+  return repeated.length === 2 && element?.closest('.cm-line') === repeated[1];
+});
+
 test.describe('safe HTML external links', () => {
   test.beforeEach(async ({ page }) => {
     await setupTauriMocks(page, {
@@ -75,13 +85,8 @@ test.describe('safe HTML external links', () => {
 
     await expect.poll(() => selectedCodeLine(page)).toContain('<strong>A modern, open-source Markdown editor');
 
-    const selectedTop = await page.evaluate(() => {
-      const anchor = window.getSelection()?.anchorNode;
-      const element = anchor instanceof Element ? anchor : anchor?.parentElement;
-      return element?.closest('.cm-line')?.getBoundingClientRect().top ?? -1;
-    });
+    expect(await selectionIsSecondRepeatedLine(page)).toBe(true);
     const matchingLines = page.locator('.code-editor .cm-line').filter({ hasText: '<strong>A modern, open-source Markdown editor' });
-    expect(Math.abs(selectedTop - (await matchingLines.nth(1).boundingBox())!.y)).toBeLessThan(3);
     await expect(matchingLines.nth(1)).toHaveClass(/code-cursor-highlight-line/);
     await expect.poll(() => matchingLines.nth(1).evaluate(element => (
       element.getAnimations().filter(animation => animation.playState === 'running').length
@@ -123,13 +128,8 @@ test.describe('safe HTML external links', () => {
     await page.waitForTimeout(400);
     await openCodeView(page);
     await expect.poll(() => selectedCodeLine(page)).toContain('<strong>A modern, open-source Markdown editor');
-    const selectedTop = await page.evaluate(() => {
-      const anchor = window.getSelection()?.anchorNode;
-      const element = anchor instanceof Element ? anchor : anchor?.parentElement;
-      return element?.closest('.cm-line')?.getBoundingClientRect().top ?? -1;
-    });
+    expect(await selectionIsSecondRepeatedLine(page)).toBe(true);
     const repeatedLines = page.locator('.code-editor .cm-line').filter({ hasText: '<strong>A modern, open-source Markdown editor' });
-    expect(Math.abs(selectedTop - (await repeatedLines.nth(1).boundingBox())!.y)).toBeLessThan(3);
     await expect(repeatedLines.nth(1)).toHaveClass(/code-cursor-highlight-line/);
   });
 
