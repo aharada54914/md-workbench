@@ -93,3 +93,27 @@ Resource/Export rejection and regular-document validation in both commands.
 Windows cross-compilation is not Windows runtime verification; actual native CI
 remains required. This slice alone does not complete T04/T05 or image display
 acceptance.
+
+## Native AI attachment selection
+
+The separate `native_pick_images()` command accepts no renderer paths or filters.
+Its native multi-file dialog uses png/jpg/jpeg/gif/webp/bmp extensions and returns
+ordered Resource READ grants. Completion checks the captured window generation,
+including cancellation. A batch exceeding 128 files or 256 KiB of encoded path
+bytes is rejected before issuing any grants; invalid extensions and failed
+selections preserve previous grant metadata.
+
+AI pending images now read each selection through
+`nativeFs.readPathBytes(path, 8 MiB, selectedGrant.id)`. A later same-path grant
+cannot redirect that read. Composer/document lifecycle checks suppress obsolete
+results and warnings. Cancellation preserves existing attachments; an oversized
+image retains the existing visible 8 MiB warning. No plugin filesystem or dialog
+fallback is used by this picker path.
+
+These limits apply to one selection and one read. They do not cap accumulated
+attachments or grants across selections. Filename extensions do not validate
+image contents, and MIME is still inferred from the filename. Other read errors
+retain the prior console-only reporting and require a later visible error flow.
+Document image rendering and image import use separate paths and still require
+migration. Native dialog interaction and full image acceptance remain separate
+from unit, service and core verification.

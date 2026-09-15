@@ -10,7 +10,6 @@ export interface PendingImage {
   ext: string;
 }
 
-export const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] as const;
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 export function useAiPendingImages(context?: () => readonly unknown[]) {
@@ -86,29 +85,33 @@ export function useAiPendingImages(context?: () => readonly unknown[]) {
     const startedGeneration = generation;
     const isCurrent = () => !disposed && generation === startedGeneration;
     if (!isCurrent()) return;
-    const { open } = await import('@tauri-apps/plugin-dialog');
-    if (!isCurrent()) return;
-    const selected = await open({
-      multiple: true,
-      filters: [{ name: 'Images', extensions: [...IMAGE_EXTS] }],
-    });
-    if (!isCurrent() || !selected) return;
-    const paths = Array.isArray(selected) ? selected : [selected];
-    const { readFile } = await import('@tauri-apps/plugin-fs');
-    for (const p of paths) {
+    try {
+      const { nativeFs } = await import('../services/nativeFs');
       if (!isCurrent()) return;
-      try {
-        const bytes = await readFile(p);
+      const selected = await nativeFs.pickImages();
+      if (!isCurrent()) return;
+      for (const grant of selected) {
         if (!isCurrent()) return;
-        const ext = (p.split('.').pop() || 'png').toLowerCase();
-        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
-        const blob = new Blob([bytes], { type: mime });
-        const name = p.split(/[/\\]/).pop() || 'image';
-        addPendingImage(blob, name);
-      } catch (e) {
-        if (!isCurrent()) return;
-        console.error('[useAiPendingImages] pickImageFile read failed:', e);
+        try {
+          // Bind the read to this selection, not a later same-path grant.
+          const bytes = await nativeFs.readPathBytes(grant.path, MAX_IMAGE_BYTES, grant.id);
+          if (!isCurrent()) return;
+          const ext = (grant.path.split('.').pop() || 'png').toLowerCase();
+          const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
+          const blob = new Blob([bytes], { type: mime });
+          const name = grant.path.split(/[/\\]/).pop() || 'image';
+          addPendingImage(blob, name);
+        } catch (e) {
+          if (!isCurrent()) return;
+          if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'file_too_large') {
+            window.alert(`Image too large. Max ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`);
+          }
+          console.error('[useAiPendingImages] pickImageFile read failed:', e);
+        }
       }
+    } catch (e) {
+      if (!isCurrent()) return;
+      console.error('[useAiPendingImages] pickImageFile selection failed:', e);
     }
   }
 

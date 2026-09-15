@@ -17,7 +17,9 @@ impl Fixture {
         fs::write(root.join("work/note.assets/image.png"), b"asset").unwrap();
         fs::write(root.join("outside/images/secret.png"), b"secret").unwrap();
         fs::write(root.join("outside/secret.md"), b"outside document").unwrap();
-        Self(root)
+        // Match the other native fixtures: Windows verbatim-root joins normalize
+        // relative separators before paths are passed to the cmd mklink builtin.
+        Self(fs::canonicalize(root).unwrap())
     }
     fn access(&self, kind: GrantKind, rights: Rights) -> (FileAccess, GrantInfo) {
         let mut access = FileAccess::default();
@@ -98,7 +100,7 @@ fn workspace_documents_use_their_own_nested_parent() {
     );
     for document in ["", "sub", "sub/../note.md"] {
         assert!(access
-            .validate_image_document("main", grant.id, Path::new(document))
+            .validate_regular_document("main", grant.id, Path::new(document))
             .is_err());
     }
 }
@@ -109,7 +111,7 @@ fn images_require_owned_read_document_or_workspace_and_current_regular_document(
     for kind in [GrantKind::Resource, GrantKind::Export] {
         let (access, grant) = f.access(kind, Rights::READ);
         assert!(matches!(
-            access.validate_image_document("main", grant.id, Path::new("")),
+            access.validate_regular_document("main", grant.id, Path::new("")),
             Err(AccessError::InvalidKind)
         ));
         assert!(matches!(
@@ -124,30 +126,30 @@ fn images_require_owned_read_document_or_workspace_and_current_regular_document(
     }
     let (access, grant) = f.access(GrantKind::Document, Rights::WRITE);
     assert!(matches!(
-        access.validate_image_document("main", grant.id, Path::new("")),
+        access.validate_regular_document("main", grant.id, Path::new("")),
         Err(AccessError::Denied)
     ));
     drop(access);
     let (mut access, grant) = f.access(GrantKind::Document, Rights::READ);
     for label in ["window-1", "print-preview", "unknown"] {
         assert!(matches!(
-            access.validate_image_document(label, grant.id, Path::new("")),
+            access.validate_regular_document(label, grant.id, Path::new("")),
             Err(AccessError::Denied)
         ));
     }
     assert!(matches!(
-        access.validate_image_document("main", grant.id, Path::new("note.md")),
+        access.validate_regular_document("main", grant.id, Path::new("note.md")),
         Err(AccessError::Denied)
     ));
     fs::remove_file(f.0.join("work/note.md")).unwrap();
     fs::create_dir(f.0.join("work/note.md")).unwrap();
     assert!(matches!(
-        access.validate_image_document("main", grant.id, Path::new("")),
+        access.validate_regular_document("main", grant.id, Path::new("")),
         Err(AccessError::InvalidPath)
     ));
     access.revoke_window("main");
     assert!(matches!(
-        access.validate_image_document("main", grant.id, Path::new("")),
+        access.validate_regular_document("main", grant.id, Path::new("")),
         Err(AccessError::Denied)
     ));
 }
@@ -272,7 +274,7 @@ fn images_and_documents_reject_links_and_special_files() {
     let (access, grant) = f.access(GrantKind::Workspace, Rights::READ);
     symlink(f.0.join("outside"), f.0.join("work/link")).unwrap();
     assert!(access
-        .validate_image_document("main", grant.id, Path::new("link/secret.md"))
+        .validate_regular_document("main", grant.id, Path::new("link/secret.md"))
         .is_err());
     symlink(f.0.join("outside/images"), f.0.join("work/images/link")).unwrap();
     symlink(
@@ -307,7 +309,7 @@ fn images_and_documents_reject_links_and_special_files() {
     )
     .unwrap();
     assert!(access
-        .validate_image_document("main", grant.id, Path::new("note.md"))
+        .validate_regular_document("main", grant.id, Path::new("note.md"))
         .is_err());
     assert_eq!(
         fs::read(f.0.join("outside/images/secret.png")).unwrap(),
@@ -359,14 +361,18 @@ fn images_reject_windows_junction_asset_roots_and_document_parents() {
         ("work/note.assets/junction", "outside/images"),
         ("work/junction", "outside"),
     ] {
-        assert!(std::process::Command::new("cmd")
+        let link = f.0.join(link);
+        let target = f.0.join(target);
+        let output = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
-            .arg(f.0.join(link))
-            .arg(f.0.join(target))
+            .arg(&link)
+            .arg(&target)
             .output()
-            .unwrap()
-            .status
-            .success());
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "native junction fixture {link:?} -> {target:?}: {output:?}"
+        );
     }
     assert!(access
         .read_document_image(
@@ -377,17 +383,21 @@ fn images_reject_windows_junction_asset_roots_and_document_parents() {
         )
         .is_err());
     assert!(access
-        .validate_image_document("main", grant.id, Path::new("junction/secret.md"))
+        .validate_regular_document("main", grant.id, Path::new("junction/secret.md"))
         .is_err());
     fs::rename(f.0.join("work/note.assets"), f.0.join("work/held.assets")).unwrap();
-    assert!(std::process::Command::new("cmd")
+    let link = f.0.join("work/note.assets");
+    let target = f.0.join("outside/images");
+    let output = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
-        .arg(f.0.join("work/note.assets"))
-        .arg(f.0.join("outside/images"))
+        .arg(&link)
+        .arg(&target)
         .output()
-        .unwrap()
-        .status
-        .success());
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "native replacement junction fixture {link:?} -> {target:?}: {output:?}"
+    );
     assert!(access
         .read_document_image(
             "main",
@@ -424,7 +434,7 @@ fn images_reject_windows_file_and_directory_symlinks() {
     symlink_file(f.0.join("outside/secret.md"), f.0.join("work/note.md"))
         .expect("native symlink security tests require Developer Mode or symlink privilege");
     assert!(access
-        .validate_image_document("main", grant.id, Path::new("note.md"))
+        .validate_regular_document("main", grant.id, Path::new("note.md"))
         .is_err());
     assert_eq!(
         fs::read(f.0.join("outside/images/secret.png")).unwrap(),

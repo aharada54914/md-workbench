@@ -46,6 +46,7 @@ struct NativeState {
     // Save destinations must not replace the retained READ binding for an alias.
     save_exports: HashMap<(String, String), GrantInfo>,
     drops: HashMap<String, Vec<drops::QueuedDrop>>,
+    watches: HashMap<Uuid, watch::WatchSubscription>,
     // Only OS ingress adds these capabilities; a path lookup cannot populate it.
     pending: HashMap<String, HeldGrant>,
     distributed: HashSet<(String, String)>,
@@ -88,6 +89,7 @@ impl NativeState {
         webview == window && self.windows.contains_key(window)
     }
     fn revoke(&mut self, label: &str) {
+        self.watches.retain(|_, subscription| subscription.owner != label);
         self.cancel_window_transfers(label);
         self.windows.remove(label);
         self.building.remove(label);
@@ -305,3 +307,11 @@ pub(crate) use reveal::*;
 #[path = "native_files_images.rs"]
 mod images;
 pub(crate) use images::*;
+
+#[path = "native_files_watch.rs"]
+mod watch;
+pub(crate) use watch::*;
+
+#[path = "native_files_image_picker.rs"]
+mod image_picker;
+pub(crate) use image_picker::*;

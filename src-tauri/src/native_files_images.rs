@@ -19,7 +19,7 @@ impl NativeState {
         }
         let (id, relative) = self.resolve_owned_path(label, document_path, false)?;
         self.access
-            .validate_image_document(label, id, Path::new(&relative))
+            .validate_regular_document(label, id, Path::new(&relative))
             .map_err(|error| error.to_string())?;
         Ok(ImageDocument {
             grant_id: id.to_string(),

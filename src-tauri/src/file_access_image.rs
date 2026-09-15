@@ -85,7 +85,7 @@ impl FileAccess {
         Ok((parent, name))
     }
 
-    pub(crate) fn validate_image_document(
+    pub(crate) fn validate_regular_document(
         &self,
         window: &str,
         id: GrantId,

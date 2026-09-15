@@ -26,6 +26,9 @@ export interface NativeFsError {
     | 'unsupported_platform'
     | 'file_too_large'
     | 'file_not_found'
+    | 'watch_busy'
+    | 'watch_limit_exceeded'
+    | 'selection_limit_exceeded'
     | 'native_state_unavailable'
     | 'dialog_unavailable'
     | 'filesystem_error';
@@ -45,6 +48,12 @@ export interface NativeImageDocument {
   grantId: string;
 }
 
+/** Caller-owned polling token; no OS notification or timer is installed. */
+export interface NativeWatch {
+  id: string;
+  grantId: string;
+}
+
 /** Native grants are scoped to the invoking editor window. Never fall back to
  * plugin-fs when authority is missing or revoked. Callers handle typed rejects. */
 export const nativeFs = {
@@ -58,12 +67,22 @@ export const nativeFs = {
   pickSaveDestination: () => invoke<NativeGrant | null>('native_pick_save_destination'),
   pickWorkspace: () => invoke<NativeGrant | null>('native_pick_workspace'),
   pickResource: () => invoke<NativeGrant | null>('native_pick_resource'),
+  pickImages: () => invoke<NativeGrant[]>('native_pick_images'),
 
   listDirectory: (path: string, limit = MAX_NATIVE_DIRECTORY_ENTRIES) =>
     invoke<NativeDirectoryListing>('native_list_directory', { path, limit }),
 
   resolveImageDocument: (documentPath: string) =>
     invoke<NativeImageDocument>('native_resolve_image_document', { documentPath }),
+
+  subscribeWatch: (path: string, expectedGrantId: string) =>
+    invoke<NativeWatch>('native_watch_subscribe', { path, expectedGrantId }),
+  unsubscribeWatch: (id: string) => invoke<void>('native_watch_unsubscribe', { id }),
+
+  // Scheduling, immediate initial read and byte comparisons belong to callers.
+  async readWatchBytes(id: string, limit = MAX_NATIVE_READ_BYTES): Promise<Uint8Array> {
+    return Uint8Array.from(await invoke<number[]>('native_watch_read', { id, limit }));
+  },
 
   /** Literal filesystem-relative path, not a URL: no percent or image decoding.
    * The host enforces current authority and the fixed 8 MiB limit. Bytes returned
