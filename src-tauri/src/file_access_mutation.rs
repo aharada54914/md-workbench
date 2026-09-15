@@ -209,7 +209,7 @@ fn delete_entry(
         // directory links/junctions require rmdir, which does not recurse.
         hook(DeleteStage::BeforeRemove, parent, name)?;
         progress.attempted = true;
-        remove_link(parent, name, kind)?;
+        remove_link(parent, name, &metadata)?;
     } else if kind.is_dir() {
         let directory = parent.open_dir_nofollow(name)?;
         hook(DeleteStage::AfterOpen, parent, name)?;
@@ -235,22 +235,25 @@ fn delete_entry(
     progress.removed += 1;
     Ok(())
 }
-fn remove_link(parent: &Dir, name: &OsStr, kind: cap_std::fs::FileType) -> io::Result<()> {
+fn remove_link(parent: &Dir, name: &OsStr, metadata: &cap_std::fs::Metadata) -> io::Result<()> {
     #[cfg(windows)]
     {
-        use cap_std::fs::FileTypeExt;
-        if kind.is_symlink_dir() {
-            return parent.remove_dir(name);
-        }
-        if !kind.is_symlink_file() {
+        use cap_std::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+        if !metadata.file_type().is_symlink() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Unknown reparse entry",
             ));
         }
+        // Use attributes from the same nofollow inspection: cap-std's Windows
+        // FileTypeExt export depends on a compiler cfg and is not always present.
+        if metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            return parent.remove_dir(name);
+        }
     }
     #[cfg(not(windows))]
-    let _ = kind;
+    let _ = metadata;
     parent.remove_file(name)
 }
 

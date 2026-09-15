@@ -446,6 +446,13 @@ fn directory_replaced_before_inspection_is_only_unlinked_and_final_rmdir_race_ca
 fn delete_junction_is_nonrecursive_and_retained_directory_blocks_replacement() {
     let f = Fixture::new();
     let (a, s, _) = f.access();
+    std::os::windows::fs::symlink_file(
+        f.0.join("outside/sentinel.md"),
+        f.0.join("work/tree/file-link"),
+    )
+    .expect("Windows CI needs symlink creation privilege for this security regression");
+    std::os::windows::fs::symlink_file("missing", f.0.join("work/tree/dangling-link"))
+        .expect("Windows CI needs symlink creation privilege for this security regression");
     let output = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
         .arg(f.0.join("work/tree/junction"))
