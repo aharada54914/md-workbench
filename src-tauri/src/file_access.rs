@@ -34,6 +34,11 @@ mod reveal;
 #[path = "file_access_image.rs"]
 mod image;
 
+#[allow(dead_code)] // Inactive host-only Save preflight; no IPC or publication.
+#[path = "file_access_save_preflight.rs"]
+mod save_preflight;
+pub(crate) use save_preflight::SavePreflightObservation;
+
 pub(crate) const MAX_IO_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
