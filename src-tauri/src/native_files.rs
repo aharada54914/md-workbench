@@ -295,3 +295,7 @@ mod tests;
 #[path = "native_files_ack.rs"]
 mod ack;
 pub(crate) use ack::*;
+
+#[path = "native_files_path.rs"]
+mod path;
+pub(crate) use path::*;

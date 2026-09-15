@@ -944,6 +944,8 @@ pub fn run() {
             native_files::native_ack_tab_transfer,
             native_files::native_get_grant,
             native_files::native_read_grant,
+            native_files::native_read_path,
+            native_files::native_list_directory,
             native_files::native_pick_documents,
             native_files::native_pick_save_destination,
             native_files::native_pick_workspace,

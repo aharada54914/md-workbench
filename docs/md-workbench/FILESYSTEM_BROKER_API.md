@@ -131,12 +131,43 @@ by the existing memory-backed custom protocol without custom IPC.
 | `native_pick_resource()` | `NativeGrant` or `null` | Selected exact file, Resource READ. |
 | `native_get_grant({path})` | `NativeGrant` or `null` | Existing caller-owned metadata lookup only; no disk I/O or new grant. |
 | `native_read_grant({id, relative, limit})` | `number[]` | Reads bytes through the owned grant on a blocking worker; `relative: ""` for an exact file, limit at most 67108864. |
+| `native_read_path({path, limit})` | `number[]` | Existing caller-owned exact READ metadata first, otherwise the most specific owned Workspace READ prefix. Uses retained-handle reads; limit at most 67108864. |
+| `native_list_directory({path, limit})` | `{entries: {name, isDirectory}[], omitted}` | Direct children of an owned Workspace READ root or subdirectory; at most 10000 scanned entries. |
 
 Commands reject `{code, message}`. Branch on `code`, one of
 `permission_required`, `invalid_path`, `invalid_grant_kind`,
 `unsupported_platform`, `file_too_large`, `native_state_unavailable`,
 `dialog_unavailable`, `filesystem_error`. `message` is diagnostic text.
 There is no create/overwrite/rename/delete IPC in this stage.
+
+Path read/list commands run on a blocking worker and revalidate the captured
+caller generation while holding the native registry lock through I/O. They do not
+canonicalize, reopen ambient paths, create grants, recover hidden grant history,
+or accept grant ownership from renderer arguments. Lookup recognizes original
+native-selection aliases and canonical metadata aliases. Windows slash/backslash
+routing spellings are equivalent; case and device aliases are not broadened.
+Workspace matching requires a full directory boundary and chooses the longest
+owned prefix. Equal-length roots prefer the requested native spelling (including
+its child-path prefix), then stable alias order; a separator-equivalent re-selection
+does not silently switch the earlier alias to a different retained directory.
+Remaining relative components are passed unchanged to core policy,
+which rejects traversal and symlinks; failed operations never fall back to another
+filesystem API. A more specific pinned workspace keeps referring to its original
+directory object if its old path is replaced on Unix.
+
+Directory results contain names, not newly authorized paths. They are sorted with
+directories first, then by name. `omitted` counts symlinks, special files and names
+outside the portable policy. Limits count all scanned entries including omissions;
+an exceeded count rejects with `file_too_large` instead of returning a silently
+partial list. List access is intentionally restricted to Workspace grants in this
+IPC stage even though the host core can also list Resource directories.
+
+**Current save integration constraint:** metadata lookup stores the latest grant
+per native alias. Selecting the same exact path with the Save picker can replace
+visible Document READ metadata with Export WRITE metadata, while an older READ UUID
+still exists in the core. Path reads reject with `permission_required` when no
+other visible READ authority covers the path; they do not revive that older UUID.
+Purpose-specific save lookup must address this before migrating the save flow.
 
 CLI, second instance and macOS Opened capture Document READ_WRITE anchors in a
 host-only pending map. The existing ordered queue and getters remain compatible.
@@ -232,3 +263,12 @@ results are recorded with the implementation handoff; packaged GUI acceptance is
 still required on every supported OS.
 Actual native picker interaction, drop ordering and closed-window behavior still
 require packaged tests on each supported OS.
+
+The native path-command regression suite covers ownership, raw BOM/CRLF bytes,
+original/canonical aliases, direct-child DTOs and bounds, clean relative paths,
+exact/most-specific grant selection, stale generations, the write-only metadata
+constraint, and retained Unix directory objects. Windows adds a native/frontend
+separator and unselected UNC regression, plus two spellings re-selected against
+different retained roots; actual Windows execution remains required.
+The macOS full native suite passed 261 tests after the read/list command addition
+and equivalent-alias selection regression fix.

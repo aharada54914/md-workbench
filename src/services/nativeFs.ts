@@ -24,6 +24,12 @@ export interface NativeFsError {
 }
 
 export const MAX_NATIVE_READ_BYTES = 64 * 1024 * 1024;
+export const MAX_NATIVE_DIRECTORY_ENTRIES = 10_000;
+
+export interface NativeDirectoryListing {
+  entries: { name: string; isDirectory: boolean }[];
+  omitted: number;
+}
 
 /** Native grants are scoped to the invoking editor window. Never fall back to
  * plugin-fs when authority is missing or revoked. Callers handle typed rejects. */
@@ -33,6 +39,20 @@ export const nativeFs = {
   pickSaveDestination: () => invoke<NativeGrant | null>('native_pick_save_destination'),
   pickWorkspace: () => invoke<NativeGrant | null>('native_pick_workspace'),
   pickResource: () => invoke<NativeGrant | null>('native_pick_resource'),
+
+  listDirectory: (path: string, limit = MAX_NATIVE_DIRECTORY_ENTRIES) =>
+    invoke<NativeDirectoryListing>('native_list_directory', { path, limit }),
+
+  // The host resolves only grants already owned by this caller. This lookup
+  // cannot authorize recent/session paths or create access from a path string.
+  async readPathBytes(path: string, limit = MAX_NATIVE_READ_BYTES): Promise<Uint8Array> {
+    const bytes = await invoke<number[]>('native_read_path', { path, limit });
+    return Uint8Array.from(bytes);
+  },
+
+  async readPathText(path: string, limit = MAX_NATIVE_READ_BYTES): Promise<string> {
+    return decodeDocumentUtf8(await nativeFs.readPathBytes(path, limit));
+  },
 
   async readBytes(id: string, relative = '', limit = MAX_NATIVE_READ_BYTES): Promise<Uint8Array> {
     const bytes = await invoke<number[]>('native_read_grant', { id, relative, limit });
