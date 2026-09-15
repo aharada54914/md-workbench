@@ -24,10 +24,23 @@ async function findWindow(browser, label) {
 }
 
 async function denied(page, args) {
-  await assert.rejects(() => invoke(page, 'native_read_grant', args), error => {
-    assert.equal(error?.code, 'permission_required');
-    return true;
-  });
+  // Playwright converts an uncaught plain-object rejection into Error and loses
+  // its code. Capture the actual Tauri result before crossing that boundary.
+  const result = await page.evaluate(async args => {
+    try {
+      await window.__TAURI_INTERNALS__.invoke('native_read_grant', args);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        code: typeof error?.code === 'string' ? error.code : null,
+        message: typeof error?.message === 'string' ? error.message : null,
+      };
+    }
+  }, args);
+  assert.equal(result.ok, false, 'Native read must reject the unauthorized caller or grant');
+  assert.equal(result.code, 'permission_required',
+    `Native read must return permission_required (${result.message ?? 'no error message'})`);
 }
 
 export async function exerciseNativeAuthority(browser, fixture, unselectedPath) {
