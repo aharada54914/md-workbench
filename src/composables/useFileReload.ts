@@ -229,5 +229,6 @@ export function useFileReload(options: UseFileReloadOptions) {
     unwatchAll: fileWatcher.unwatchAll,
     markSaveStart: fileWatcher.markSaveStart,
     markSaveEnd: fileWatcher.markSaveEnd,
+    markSaveAbort: fileWatcher.markSaveAbort,
   };
 }

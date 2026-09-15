@@ -25,6 +25,7 @@ export interface UseFileOperationsOptions {
   setEditorContent: (content: string) => void;
   markSaveStart?: (filePath: string) => void;
   markSaveEnd?: (filePath: string, content: string) => void;
+  markSaveAbort?: (filePath: string) => void;
   /** Reports native permission/read failures without mutating tabs or falling back. */
   onOpenError?: (error: unknown, filePath: string | null) => void;
   onFileOpened?: (filePath: string, content: string) => void;
@@ -71,6 +72,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
     getMarkdownOverride,
     markSaveStart,
     markSaveEnd,
+    markSaveAbort,
     onAfterSave,
     onFileOpened,
     onOpenError,
@@ -194,7 +196,7 @@ export function useFileOperations(options: UseFileOperationsOptions): UseFileOpe
       await rename(tmpPath, filePath);
       markSaveEnd?.(filePath, content);
     } catch (error) {
-      markSaveEnd?.(filePath, content); // release watcher guard even on failure
+      markSaveAbort?.(filePath); // Release suppression without accepting unwritten bytes.
       try { await remove(tmpPath); } catch { /* temp file may not exist */ }
       throw error;
     }

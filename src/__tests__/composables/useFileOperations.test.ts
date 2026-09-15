@@ -281,10 +281,37 @@ describe('useFileOperations', () => {
       expect(tabs.value[0].hasChanges).toBe(true);
     });
 
+    it.each(['write', 'verify-read', 'verify-content', 'rename'])('aborts the watcher without accepting bytes when %s fails', async (stage) => {
+      const failure = new Error('save failed');
+      mockReadTextFile.mockResolvedValue('md:<p>hello</p>');
+      if (stage === 'write') mockWriteTextFile.mockRejectedValueOnce(failure);
+      if (stage === 'verify-read') mockReadTextFile.mockRejectedValueOnce(failure);
+      if (stage === 'verify-content') mockReadTextFile.mockResolvedValueOnce('corrupted');
+      if (stage === 'rename') mockRename.mockRejectedValueOnce(failure);
+      const markSaveStart = vi.fn();
+      const markSaveEnd = vi.fn();
+      const markSaveAbort = vi.fn();
+      const onAfterSave = vi.fn();
+      const { options, tabs } = makeOptions();
+      const original = tabs.value[0].originalMarkdown;
+      const operations = useFileOperations({ ...options, markSaveStart, markSaveEnd, markSaveAbort, onAfterSave });
+
+      expect(await operations.saveFile()).toBe(false);
+
+      expect(markSaveStart).toHaveBeenCalledExactlyOnceWith('/test/file.md');
+      expect(markSaveAbort).toHaveBeenCalledExactlyOnceWith('/test/file.md');
+      expect(markSaveEnd).not.toHaveBeenCalled();
+      expect(onAfterSave).not.toHaveBeenCalled();
+      expect(tabs.value[0].originalMarkdown).toBe(original);
+      expect(tabs.value[0].hasChanges).toBe(true);
+      expect(mockRemove).toHaveBeenCalledWith('/test/file.md.tmp');
+    });
+
     it('calls markSaveStart before write and markSaveEnd after rename', async () => {
       const calls: string[] = [];
       const markSaveStart = vi.fn(() => calls.push('start'));
       const markSaveEnd = vi.fn(() => calls.push('end'));
+      const markSaveAbort = vi.fn();
 
       mockReadTextFile.mockImplementation(async (path: string) => {
         if (path.endsWith('.tmp')) return 'md:<p>hello</p>';
@@ -292,11 +319,12 @@ describe('useFileOperations', () => {
       });
 
       const { options } = makeOptions();
-      const { saveFile } = useFileOperations({ ...options, markSaveStart, markSaveEnd });
+      const { saveFile } = useFileOperations({ ...options, markSaveStart, markSaveEnd, markSaveAbort });
 
       await saveFile();
 
       expect(calls).toEqual(['start', 'end']);
+      expect(markSaveAbort).not.toHaveBeenCalled();
       expect(markSaveStart).toHaveBeenCalledWith('/test/file.md');
       expect(markSaveEnd).toHaveBeenCalledWith('/test/file.md', expect.any(String));
     });

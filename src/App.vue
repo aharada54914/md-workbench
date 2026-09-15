@@ -263,7 +263,7 @@ const {
   handleConflictKeepLocal, handleConflictLoadExternal, handleConflictMerge,
   manualReload,
   reloadTabContent,
-  watchFile, unwatchFile, unwatchAll, markSaveStart, markSaveEnd,
+  watchFile, unwatchFile, unwatchAll, markSaveStart, markSaveEnd, markSaveAbort,
 } = useFileReload({
   activePaneId,
   currentFile,
@@ -502,6 +502,7 @@ const {
   setEditorContent,
   markSaveStart: (filePath: string) => markSaveStart(filePath),
   markSaveEnd: (filePath: string, content: string) => markSaveEnd(filePath, content),
+  markSaveAbort: (filePath: string) => markSaveAbort(filePath),
   onOpenError: reportDocumentOpenError,
   onFileOpened: (filePath: string, content: string) => {
     watchFile(filePath, content);

@@ -101,6 +101,26 @@ describe('useFileReload', () => {
       ...extra,
     });
 
+  it('forwards save abort without accepting a new baseline or suppressing later changes', async () => {
+    const { watch: watchFs } = await import('@tauri-apps/plugin-fs');
+    const reload = createReload();
+    await reload.watchFile('/test/file.md', 'old content');
+    const notify = vi.mocked(watchFs).mock.calls[0][1];
+    reload.markSaveStart('/test/file.md');
+    reload.markSaveAbort('/test/file.md');
+    vi.mocked(readTextFile).mockResolvedValueOnce('old content');
+    notify({ type: 'any', paths: ['/test/file.md'], attrs: {} });
+    await vi.runAllTimersAsync();
+    expect(reload.showToast.value).toBe(false);
+    expect(mockTab.originalMarkdown).toBe('old content');
+
+    vi.mocked(readTextFile).mockResolvedValueOnce('external content');
+    notify({ type: 'any', paths: ['/test/file.md'], attrs: {} });
+    await vi.runAllTimersAsync();
+    expect(mockTab.originalMarkdown).toBe('external content');
+    expect(mockTab.pendingMarkdown).toBe('external content');
+  });
+
   describe('initial state', () => {
     it('should have toast hidden initially', () => {
       const { showToast, toastMessage, toastType } = createReload();
