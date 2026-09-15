@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { describeRevealError } from '../utils/reveal-error';
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useI18n } from '../i18n';
 import { useWorkspace, type WorkspaceNode } from '../composables/useWorkspace';
@@ -128,7 +129,7 @@ async function onContextAction(action: WorkspaceContextAction) {
   if (!node) return;
 
   if (action === 'reveal') {
-    try { await ws.revealInOs(node.path); } catch (e) { console.error('reveal:', e); }
+    try { await ws.revealInOs(node.path); } catch (e) { window.alert(describeRevealError(e)); }
     return;
   }
   if (action === 'new-file') {

@@ -178,6 +178,8 @@ const en: Translations = {
   categoryAdvanced: 'Advanced',
 
   // File dialogs
+  revealPermissionRequired: "Open this file or folder again with the file or folder picker to grant access.",
+  revealFailed: "Could not show this item in the file manager. It may have moved or become unavailable.",
   workspacePermissionRequired: "Choose this folder again with Open Folder to grant access.",
   workspaceOpenFailed: "Could not open the workspace.",
   workspaceInvalidName: "Use a valid file or folder name without path separators or reserved characters.",

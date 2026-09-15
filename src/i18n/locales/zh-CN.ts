@@ -178,6 +178,8 @@ const zhCN: Translations = {
   categoryAdvanced: '高级',
 
   // File dialogs
+  revealPermissionRequired: "请通过文件或文件夹选择器重新打开此项目，以授予访问权限。",
+  revealFailed: "无法在文件管理器中显示此项目。它可能已被移动或无法访问。",
   workspacePermissionRequired: "请通过“打开文件夹”重新选择此文件夹以授予访问权限。",
   workspaceOpenFailed: "无法打开工作区。",
   workspaceInvalidName: "请使用有效的文件或文件夹名称，不要包含路径分隔符或保留字符。",

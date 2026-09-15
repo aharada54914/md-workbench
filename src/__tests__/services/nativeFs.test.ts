@@ -38,3 +38,25 @@ describe('native document reads', () => {
     expect(invokeMock.mock.calls.map(([command]) => command)).toEqual(['native_read_path', 'native_list_directory']);
   });
 });
+
+
+describe('native file manager reveal', () => {
+  beforeEach(() => { invokeMock.mockReset(); });
+
+  it('passes the optional authority identity without obtaining a new grant', async () => {
+    invokeMock.mockResolvedValue(undefined);
+    await nativeFs.revealPath('/selected/note.md', 'issued-id');
+    expect(invokeMock.mock.calls).toEqual([
+      ['reveal_in_os', { path: '/selected/note.md', expectedGrantId: 'issued-id' }],
+    ]);
+  });
+
+  it('preserves denial without retry, picker or filesystem fallback', async () => {
+    const failure = { code: 'permission_required', message: 'revoked' };
+    invokeMock.mockRejectedValue(failure);
+    await expect(nativeFs.revealPath('/selected/note.md')).rejects.toBe(failure);
+    expect(invokeMock.mock.calls).toEqual([
+      ['reveal_in_os', { path: '/selected/note.md' }],
+    ]);
+  });
+});

@@ -190,3 +190,53 @@ test('multi-delete reports failed items once and refreshes after each result', a
   expect(fs.getCalls().filter(call => call.cmd === 'read_tree')).toHaveLength(3);
   await expect(page.frameLocator('iframe[title="Isolated document preview"]').locator('body')).toContainText('Keep current');
 });
+
+
+for (const entry of ['tab', 'tree', 'root'] as const) {
+  test(`denied file manager reveal from ${entry} is visible and preserves document and workspace`, async ({ page }) => {
+    const fs = await setupTauriMocks(page, {
+      initialFs: { [file]: '# Keep current\n' }, workspaceTrees: { [root]: tree },
+    });
+    const reveals: unknown[] = [];
+    await page.exposeFunction('__testReveal', (args: unknown) => { reveals.push(args); });
+    await seedWorkspace(page);
+    await page.goto('/');
+    await openFolder(page, root);
+    await page.locator('.tree-row', { hasText: 'note.md' }).dblclick();
+    const preview = page.frameLocator('iframe[title="Isolated document preview"]').locator('body');
+    await expect(preview).toContainText('Keep current');
+    const before = await workspaceState(page);
+    const calls = fs.getCalls().slice();
+    await page.evaluate(() => {
+      const host = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+        __testReveal: (args: unknown) => Promise<void>;
+      };
+      const invoke = host.__TAURI_INTERNALS__.invoke;
+      host.__TAURI_INTERNALS__.invoke = async (command, args) => {
+        if (command === 'reveal_in_os') {
+          await host.__testReveal(args);
+          throw { code: 'permission_required', message: 'Native detail' };
+        }
+        return invoke(command, args);
+      };
+    });
+    const alert = page.waitForEvent('dialog').then(async dialog => {
+      const message = dialog.message();
+      await dialog.accept();
+      return message;
+    });
+    if (entry === 'root') {
+      await page.locator('.ws-section').getByRole('button', { name: 'Reveal in file manager', exact: true }).click();
+    } else {
+      await page.locator(entry === 'tab' ? '.tab' : '.tree-row', { hasText: 'note.md' }).click({ button: 'right' });
+      await page.locator(entry === 'tab' ? '.tab-context-menu' : '.workspace-context-menu')
+        .getByRole('button', { name: 'Reveal in file manager', exact: true }).click();
+    }
+    expect(await alert).toBe('Open this file or folder again with the file or folder picker to grant access.');
+    expect(reveals).toEqual([{ path: entry === 'root' ? root : file }]);
+    await expect(preview).toContainText('Keep current');
+    expect(await workspaceState(page)).toEqual(before);
+    expect(fs.getCalls()).toEqual(calls);
+  });
+}

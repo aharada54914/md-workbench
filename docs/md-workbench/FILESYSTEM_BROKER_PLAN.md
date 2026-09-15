@@ -21,7 +21,11 @@ now use native pickers. See [FILESYSTEM_BROKER_API.md](FILESYSTEM_BROKER_API.md)
 [NATIVE_WORKSPACE_CREATE.md](NATIVE_WORKSPACE_CREATE.md) and
 [NATIVE_WORKSPACE_MUTATION.md](NATIVE_WORKSPACE_MUTATION.md) for their exact scope.
 
-Document save, OS reveal, subscriptions/reload, images, exports,
+OS reveal now requires current READ authority and verifies its display mapping
+before dispatch; see [NATIVE_REVEAL.md](NATIVE_REVEAL.md) for the remaining
+post-dispatch OS race.
+
+Document save, subscriptions/reload, images, exports,
 AI writes, recovery and app-private grant restoration still need migration.
 Broad plugin-fs permissions remain until those callers have moved. Native Windows
 validation and the real packaged preview IPC probes are separate from browser

@@ -7,6 +7,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { nativeFs } from './nativeFs';
 
 export interface WorkspaceNode {
   name: string;
@@ -52,7 +53,7 @@ export const workspaceFs = {
 
   /** Reveal a file/folder in the host OS file manager. */
   reveal: (path: string): Promise<void> =>
-    invoke<void>('reveal_in_os', { path }),
+    nativeFs.revealPath(path),
 
   /**
    * Search UTF-8 Markdown files up to 512 KiB using existing native workspace

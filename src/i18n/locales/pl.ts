@@ -178,6 +178,8 @@ const pl: Translations = {
   categoryAdvanced: 'Zaawansowane',
 
   // File dialogs
+  revealPermissionRequired: "Otwórz ponownie ten plik lub folder przez okno wyboru, aby udzielić dostępu.",
+  revealFailed: "Nie można pokazać tego elementu w menedżerze plików. Mógł zostać przeniesiony lub stać się niedostępny.",
   workspacePermissionRequired: "Wybierz ponownie ten folder przez Otwórz folder, aby udzielić dostępu.",
   workspaceOpenFailed: "Nie udało się otworzyć obszaru roboczego.",
   workspaceInvalidName: "Użyj poprawnej nazwy pliku lub folderu bez separatorów ścieżki i znaków zastrzeżonych.",

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { describeRevealError } from '../utils/reveal-error';
 import { computed, ref } from 'vue';
 import { useI18n } from '../i18n';
 import { useWorkspace, type WorkspaceNode } from '../composables/useWorkspace';
@@ -76,7 +77,7 @@ function close() {
 }
 
 async function reveal() {
-  try { await ws.revealInOs(props.workspace.rootPath); } catch (e) { console.error('reveal:', e); }
+  try { await ws.revealInOs(props.workspace.rootPath); } catch (e) { window.alert(describeRevealError(e)); }
 }
 
 function onHeaderContextMenu(ev: MouseEvent) {
@@ -180,6 +181,7 @@ function newFolderHere(ev: MouseEvent) {
         <button
           class="ws-section-action"
           v-tooltip="t.workspaceContextRevealInOs"
+          :aria-label="t.workspaceContextRevealInOs"
           @click.stop="reveal"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

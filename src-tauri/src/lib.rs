@@ -359,52 +359,6 @@ fn windows_reveal_arg(path: &str) -> String {
     }
 }
 
-/// Reveal a file or folder in the host OS file manager.
-/// On Windows uses `explorer /select,"<path>"`; on macOS uses `open -R <path>`;
-/// on Linux falls back to opening the parent folder via xdg-open.
-#[tauri::command]
-fn reveal_in_os(path: String) -> Result<(), String> {
-    let target = Path::new(&path);
-    if !target.exists() {
-        return Err(format!("path does not exist: {}", path));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("explorer.exe")
-            .raw_arg(windows_reveal_arg(&path))
-            .spawn()
-            .map_err(|e| format!("explorer: {}", e))?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .args(["-R", &path])
-            .spawn()
-            .map_err(|e| format!("open: {}", e))?;
-        return Ok(());
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let parent = target
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.clone());
-        std::process::Command::new("xdg-open")
-            .arg(&parent)
-            .spawn()
-            .map_err(|e| format!("xdg-open: {}", e))?;
-        return Ok(());
-    }
-
-    #[allow(unreachable_code)]
-    Err("reveal_in_os: unsupported platform".into())
-}
-
 /// List all font family names installed on the system.
 /// Returns a sorted, deduplicated list of font family names.
 #[tauri::command]
@@ -591,7 +545,7 @@ pub fn run() {
             native_files::create_folder,
             native_files::rename_path,
             native_files::delete_path,
-            reveal_in_os,
+            native_files::reveal_in_os,
             native_files::search_workspace_content,
             ai_health_check,
             ai_ollama_models,

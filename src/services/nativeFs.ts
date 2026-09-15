@@ -43,6 +43,10 @@ export interface NativeDirectoryListing {
 /** Native grants are scoped to the invoking editor window. Never fall back to
  * plugin-fs when authority is missing or revoked. Callers handle typed rejects. */
 export const nativeFs = {
+  revealPath: (path: string, expectedGrantId?: string) =>
+    invoke<void>('reveal_in_os', {
+      path, ...(expectedGrantId === undefined ? {} : { expectedGrantId }),
+    }),
   takeDrops: () => invoke<NativeDrop[]>('native_take_drops'),
   getGrant: (path: string) => invoke<NativeGrant | null>('native_get_grant', { path }),
   pickDocuments: () => invoke<NativeGrant[]>('native_pick_documents'),

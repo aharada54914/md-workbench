@@ -28,6 +28,9 @@ mod create;
 mod mutation;
 pub(crate) use mutation::{mutation_error_message, DeleteFailure};
 
+#[path = "file_access_reveal.rs"]
+mod reveal;
+
 pub(crate) const MAX_IO_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

@@ -184,6 +184,8 @@ export interface Translations {
   categoryAdvanced: string;
 
   // File dialogs
+  revealPermissionRequired: string;
+  revealFailed: string;
   workspacePermissionRequired: string;
   workspaceOpenFailed: string;
   workspaceInvalidName: string;
