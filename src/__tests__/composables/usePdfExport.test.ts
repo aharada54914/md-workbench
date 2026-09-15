@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildPrintDocument,
   buildHeaderFooterContent,
@@ -186,5 +186,24 @@ describe('buildHeaderFooterContent', () => {
   it('escapes embedded double quotes in literals', () => {
     const r = buildHeaderFooterContent('say "hi"', {});
     expect(r).toContain('\\"hi\\"');
+  });
+});
+
+
+describe('inert print HTML preparation', () => {
+  it.each([false, true])('keeps authored image sources inert while building TOC (math=%s)', math => {
+    const parse = vi.spyOn(DOMParser.prototype, 'parseFromString').mockImplementation(() => {
+      throw new Error('Browsing-capable HTML parser must not run');
+    });
+    try {
+      const source = '<h1 id="intro">日本語 heading</h1><img src="https://example.invalid/authored.png">'
+        + (math ? '<span data-type="katex-inline" data-formula="x%5E2"></span>' : '');
+      const output = buildPrintDocument(source, withSettings({ showToc: true }), FAKE_CSS);
+      expect(output).toContain('href="#intro"');
+      expect(output).toContain('日本語 heading');
+      expect(output).toContain('src="https://example.invalid/authored.png"');
+      if (math) expect(output).toContain('class="katex"');
+      expect(parse).not.toHaveBeenCalled();
+    } finally { parse.mockRestore(); }
   });
 });

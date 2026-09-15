@@ -18,7 +18,7 @@ import sys
 import time
 import uuid
 
-SCHEMA = 1
+SCHEMA = 2
 MODES = ('cold-process', 'cold-cache', 'warm')
 ENV_FIELDS = ('machine_id', 'cpu', 'ram_bytes', 'os', 'webview', 'power',
               'display_scale', 'antivirus', 'ai_state', 'diagram_editor_state')
@@ -56,17 +56,42 @@ def validate_metadata(meta):
         raise ValueError('Describe the body/viewport observation method')
 
 
-def sample_tree(psutil, roots, tracked):
+def memory_method():
+    if sys.platform == 'darwin':
+        return {'id': 'libproc-rusage-v0', 'version': 1, 'flavor': 0,
+                'metrics': ['rss_bytes', 'summed_physical_footprint_bytes']}
+    return {'id': 'psutil-windows' if sys.platform == 'win32' else 'psutil-rss',
+            'version': 1, 'metrics': ['working_set_bytes', 'private_bytes']
+            if sys.platform == 'win32' else ['rss_bytes']}
+
+
+def memory_peaks(samples):
+    peak = {}
+    for sample in samples:
+        if sample['complete']:
+            for metric, value in sample['totals'].items():
+                peak[metric] = max(peak.get(metric, 0), value)
+    return peak
+
+
+def sample_tree(psutil, roots, tracked, *, native_starts=None, footprint_reader=None):
     """Retain discovered descendants across reparenting; reject PID reuse."""
+    from macos_memory import FootprintError, read_footprint
+    native_starts = {} if native_starts is None else native_starts
+    footprint_reader = footprint_reader or read_footprint
     errors = []
-    for pid, born in list(roots.items()) + list(tracked.items()):
+    for pid, born in {**tracked, **roots}.items():
         try:
             proc = psutil.Process(pid)
             if proc.create_time() != born:
+                if pid in roots:
+                    errors.append({'pid': pid, 'reason': 'root-process-identity-changed'})
                 continue
             tracked[pid] = born
             for child in proc.children(recursive=True):
-                tracked[child.pid] = child.create_time()
+                child_born = child.create_time()
+                # Keep the old identity until the read loop rejects a reused PID.
+                tracked.setdefault(child.pid, child_born)
         except psutil.NoSuchProcess:
             continue
         except psutil.AccessDenied:
@@ -77,6 +102,8 @@ def sample_tree(psutil, roots, tracked):
             proc = psutil.Process(pid)
             if proc.create_time() != born:
                 del tracked[pid]
+                native_starts.pop(pid, None)
+                errors.append({'pid': pid, 'reason': 'process-identity-changed'})
                 continue
             mem = proc.memory_info()
             row = {'pid': pid, 'created': born, 'name': proc.name(), 'rss_bytes': mem.rss}
@@ -85,14 +112,32 @@ def sample_tree(psutil, roots, tracked):
                 row['working_set_bytes'] = mem.wset
                 row['private_bytes'] = mem.private
             processes.append(row)
+            if sys.platform == 'darwin':
+                try:
+                    native = footprint_reader(pid)
+                    identity = (born, native['native_start_abstime'])
+                    if (not identity[1] or native['native_exit_abstime'] or
+                            psutil.Process(pid).create_time() != born or
+                            (pid in native_starts and native_starts[pid] != identity)):
+                        raise FootprintError('footprint-process-identity-changed')
+                    native_starts[pid] = identity
+                    row.update(native)
+                except FootprintError as error:
+                    errors.append({'pid': pid, 'reason': error.reason, 'errno': error.code})
         except psutil.NoSuchProcess:
             tracked.pop(pid, None)
+            native_starts.pop(pid, None)
+            # A process disappearing after its RSS read cannot yield a complete sample.
+            if processes and processes[-1]['pid'] == pid:
+                errors.append({'pid': pid, 'reason': 'process-exited-during-read'})
         except psutil.AccessDenied:
             errors.append({'pid': pid, 'reason': 'memory-access-denied'})
-    metrics = ('working_set_bytes', 'private_bytes') if sys.platform == 'win32' else ('rss_bytes',)
-    totals = {metric: sum(p[metric] for p in processes) for metric in metrics}
+    complete = not errors and bool(processes)
+    totals = {metric: sum(p['physical_footprint_bytes' if metric ==
+              'summed_physical_footprint_bytes' else metric] for p in processes)
+              for metric in memory_method()['metrics']} if complete else {}
     return {'time_ns': time.monotonic_ns(), 'processes': processes,
-            'totals': totals, 'complete': not errors and bool(processes), 'errors': errors}
+            'totals': totals, 'complete': complete, 'errors': errors}
 
 
 def read_markers(out, t0, end):
@@ -147,22 +192,25 @@ def record(args):
     assets = [Path(p).resolve(strict=True) for p in args.asset]
     inputs = [fixture, *assets]
     fixture_hashes = [digest(path) for path in inputs]
-    try:
-        roots = {pid: psutil.Process(pid).create_time() for pid in args.root_pid}
-    except psutil.Error as error:
-        raise ValueError(f'Warm root process is unavailable: {error}') from error
     args.out.mkdir(parents=True, exist_ok=False)
     result = {'schema': SCHEMA, 'trial_id': str(uuid.uuid4()), 'metadata': meta, 'mode': args.mode,
               'fixture_hashes': fixture_hashes, 'reboot_evidence': args.reboot_evidence,
               'started_utc': dt.datetime.now(dt.timezone.utc).isoformat(),
               'python': platform.python_version(), 'psutil': psutil.__version__,
+              'memory_method': memory_method(), 'architecture': platform.machine(),
+              'host_platform': platform.platform(), 'argv': command,
+              'resolved_executable': str(Path(executable).resolve()), 'cwd': os.getcwd(),
               'sample_interval_s': args.interval, 'status': 'incomplete',
               'limitations': ['Sampling can miss short-lived processes.',
                              'Summed resident/working-set memory double-counts shared pages.',
-                             'macOS RSS is not physical footprint.']}
+                             'Summed physical footprint is not unique application or coalition memory.',
+                             'Independent WebKit/XPC helpers may not be discovered; tree coverage is not guaranteed.']}
     write_json(args.out / 'result.json', result, exclusive=True)
-    tracked, samples = {}, []
+    raw_path = args.out / 'samples.jsonl'
+    raw_path.touch(exist_ok=False)
+    tracked, samples, native_starts = {}, [], {}
     try:
+        roots = {pid: psutil.Process(pid).create_time() for pid in args.root_pid}
         # No shell expansion, no automatic process termination or cache eviction.
         with (args.out / 'launcher.log').open('wb') as log:
             # Keep file I/O and metadata preparation outside the launch interval.
@@ -175,10 +223,10 @@ def record(args):
             write_json(request_tmp, {'t0_ns': t0, 'clock': 'time.monotonic_ns',
                                      'root_pids': list(roots), 'root_created': roots})
             request_tmp.replace(args.out / 'request.json')
-            with (args.out / 'samples.jsonl').open('x', encoding='utf-8') as raw:
+            with raw_path.open('a', encoding='utf-8') as raw:
                 deadline = time.monotonic() + args.timeout
                 while time.monotonic() < deadline:
-                    sample = sample_tree(psutil, roots, tracked)
+                    sample = sample_tree(psutil, roots, tracked, native_starts=native_starts)
                     raw.write(json.dumps(sample) + '\n')
                     raw.flush()
                     samples.append(sample)
@@ -202,14 +250,16 @@ def record(args):
             result['status'] = 'success'
     except (OSError, ValueError, psutil.Error) as error:
         result.update(status='failed', reason=str(error))
+        if not samples:
+            with raw_path.open('a', encoding='utf-8') as raw:
+                raw.write(json.dumps({'observer_error': {'time_ns': time.monotonic_ns(),
+                          'reason': str(error), 'type': type(error).__name__}}) + '\n')
     except KeyboardInterrupt:
         result.update(status='interrupted', reason='Operator cancelled recording')
     finally:
         result['end_ns'] = time.monotonic_ns()
         result['sample_count'] = len(samples)
-        result['memory_peak'] = {
-            metric: max(s['totals'][metric] for s in samples)
-            for metric in (samples[0]['totals'] if samples else {})}
+        result['memory_peak'] = memory_peaks(samples)
         write_json(args.out / 'result.json', result)
     return 0 if result['status'] == 'success' else 1
 
@@ -228,7 +278,7 @@ def summarize(records, minimum_cold=30, minimum_warm=50):
     groups = {}
     seen = set()
     for result in records:
-        if result.get('schema') != SCHEMA:
+        if result.get('schema') not in (1, SCHEMA):
             raise ValueError('Unknown result schema')
         trial_id = result.get('trial_id')
         if not isinstance(trial_id, str) or not trial_id or trial_id in seen:
@@ -238,6 +288,10 @@ def summarize(records, minimum_cold=30, minimum_warm=50):
         if result['mode'] not in MODES:
             raise ValueError('Unknown mode')
         identity = {'metadata': result['metadata'], 'mode': result['mode'],
+                    'schema': result['schema'],
+                    'memory_method': result.get('memory_method'),
+                    'sample_interval_s': result.get('sample_interval_s'),
+                    'architecture': result.get('architecture'),
                     'fixture_hashes': result['fixture_hashes'],
                     'observer_configuration': result.get('observer_configuration')}
         key = json.dumps(identity, sort_keys=True)
@@ -252,6 +306,17 @@ def summarize(records, minimum_cold=30, minimum_warm=50):
                 reasons.append(trial.get('reason', trial['status']))
                 continue
             try:
+                if trial['schema'] == 2:
+                    method = trial['memory_method']
+                    if (not isinstance(method, dict) or not method.get('id') or method.get('version') != 1 or
+                            not method.get('metrics') or
+                            set(method['metrics']) != set(trial['memory_peak'])):
+                        raise ValueError('Missing or inconsistent memory method metrics')
+                    if not trial.get('argv') or not trial.get('resolved_executable'):
+                        raise ValueError('Missing reproducible launch command')
+                    cadence = trial.get('sample_interval_s')
+                    if not isinstance(cadence, (int, float)) or not math.isfinite(cadence) or cadence < .02:
+                        raise ValueError('Missing or invalid sample interval')
                 if trial['metadata']['observer'] == 'screen-sampled' and not trial.get('observer_configuration'):
                     raise ValueError('Missing native frame observer configuration')
                 t0, t1, t2 = (trial['t0_ns'], trial['markers']['body']['time_ns'],

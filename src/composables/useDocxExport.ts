@@ -219,9 +219,9 @@ export function convertElementToDocxItems(el: Element): DocxItem[] {
 }
 
 function buildDocxDocument(cleanHtml: string): Document {
-  const parser = new DOMParser();
-  const dom = parser.parseFromString(`<body>${cleanHtml}</body>`, 'text/html');
-  const body = dom.body;
+  const template = document.createElement('template');
+  template.innerHTML = cleanHtml;
+  const body = template.content;
 
   const sections: DocxItem[] = [];
   for (const child of body.children) {

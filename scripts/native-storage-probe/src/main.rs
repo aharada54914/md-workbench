@@ -1,4 +1,13 @@
+#[cfg(all(feature = "private-store-probe", any(windows, target_os = "macos")))]
+mod kill_probe;
+#[cfg(all(feature = "private-store-probe", any(windows, target_os = "macos")))]
+mod kill_process;
+#[cfg(any(windows, target_os = "macos"))]
+mod metadata;
 mod report;
+mod resources;
+#[cfg(all(feature = "private-store-probe", any(windows, target_os = "macos")))]
+mod snapshot_probe;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -9,7 +18,15 @@ mod windows_acl_fixtures;
 use std::io::Write;
 
 fn main() {
-    // No caller-controlled paths or handles are accepted by this diagnostic.
+    #[cfg(all(feature = "private-store-probe", any(windows, target_os = "macos")))]
+    if snapshot_probe::dispatch() || kill_probe::dispatch() {
+        return;
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    if metadata::dispatch() {
+        return;
+    }
+    // No caller-controlled paths or handles are accepted by the legacy diagnostic.
     if std::env::args_os().len() != 1 {
         eprintln!("This probe accepts no arguments.");
         std::process::exit(2);

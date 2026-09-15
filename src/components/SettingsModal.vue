@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, computed, watch } from 'vue';
 import { getVersion } from '@tauri-apps/api/app';
-import { open as openExternal } from '@tauri-apps/plugin-shell';
+import { openExternalWithFeedback } from '../services/nativeExternalLink';
 import { useI18n } from '../i18n';
 import { useSettings, EDITOR_FONTS, CODE_FONTS } from '../composables/useSettings';
 import { BUILTIN_MERMAID_FORMATS, CUSTOM_FORMAT_ID, type MermaidFormat } from '../utils/mermaid-formats';
@@ -1035,7 +1035,7 @@ onUnmounted(() => {
                 <button
                   class="bmc-link"
                   :title="t.supportDevTooltip"
-                  @click="openExternal('https://buymeacoffee.com/vesperinio')"
+                  @click="openExternalWithFeedback('https://buymeacoffee.com/vesperinio', t.externalLinkFailed)"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M18 8h1a4 4 0 0 1 0 8h-1"/>

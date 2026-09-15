@@ -213,10 +213,7 @@ pub(crate) fn observe<T>(
                 Outcome::Win32Error { code: code as u32 }
             } else {
                 // Never serialize arbitrary io::Error messages (which can contain paths).
-                let reason = error
-                    .get_ref()
-                    .and_then(|e| e.downcast_ref::<Reason>())
-                    .copied()
+                let reason = crate::report::typed_reason(&error)
                     .unwrap_or(Reason::IoWithoutWin32Code);
                 Outcome::ProbeError { reason }
             };

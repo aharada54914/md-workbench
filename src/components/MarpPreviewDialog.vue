@@ -180,6 +180,7 @@ watch(srcdoc, () => {
       <div class="marp-stage">
         <iframe
           ref="previewFrame"
+          :key="srcdoc"
           class="marp-frame"
           :srcdoc="srcdoc"
           sandbox="allow-same-origin"

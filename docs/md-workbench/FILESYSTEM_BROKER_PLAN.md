@@ -25,7 +25,14 @@ OS reveal now requires current READ authority and verifies its display mapping
 before dispatch; see [NATIVE_REVEAL.md](NATIVE_REVEAL.md) for the remaining
 post-dispatch OS race.
 
-Document save, subscriptions/reload, images, exports,
+Document monitoring and reload now use current native READ bindings with bounded
+subscriptions. Editor and Marp image reads also use native authority or bounded
+live-document byte owners; the ambient watch and binary-read permissions are
+removed. See [NATIVE_DOCUMENT_WATCH.md](NATIVE_DOCUMENT_WATCH.md),
+[DOCUMENT_IMAGE_DISPLAY.md](DOCUMENT_IMAGE_DISPLAY.md) and
+[MARP_IMAGE_INLINING.md](MARP_IMAGE_INLINING.md).
+
+Document save and its conflict reads, image destination writes, exports,
 AI writes, recovery and app-private grant restoration still need migration.
 Broad plugin-fs permissions remain until those callers have moved. Native Windows
 validation and the real packaged preview IPC probes are separate from browser
@@ -181,6 +188,10 @@ cannot truthfully promise unchanged original bytes; never automatically roll bac
 over an externally changed hash. Document OS/local-filesystem and external-writer
 limits explicitly. No replacement API was added in this stage.
 
-The pure [Resource journal foundation](RESOURCE_JOURNAL.md) now validates v1
-metadata, stage transitions and read-only recovery observations. It performs no
-I/O and does not activate native Save or satisfy the remaining T08 crash gates.
+The [Resource journal foundation](RESOURCE_JOURNAL.md) validates v1 metadata,
+stage transitions and read-only recovery observations. Its separate inactive
+native store now writes and flushes metadata and one-document before/after
+snapshots. Windows x64/ARM and macOS process-termination probes passed for this
+increment at `bf5e5b5`. These observations do not establish power-loss durability,
+destination authority or atomic compare-and-swap, and do not activate native Save
+or satisfy the remaining T08 recovery gates.

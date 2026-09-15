@@ -264,9 +264,9 @@ function buildPageMarginBoxes(settings: PdfSettings, meta: DocumentMeta): string
 function buildTocHtml(contentHtml: string, settings: PdfSettings, tocTitle: string): string {
   if (!settings.showToc) return '';
   // Parse cloned content to walk headings already with IDs assigned by serializer
-  const doc = new DOMParser().parseFromString(`<div>${contentHtml}</div>`, 'text/html');
-  const root = doc.body.firstElementChild;
-  if (!root) return '';
+  const template = document.createElement('template');
+  template.innerHTML = contentHtml;
+  const root = template.content;
   const allH = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6'));
   const items = allH
     .filter(h => !h.closest('[data-footnotes], section.footnotes, nav.pdf-toc'))
@@ -344,7 +344,9 @@ export function buildPrintDocument(
 ): string {
   const m = resolveMargins(settings);
   if (contentHtml.includes('data-type="katex-')) {
-    const root = new DOMParser().parseFromString(contentHtml, 'text/html').body;
+    const template = document.createElement('template');
+    const root = template.content.ownerDocument.createElement('div');
+    root.innerHTML = contentHtml;
     renderMathNodes(root);
     contentHtml = root.innerHTML;
   }

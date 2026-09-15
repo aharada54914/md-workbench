@@ -221,3 +221,22 @@ impl Report {
 #[cfg(test)]
 #[path = "report_tests.rs"]
 mod tests;
+
+#[cfg(windows)]
+pub fn typed_reason(error: &std::io::Error) -> Option<Reason> {
+    use crate::windows_acl::Reason as A;
+    let inner = error.get_ref()?;
+    if let Some(reason) = inner.downcast_ref::<Reason>() {
+        return Some(*reason);
+    }
+    Some(match inner.downcast_ref::<A>()? {
+        A::InvalidSecurityDescriptor => Reason::InvalidSecurityDescriptor,
+        A::BoundedBufferExceeded => Reason::BoundedBufferExceeded,
+        A::UnsupportedTokenIdentity => Reason::UnsupportedTokenIdentity,
+        A::PrivilegedToken => Reason::PrivilegedToken,
+        A::ForeignOwner => Reason::ForeignOwner,
+        A::NullOrMissingDacl => Reason::NullOrMissingDacl,
+        A::UnprotectedDacl => Reason::UnprotectedDacl,
+        A::UnexpectedAcl => Reason::UnexpectedAcl,
+    })
+}

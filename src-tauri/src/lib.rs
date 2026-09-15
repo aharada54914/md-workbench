@@ -1,3 +1,5 @@
+#[cfg(feature = "diagram-isolation-spike")]
+mod diagram_spike;
 use std::sync::Mutex;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -468,7 +470,10 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     apply_linux_gdk_backend();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(feature = "diagram-isolation-spike")]
+    let builder = diagram_spike::configure(builder);
+    builder
         .register_uri_scheme_protocol(PRINT_SCHEME, |ctx, _request| {
             let html = ctx
                 .app_handle()
@@ -510,6 +515,8 @@ pub fn run() {
         .invoke_handler(move |invoke| {
             let webview = invoke.message.webview_ref();
             if !native_files::allows_custom_ipc(webview.app_handle(), webview.label(), webview.window().label()) {
+                #[cfg(feature = "diagram-isolation-spike")]
+                diagram_spike::record_denied_ipc(webview.label(), invoke.message.command());
                 invoke.resolver.reject(serde_json::json!({
                     "code": "permission_required", "message": "Editor window required"
                 }));
@@ -552,6 +559,7 @@ pub fn run() {
             native_files::rename_path,
             native_files::delete_path,
             native_files::reveal_in_os,
+            native_files::native_open_external_link,
             native_files::search_workspace_content,
             ai_health_check,
             ai_ollama_models,
@@ -582,6 +590,8 @@ pub fn run() {
             handler(invoke)
         })
         .setup(|app| {
+            #[cfg(feature = "diagram-isolation-spike")]
+            diagram_spike::setup(app)?;
             if app.get_webview_window("main").is_some() {
                 native_files::register_editor(app.handle(), "main")?;
             }

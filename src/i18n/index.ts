@@ -8,6 +8,13 @@ export type Locale = 'en' | 'pl' | 'zh-CN';
 export interface Translations {
   // App
   appName: string;
+  imageWindowTransferBlocked: string;
+  clipboardOperationFailed: string;
+  clipboardCompositionPending: string;
+  imageImportFailed: string;
+  imageTooLarge: string;
+  imageBudgetExceeded: string;
+  imagePathConflict: string;
   mathInline: string;
   mathBlock: string;
   mathEdit: string;
@@ -197,6 +204,7 @@ export interface Translations {
   workspaceMutationUnsupported: string;
   openPermissionRequired: string;
   openDocumentFailed: string;
+  externalLinkFailed: string;
   openFile: string;
   saveFile: string;
   markdownFiles: string;
@@ -295,6 +303,9 @@ export interface Translations {
   preSaveConflict: string;
   preSaveConflictMessage: string;
   saveAnyway: string;
+  fileSavedMonitoringPermission: (filePath: string) => string;
+  fileMonitoringPermission: (filePath: string) => string;
+  fileMonitoringError: (filePath: string) => string;
   fileDeletedExternally: (fileName: string) => string;
   anchorNotFound: (anchor: string) => string;
 

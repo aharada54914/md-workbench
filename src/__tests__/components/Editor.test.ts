@@ -1,105 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
-// Test helper functions from Editor.vue
-// These are extracted/duplicated for testing since they're defined inside the component
-
-function parseHtmlTable(html: string): string | null {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-  const table = doc.querySelector('table');
-  if (!table) return null;
-
-  const rows = table.querySelectorAll('tr');
-  if (rows.length === 0) return null;
-
-  let headerRow = '';
-  let bodyRows = '';
-
-  rows.forEach((row, rowIndex) => {
-    const cells = row.querySelectorAll('th, td');
-    if (cells.length === 0) return;
-
-    let rowHtml = '<tr>';
-    cells.forEach((cell) => {
-      const text = cell.textContent?.trim() || '\u00A0';
-      if (rowIndex === 0) {
-        rowHtml += `<th><p>${text}</p></th>`;
-      } else {
-        rowHtml += `<td><p>${text}</p></td>`;
-      }
-    });
-    rowHtml += '</tr>';
-
-    if (rowIndex === 0) {
-      headerRow = rowHtml;
-    } else {
-      bodyRows += rowHtml;
-    }
-  });
-
-  let result = '<table>';
-  if (headerRow) {
-    result += `<thead>${headerRow}</thead>`;
-  }
-  result += `<tbody>${bodyRows || headerRow}</tbody>`;
-  result += '</table>';
-
-  return result;
-}
-
-function parseTextTable(text: string): string | null {
-  const lines = text.trim().split('\n');
-  if (lines.length < 2) return null;
-
-  const hasTabsOrPipes = lines.some((line) => line.includes('\t') || line.includes('|'));
-  if (!hasTabsOrPipes) return null;
-
-  const dataRows: string[][] = [];
-
-  lines.forEach((line) => {
-    if (/^\|?[\s\-:|]+\|?$/.test(line)) return;
-
-    let cells: string[];
-    if (line.includes('|')) {
-      cells = line.split('|').map((c) => c.trim()).filter((c) => c);
-    } else {
-      cells = line.split('\t').map((c) => c.trim());
-    }
-
-    if (cells.length > 0) {
-      dataRows.push(cells);
-    }
-  });
-
-  if (dataRows.length === 0) return null;
-
-  let result = '<table>';
-
-  result += '<thead><tr>';
-  dataRows[0].forEach((cell) => {
-    result += `<th><p>${cell || '\u00A0'}</p></th>`;
-  });
-  result += '</tr></thead>';
-
-  result += '<tbody>';
-  for (let i = 1; i < dataRows.length; i++) {
-    result += '<tr>';
-    dataRows[i].forEach((cell) => {
-      result += `<td><p>${cell || '\u00A0'}</p></td>`;
-    });
-    result += '</tr>';
-  }
-  if (dataRows.length === 1) {
-    result += '<tr>';
-    dataRows[0].forEach((cell) => {
-      result += `<td><p>${cell || '\u00A0'}</p></td>`;
-    });
-    result += '</tr>';
-  }
-  result += '</tbody></table>';
-
-  return result;
-}
+import { parseHtmlTable, parseTextTable } from '../../utils/editor-table-paste';
 
 describe('Editor Helper Functions', () => {
   describe('parseHtmlTable', () => {
@@ -252,5 +153,22 @@ describe('Editor Helper Functions', () => {
       expect(result).toContain('<td><p>A</p></td>');
       expect(result).toContain('<td><p>B</p></td>');
     });
+  });
+});
+
+ describe('inert table paste', () => {
+  it('does not use resource-capable DOMParser and escapes HTML-looking cell text', () => {
+    const spy = vi.spyOn(DOMParser.prototype, 'parseFromString').mockImplementation(() => { throw new Error('active parser'); });
+    try {
+      const result = parseHtmlTable('<table><tr><td>&lt;img src=x&gt;&amp;</td></tr></table>');
+      expect(result).toContain('&lt;img src=x&gt;&amp;');
+      expect(result).not.toContain('<img');
+    } finally { spy.mockRestore(); }
+  });
+  it('escapes plain text cells before treating the result as HTML', () => {
+    const result = parseTextTable('Name\tValue\n<img src=x>\tA&B');
+    expect(result).toContain('&lt;img src=x&gt;');
+    expect(result).toContain('A&amp;B');
+    expect(result).not.toContain('<img');
   });
 });

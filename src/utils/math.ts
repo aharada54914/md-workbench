@@ -156,13 +156,15 @@ export function mathMarkdown(formula: string, source: string, display: boolean):
 
 export function protectMathHtml(html: string, protect: (source: string) => string): string {
   if (!/data-type=["']katex-(?:block|inline)/.test(html)) return html;
-  const root = new DOMParser().parseFromString(html, 'text/html').body;
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const root = template.content;
   root.querySelectorAll('[data-type="katex-block"], [data-type="katex-inline"]').forEach(el => {
     const display = el.getAttribute('data-type') === 'katex-block';
     const md = mathMarkdown(decodeMath(el.getAttribute('data-formula') ?? ''), decodeMath(el.getAttribute('data-math-source') ?? ''), display);
-    el.replaceWith(document.createTextNode(protect(display ? `\n${md}\n` : md)));
+    el.replaceWith(root.ownerDocument.createTextNode(protect(display ? `\n${md}\n` : md)));
   });
-  return root.innerHTML;
+  return template.innerHTML;
 }
 
 /** Separate macros per equation: untrusted documents cannot redefine other formulas. */

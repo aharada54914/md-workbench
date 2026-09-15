@@ -2,6 +2,7 @@
 import AiPanelPinList from './AiPanelPinList.vue';
 import AiPanelImageStrip from './AiPanelImageStrip.vue';
 import AiAccessMapEditor from './AiAccessMapEditor.vue';
+import type { SnapshotRestoreRequest } from '../../composables/useAiSnapshotRestore';
 import AiSnapshotList from './AiSnapshotList.vue';
 import { useI18n } from '../../i18n';
 import type { PendingImage } from '../../composables/useAiPendingImages';
@@ -22,6 +23,7 @@ defineProps<{
   cancelButtonText: string;
   accessMapTitle: string;
   docPath: string;
+  snapshotRestoring?: boolean;
 
   docTooLarge: boolean;
   docMarkdownLengthKb: number;
@@ -57,7 +59,7 @@ const emit = defineEmits<{
   removeImage: [id: string];
   clearImages: [];
 
-  snapshotRestored: [content: string];
+  snapshotRestoreRequested: [request: SnapshotRestoreRequest];
 }>();
 
 function onInput(e: Event) {
@@ -132,7 +134,7 @@ function onOverrideToggle(e: Event) {
       />
     </details>
 
-    <AiSnapshotList :doc-path="docPath" @restored="(c) => emit('snapshotRestored', c)" />
+    <AiSnapshotList :doc-path="docPath" :restoring="snapshotRestoring" @restore-requested="(request) => emit('snapshotRestoreRequested', request)" />
   </footer>
 </template>
 

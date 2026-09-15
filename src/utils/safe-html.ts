@@ -99,8 +99,9 @@ export function safeHtmlInlineTagTokens(raw: string): SafeHtmlTagToken[] {
 }
 
 export function isStandaloneSafeHtmlBlock(raw: string): boolean {
-  const parsed = new DOMParser().parseFromString(`<body>${raw}</body>`, 'text/html');
-  const nodes = Array.from(parsed.body.childNodes).filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim());
+  const template = document.createElement('template');
+  template.innerHTML = raw;
+  const nodes = Array.from(template.content.childNodes).filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim());
   if (nodes.length !== 1 || !(nodes[0] instanceof Element)) return false;
   const root = nodes[0];
   if (root.tagName.toLowerCase() === 'img') return true;
@@ -159,12 +160,16 @@ const copySafeAttributes = (source: Element, target: Element, tag: string) => {
 
 /** Render only the README-oriented HTML subset; executable/embedded content is discarded. */
 export function sanitizeSafeHtml(raw: string): string {
-  const parsed = new DOMParser().parseFromString(`<body>${raw}</body>`, 'text/html');
-  const output = document.createElement('div');
+  const template = document.createElement('template');
+  template.innerHTML = raw;
+  // Both input and output images must remain inert until a display provider
+  // has resolved their source. A detached element in the active document can fetch.
+  const inertDocument = template.content.ownerDocument;
+  const output = inertDocument.createElement('div');
 
   const append = (source: Node, parent: Node) => {
     if (source.nodeType === Node.TEXT_NODE) {
-      parent.appendChild(document.createTextNode(source.textContent ?? ''));
+      parent.appendChild(inertDocument.createTextNode(source.textContent ?? ''));
       return;
     }
     if (!(source instanceof Element)) return;
@@ -174,13 +179,13 @@ export function sanitizeSafeHtml(raw: string): string {
       for (const child of Array.from(source.childNodes)) append(child, parent);
       return;
     }
-    const clean = document.createElement(tag);
+    const clean = inertDocument.createElement(tag);
     copySafeAttributes(source, clean, tag);
     for (const child of Array.from(source.childNodes)) append(child, clean);
     parent.appendChild(clean);
   };
 
-  for (const child of Array.from(parsed.body.childNodes)) append(child, output);
+  for (const child of Array.from(template.content.childNodes)) append(child, output);
   return output.innerHTML;
 }
 

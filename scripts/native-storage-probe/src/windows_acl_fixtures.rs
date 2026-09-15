@@ -200,9 +200,7 @@ fn junction(path: &Path, user: &str, report: &mut Report, created: &mut Vec<(&'s
 
 fn rejection(report: &mut Report, op: Op, expected: Reason, result: io::Result<()>) {
     match result {
-        Err(error)
-            if error.get_ref().and_then(|e| e.downcast_ref::<Reason>()) == Some(&expected) =>
-        {
+        Err(error) if crate::report::typed_reason(&error) == Some(expected) => {
             report.set(op, Outcome::Rejected { reason: expected });
         }
         Err(error) => {
@@ -363,7 +361,7 @@ mod tests {
             &mut report,
             Op::RejectBroadAclFile,
             Reason::UnexpectedAcl,
-            Err(acl::error(Reason::UnexpectedAcl)),
+            Err(acl::error(acl::Reason::UnexpectedAcl)),
         );
         assert!(report
             .operations

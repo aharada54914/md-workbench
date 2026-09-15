@@ -2,15 +2,18 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { computed, ref } from 'vue';
 import type { Tab } from '../../composables/useTabs';
 
-vi.mock('../../services/documentText', () => ({ readTextFile: vi.fn() }));
+vi.mock('../../services/nativeFs', () => ({ nativeFs: {
+  resolveDocumentReadGrant: vi.fn(async () => ({ grantId: 'current-grant' })), readPathText: vi.fn(),
+} }));
 const { updateKnownContent } = vi.hoisted(() => ({ updateKnownContent: vi.fn() }));
 vi.mock('../../composables/useFileWatcher', () => ({ useFileWatcher: () => ({
-  updateKnownContent, watchFile: vi.fn(), unwatchFile: vi.fn(), unwatchAll: vi.fn(),
+  updateKnownContent, watchFile: vi.fn(), restartWatch: vi.fn(), unwatchFile: vi.fn(), unwatchAll: vi.fn(),
   markSaveStart: vi.fn(), markSaveEnd: vi.fn(), markSaveAbort: vi.fn(),
 }) }));
 vi.mock('../../utils/markdown-converter', () => ({ markdownToHtml: (md: string) => `<p>${md}</p>` }));
 import { useFileReload } from '../../composables/useFileReload';
-import { readTextFile } from '../../services/documentText';
+import { nativeFs } from '../../services/nativeFs';
+const readTextFile = nativeFs.readPathText;
 
 function deferred() {
   let resolve!: (value: string) => void;
@@ -44,6 +47,7 @@ describe('manual reload ownership', () => {
   ('discards a pending result after the target is %s', async change => {
     const { tab, pane, reload, read, setEditorContent } = setup();
     const pending = reload.manualReload();
+    await Promise.resolve();
     if (change === 'closed') pane.tabs = [];
     if (change === 'replaced') pane.tabs = [{ ...tab, content: '<p>replacement</p>' }];
     if (change === 'rebound') tab.filePath = '/new.md';
@@ -65,6 +69,7 @@ describe('manual reload ownership', () => {
     const other = { ...tab, id: 'b', filePath: '/b.md', pendingMarkdown: 'other' };
     pane.tabs.push(other);
     const pending = reload.manualReload();
+    await Promise.resolve();
     pane.activeTabId = other.id;
     currentFile.value = other.filePath;
     read.resolve('fresh disk');
@@ -77,6 +82,7 @@ describe('manual reload ownership', () => {
   it('does not report an error for a closed target', async () => {
     const { pane, reload, read } = setup();
     const pending = reload.manualReload();
+    await Promise.resolve();
     pane.tabs = [];
     read.reject(new Error('late failure'));
     await pending;
@@ -86,9 +92,11 @@ describe('manual reload ownership', () => {
   it('discards an older read when a newer request is still pending', async () => {
     const { tab, reload, read } = setup();
     const first = reload.manualReload();
+    await Promise.resolve();
     const newer = deferred();
     vi.mocked(readTextFile).mockReturnValueOnce(newer.promise);
     const second = reload.manualReload();
+    await Promise.resolve();
     read.resolve('older disk');
     await first;
     expect(tab.originalMarkdown).toBe('old');
@@ -106,6 +114,7 @@ describe('duplicate tab and conflict followup ownership', () => {
     pane.tabs.push(active);
     pane.activeTabId = active.id;
     const pending = reload.manualReload();
+    await Promise.resolve();
     read.resolve('external');
     await pending;
     if (dirty) {
@@ -123,6 +132,7 @@ describe('duplicate tab and conflict followup ownership', () => {
     pane.tabs.push(active);
     pane.activeTabId = active.id;
     const pending = reload.manualReload();
+    await Promise.resolve();
     read.resolve('external');
     await pending;
     expect(reload.showConflictModal.value).toBe(true);
@@ -141,6 +151,7 @@ describe('duplicate tab and conflict followup ownership', () => {
       const { tab, pane, reload, read, setEditorContent } = setup();
       tab.hasChanges = true;
       const pending = reload.manualReload();
+    await Promise.resolve();
       read.resolve('external');
       await pending;
       expect(reload.showConflictModal.value).toBe(true);

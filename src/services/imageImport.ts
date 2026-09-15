@@ -3,6 +3,7 @@ import { appDataDir } from '@tauri-apps/api/path';
 import { getDirectoryFromFilePath } from '../utils/image-resolver';
 import { splitFilename, toForwardSlashes } from '../utils/image-file-utils';
 import { nativeFs } from './nativeFs';
+import { documentImageBytes, IMAGE_BYTE_LIMIT, type ImageDocumentOwner, type PreparedDocumentImage } from './documentImageBytes';
 
 const IMAGES_DIR = 'images';
 /** Where images dropped/pasted into an unsaved document are parked. */
@@ -14,8 +15,10 @@ const UNSAVED_IMAGES_DIR = 'unsaved-images';
  * markdown references a real file link instead of an inline data: URL — which
  * otherwise dumped a huge base64 blob into the code view.
  */
-async function getUnsavedImagesDir(): Promise<string> {
+async function getUnsavedImagesDir(context?: ImageImportContext): Promise<string> {
+  assertCurrent(context);
   const base = toForwardSlashes(await appDataDir()).replace(/\/+$/, '');
+  assertCurrent(context);
   const dir = `${base}/${UNSAVED_IMAGES_DIR}`;
   await mkdir(dir, { recursive: true });
   return dir;
@@ -26,15 +29,20 @@ export interface ImportedImage {
   markdownPath: string;
   /** Alt text suggestion derived from filename (without extension). */
   altText: string;
+  /** Uncommitted current-document snapshot; consumer must commit or release. */
+  prepared?: PreparedDocumentImage;
 }
 
-export interface ImageImportSelection {
-  expectedGrantId: string;
+export interface ImageImportContext {
+  owner?: ImageDocumentOwner;
   isCurrent: () => boolean;
 }
+export interface ImageImportSelection extends ImageImportContext {
+  expectedGrantId: string;
+}
 
-function assertCurrent(selection?: ImageImportSelection): void {
-  if (selection && !selection.isCurrent()) {
+function assertCurrent(selection?: ImageImportContext): void {
+  if (selection && (!selection.isCurrent() || (selection.owner && !documentImageBytes.isCurrent(selection.owner)))) {
     throw new DOMException('Image drop is no longer current', 'AbortError');
   }
 }
@@ -50,39 +58,40 @@ export async function importImage(
   selection?: ImageImportSelection,
 ): Promise<ImportedImage> {
   assertCurrent(selection);
-  // Validate the OS selection even when an unsaved document keeps a source link.
-  const sourceBytes = selection
-    ? await nativeFs.readPathBytes(srcPath, undefined, selection.expectedGrantId)
-    : undefined;
-  assertCurrent(selection);
-  const { stem, ext } = splitFilename(srcPath);
-  const altText = stem;
-
-  if (!docPath) {
-    return { markdownPath: toForwardSlashes(srcPath), altText };
+  const reservation = selection?.owner ? documentImageBytes.reserve(selection.owner) : undefined;
+  let prepared: PreparedDocumentImage | undefined;
+  try {
+    // The captured Resource ID is the authority; the display path never creates it.
+    const sourceBytes = selection
+      ? await nativeFs.readBytes(selection.expectedGrantId, '', IMAGE_BYTE_LIMIT)
+      : undefined;
+    assertCurrent(selection);
+    if (sourceBytes && sourceBytes.byteLength > IMAGE_BYTE_LIMIT) throw new Error('image_too_large');
+    const { stem, ext } = splitFilename(srcPath);
+    const finish = (markdownPath: string): ImportedImage => {
+      assertCurrent(selection);
+      if (reservation && sourceBytes) prepared = reservation.prepare(markdownPath, sourceBytes);
+      return { markdownPath, altText: stem, ...(prepared ? { prepared } : {}) };
+    };
+    const docDir = docPath ? getDirectoryFromFilePath(docPath) : null;
+    if (!docDir) return finish(toForwardSlashes(srcPath));
+    const targetDir = `${docDir}/${IMAGES_DIR}`;
+    await mkdir(targetDir, { recursive: true });
+    assertCurrent(selection);
+    const finalName = await resolveCollision(targetDir, stem, ext, selection);
+    assertCurrent(selection);
+    const result = finish(`${IMAGES_DIR}/${finalName}`);
+    const targetPath = `${targetDir}/${finalName}`;
+    if (sourceBytes) await writeFile(targetPath, sourceBytes);
+    else await copyFile(srcPath, targetPath);
+    assertCurrent(selection);
+    return result;
+  } catch (error) {
+    prepared?.release();
+    throw error;
+  } finally {
+    if (!prepared) reservation?.release();
   }
-
-  const docDir = getDirectoryFromFilePath(docPath);
-  if (!docDir) {
-    return { markdownPath: toForwardSlashes(srcPath), altText };
-  }
-
-  const targetDir = `${docDir}/${IMAGES_DIR}`;
-  await mkdir(targetDir, { recursive: true });
-  assertCurrent(selection);
-
-  const finalName = await resolveCollision(targetDir, stem, ext, selection);
-  assertCurrent(selection);
-  const targetPath = `${targetDir}/${finalName}`;
-
-  if (sourceBytes) await writeFile(targetPath, sourceBytes);
-  else await copyFile(srcPath, targetPath);
-  assertCurrent(selection);
-
-  return {
-    markdownPath: `${IMAGES_DIR}/${finalName}`,
-    altText,
-  };
 }
 
 /**
@@ -95,35 +104,55 @@ export async function importImageBytes(
   ext: string,
   docPath: string | null,
   stemHint: string = 'pasted-image',
+  context?: ImageImportContext,
 ): Promise<ImportedImage> {
+  assertCurrent(context);
+  if (bytes.byteLength > IMAGE_BYTE_LIMIT) throw new Error('image_too_large');
+  const reservation = context?.owner ? documentImageBytes.reserve(context.owner, bytes.byteLength) : undefined;
+  // Clipboard callers can retain/mutate their input while destination I/O awaits.
+  bytes = bytes.slice();
+  let prepared: PreparedDocumentImage | undefined;
   const stem = `${stemHint}-${Date.now()}`;
-  const docDir = docPath ? getDirectoryFromFilePath(docPath) : null;
-
-  // Unsaved document (no anchor directory): park the image in the app's
-  // managed folder and reference it by absolute path. Falls back to a data:
-  // URL only if even that write fails, so the image still shows.
-  if (!docDir) {
-    try {
-      const dir = await getUnsavedImagesDir();
-      const finalName = await resolveCollision(dir, stem, ext);
-      const targetPath = `${dir}/${finalName}`;
-      await writeFile(targetPath, bytes);
-      return { markdownPath: targetPath, altText: stem };
-    } catch {
-      const blob = new Blob([bytes], { type: `image/${ext === 'jpg' ? 'jpeg' : ext}` });
-      const dataUrl = await blobToDataUrl(blob);
-      return { markdownPath: dataUrl, altText: stem };
+  const finish = (markdownPath: string): ImportedImage => {
+    assertCurrent(context);
+    if (reservation) prepared = reservation.prepare(markdownPath, bytes);
+    return { markdownPath, altText: stem, ...(prepared ? { prepared } : {}) };
+  };
+  try {
+    const docDir = docPath ? getDirectoryFromFilePath(docPath) : null;
+    if (!docDir) {
+      let targetPath: string;
+      try {
+        const dir = await getUnsavedImagesDir(context);
+        assertCurrent(context);
+        const finalName = await resolveCollision(dir, stem, ext, context);
+        targetPath = `${dir}/${finalName}`;
+        assertCurrent(context);
+        await writeFile(targetPath, bytes);
+        assertCurrent(context);
+      } catch (error) {
+        assertCurrent(context);
+        if (error instanceof DOMException && error.name === 'AbortError') throw error;
+        const blob = new Blob([bytes], { type: `image/${ext === 'jpg' ? 'jpeg' : ext}` });
+        const dataUrl = await blobToDataUrl(blob);
+        return finish(dataUrl);
+      }
+      return finish(targetPath);
     }
+    const targetDir = `${docDir}/${IMAGES_DIR}`;
+    await mkdir(targetDir, { recursive: true });
+    assertCurrent(context);
+    const finalName = await resolveCollision(targetDir, stem, ext, context);
+    const result = finish(`${IMAGES_DIR}/${finalName}`);
+    await writeFile(`${targetDir}/${finalName}`, bytes);
+    assertCurrent(context);
+    return result;
+  } catch (error) {
+    prepared?.release();
+    throw error;
+  } finally {
+    if (!prepared) reservation?.release();
   }
-
-  const targetDir = `${docDir}/${IMAGES_DIR}`;
-  await mkdir(targetDir, { recursive: true });
-  const finalName = await resolveCollision(targetDir, stem, ext);
-  const targetPath = `${targetDir}/${finalName}`;
-
-  await writeFile(targetPath, bytes);
-
-  return { markdownPath: `${IMAGES_DIR}/${finalName}`, altText: stem };
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -139,7 +168,7 @@ async function resolveCollision(
   dir: string,
   stem: string,
   ext: string,
-  selection?: ImageImportSelection,
+  selection?: ImageImportContext,
 ): Promise<string> {
   const available = async (name: string) => {
     assertCurrent(selection);

@@ -17,10 +17,6 @@
       "allow": [{ "path": "**" }]
     },
     {
-      "identifier": "fs:allow-read-file",
-      "allow": [{ "path": "**" }]
-    },
-    {
       "identifier": "fs:allow-write-text-file",
       "allow": [{ "path": "**" }]
     },
@@ -45,14 +41,9 @@
       "allow": [{ "path": "**" }]
     },
     {
-      "identifier": "fs:allow-watch",
-      "allow": [{ "path": "**" }]
-    },
-    {
       "identifier": "fs:allow-exists",
       "allow": [{ "path": "**" }]
     },
-    "shell:allow-open",
     "deep-link:default",
     "process:default",
     "core:window:allow-set-focus",

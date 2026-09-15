@@ -1,5 +1,5 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
-import { readTextFile } from '../services/documentText';
+import { nativeFs } from '../services/nativeFs';
 import { markdownToHtml } from '../utils/markdown-converter';
 import { serializeVisualMarkdown } from '../utils/visual-source';
 import { generateDiff, type DiffLine, type DiffStats } from './useDiffPreview';
@@ -80,6 +80,20 @@ export function useFileReload(options: UseFileReloadOptions) {
       && tab.pendingMarkdown === snapshot.pendingMarkdown
       && tab.content === snapshot.content
       && tab.hasChanges === snapshot.hasChanges ? target : undefined;
+  };
+
+  const awaitingSavedRead = new Set<string>();
+  const monitoringErrors = ref(new Map<string, string>());
+  const monitoringError = computed(() => currentFile.value ? monitoringErrors.value.get(currentFile.value) ?? '' : '');
+  const reportMonitoringError = (filePath: string, error: unknown) => {
+    if (!findTarget(filePath)) return;
+    const permission = typeof error === 'object' && error !== null && 'code' in error
+      && (error.code === 'permission_required' || error.code === 'invalid_grant_kind');
+    const message = permission
+      ? (awaitingSavedRead.has(filePath) ? t.value.fileSavedMonitoringPermission(filePath) : t.value.fileMonitoringPermission(filePath))
+      : t.value.fileMonitoringError(filePath);
+    monitoringErrors.value.set(filePath, message);
+    showToastNotification(message, 'warning');
   };
 
   // Toast state
@@ -171,7 +185,9 @@ export function useFileReload(options: UseFileReloadOptions) {
     },
     onWatchError: (filePath, error) => {
       console.error(`[FileWatcher] Error watching ${filePath}:`, error);
+      reportMonitoringError(filePath, error);
     },
+    onWatchReady: filePath => { monitoringErrors.value.delete(filePath); awaitingSavedRead.delete(filePath); },
   });
 
   const reloadTabContent = (filePath: string, newContent: string, expectedTab?: Tab, acceptDisk = true) => {
@@ -303,7 +319,9 @@ export function useFileReload(options: UseFileReloadOptions) {
       && !!currentSnapshotTarget(snapshot);
 
     try {
-      const newContent = await readTextFile(filePath);
+      const { grantId } = await nativeFs.resolveDocumentReadGrant(filePath);
+      if (!isCurrent()) return;
+      const newContent = await nativeFs.readPathText(filePath, undefined, grantId);
       if (!isCurrent()) return;
 
       if (tab.hasChanges) {
@@ -316,13 +334,14 @@ export function useFileReload(options: UseFileReloadOptions) {
     } catch (error) {
       if (!isCurrent()) return;
       console.error('Error reloading file:', error);
-      showToastNotification(t.value.fileReloadError, 'warning');
+      reportMonitoringError(filePath, error);
     } finally {
       if (manualReads.get(tab) === request) manualReads.delete(tab);
     }
   };
 
   return {
+    monitoringError,
     // Toast
     showToastNotification,
     showToast: computed(() => showToast.value),
@@ -348,13 +367,25 @@ export function useFileReload(options: UseFileReloadOptions) {
     reloadTabContent,
 
     // File watcher controls (exposed for App.vue integration)
-    watchFile: fileWatcher.watchFile,
+    watchFile: (filePath: string, baseline: string, afterSave = false) => {
+      if (afterSave) awaitingSavedRead.add(filePath);
+      return fileWatcher.watchFile(filePath, baseline);
+    },
+    restartWatch: (filePath: string, baseline: string, expectedGrantId: string) => {
+      // A grant rebind invalidates already-returned old reads and old modal answers.
+      clearConflicts(filePath);
+      return fileWatcher.restartWatch(filePath, baseline, expectedGrantId);
+    },
     unwatchFile: (filePath: string) => {
       clearConflicts(filePath);
+      monitoringErrors.value.delete(filePath);
+      awaitingSavedRead.delete(filePath);
       return fileWatcher.unwatchFile(filePath);
     },
     unwatchAll: () => {
       clearConflicts();
+      monitoringErrors.value.clear();
+      awaitingSavedRead.clear();
       return fileWatcher.unwatchAll();
     },
     markSaveStart: fileWatcher.markSaveStart,

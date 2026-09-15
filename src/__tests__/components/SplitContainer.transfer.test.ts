@@ -5,6 +5,7 @@ import { ref } from 'vue';
 const mocks = vi.hoisted(() => ({
   drop: null as null | ((id: string, pane: string, path: string | null) => Promise<void>),
   state: null as any,
+  localImages: false,
   message: vi.fn(),
   writeTextFile: vi.fn(),
   createNewWindow: vi.fn(),
@@ -20,7 +21,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({ writeTextFile: mocks.writeTextFile }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: mocks.message }));
 vi.mock('../../components/EditorPane.vue', () => ({ default: { template: '<div />' } }));
 vi.mock('../../composables/useWindowManager', () => ({ useWindowManager: () => mocks }));
-vi.mock('../../composables/useSplitView', () => ({ useSplitView: () => ({
+vi.mock('../../composables/useSplitView', () => ({ tabHasLocalImages: () => mocks.localImages, useSplitView: () => ({
   splitState: mocks.state,
   isSplitActive: ref(false),
   activePaneId: ref('left'),
@@ -38,6 +39,7 @@ import SplitContainer from '../../components/SplitContainer.vue';
 describe('cross-window tab transfer preserves source', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.localImages = false;
     mocks.state = ref({ panes: [{ id: 'left', activeTabId: 'a', tabs: [{
       id: 'a', filePath: '/docs/a.md', fileName: 'a.md', hasChanges: false,
       content: '<p>A normalized display copy</p>',
@@ -147,6 +149,26 @@ describe('cross-window tab transfer preserves source', () => {
     expect(mocks.registerOpenFile).toHaveBeenCalledWith('/docs/a.md', 'main');
     expect(mocks.removeTabWithoutCreate).not.toHaveBeenCalled();
     expect(mocks.closeCurrentWindow).not.toHaveBeenCalled();
+  });
+
+  it('keeps committed or pending local images in the source window before transfer', async () => {
+    mocks.localImages = true;
+    await drop();
+    expect(mocks.getAllWindows).not.toHaveBeenCalled();
+    expect(mocks.createNewWindow).not.toHaveBeenCalled();
+    expect(mocks.removeTabWithoutCreate).not.toHaveBeenCalled();
+    expect(mocks.message).toHaveBeenCalledWith(expect.stringContaining('imported images'), expect.objectContaining({kind: 'info'}));
+  });
+
+  it.each(['list', 'transfer', 'unregister'])('keeps imports that start while %s is pending', async stage => {
+    if (stage === 'list') mocks.getAllWindows.mockImplementationOnce(async () => { mocks.localImages = true; return ['main']; });
+    if (stage === 'transfer') mocks.createNewWindow.mockImplementationOnce(async () => { mocks.localImages = true; return 'window-1'; });
+    if (stage === 'unregister') mocks.unregisterOpenFile.mockImplementationOnce(async () => { mocks.localImages = true; });
+    await drop();
+    expect(mocks.removeTabWithoutCreate).not.toHaveBeenCalled();
+    expect(mocks.closeCurrentWindow).not.toHaveBeenCalled();
+    expect(mocks.message).toHaveBeenCalledWith(expect.stringContaining('imported images'), expect.objectContaining({kind: 'info'}));
+    if (stage === 'unregister') expect(mocks.registerOpenFile).toHaveBeenCalledWith('/docs/a.md', 'main');
   });
 
 });

@@ -1,389 +1,115 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { UseFileWatcherOptions } from '../../composables/useFileWatcher';
+import { describe, expect, it, vi } from 'vitest';
+import { setup, mockNativeFs as nativeFs, bytes, disk, tick } from './native-watch-fixture';
 
-// Mock @tauri-apps/plugin-fs
-const mockWatchCallback = vi.fn();
-let capturedWatchHandler: ((event: { type: unknown; paths: string[]; attrs: unknown }) => void) | null = null;
-const mockUnwatch = vi.fn();
-
-vi.mock('@tauri-apps/plugin-fs', () => ({
-  watch: vi.fn(async (_paths: unknown, cb: (event: { type: unknown }) => void, _options?: unknown) => {
-    capturedWatchHandler = cb as typeof capturedWatchHandler;
-    mockWatchCallback();
-    return mockUnwatch;
-  }),
-}));
-
-vi.mock('../../services/documentText', () => ({
-  readTextFile: vi.fn(async (path: string) => {
-    return `content of ${path}`;
-  }),
-}));
-
-import { useFileWatcher } from '../../composables/useFileWatcher';
-import { readTextFile } from '../../services/documentText';
-
-describe('useFileWatcher', () => {
-  let onExternalChange: UseFileWatcherOptions['onExternalChange'];
-  let onFileDeleted: UseFileWatcherOptions['onFileDeleted'];
-  let onWatchError: UseFileWatcherOptions['onWatchError'];
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.useFakeTimers();
-    capturedWatchHandler = null;
-
-    onExternalChange = vi.fn();
-    onFileDeleted = vi.fn();
-    onWatchError = vi.fn();
+describe('native file monitoring', () => {
+  it('subscribes with current authority, reads immediately, and polls without OS notifications', async () => {
+    const { watcher, onExternalChange, onWatchReady } = setup();
+    disk.set('/a', 'opened');
+    await watcher.watchFile('/a', 'opened');
+    expect(nativeFs.subscribeWatch).toHaveBeenCalledWith('/a', 'current-grant');
+    await tick();
+    expect(onWatchReady).toHaveBeenCalledWith('/a');
+    expect(onExternalChange).not.toHaveBeenCalled();
+    disk.set('/a', 'changed'); await tick(999);
+    expect(onExternalChange).not.toHaveBeenCalled(); await tick(1);
+    expect(onExternalChange).toHaveBeenCalledWith('/a', 'changed');
+    await tick(1000); expect(onExternalChange).toHaveBeenCalledTimes(1);
   });
-
-  afterEach(() => {
-    vi.useRealTimers();
+  it('compares the first read to the open snapshot and preserves raw BOM/CRLF', async () => {
+    const { watcher, onExternalChange } = setup();
+    const source = '\uFEFFa\r\nb  \n'; disk.set('/a', source);
+    await watcher.watchFile('/a', 'before'); await tick();
+    expect(onExternalChange).toHaveBeenCalledWith('/a', source);
   });
-
-  const createWatcher = () =>
-    useFileWatcher({ onExternalChange, onFileDeleted, onWatchError });
-
-  describe('watchFile', () => {
-    it('should set up a watcher for a file path', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'initial content');
-
-      expect(mockWatchCallback).toHaveBeenCalledTimes(1);
-    });
-
-    it('should not create duplicate watchers for the same file', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'initial content');
-      await watcher.watchFile('/test/file.md', 'initial content');
-
-      expect(mockWatchCallback).toHaveBeenCalledTimes(1);
-    });
-
-    it('should store initial content as known disk content', async () => {
-      const watcher = createWatcher();
-      const initialContent = 'hello world';
-      vi.mocked(readTextFile).mockResolvedValueOnce(initialContent);
-
-      await watcher.watchFile('/test/file.md', initialContent);
-
-      // Trigger an event — content is the same as initial, so no callback
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).not.toHaveBeenCalled();
-    });
-
-    it('should call onWatchError if watch setup fails', async () => {
-      const { watch: watchFs } = await import('@tauri-apps/plugin-fs');
-      vi.mocked(watchFs).mockRejectedValueOnce(new Error('permission denied'));
-
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'content');
-
-      expect(onWatchError).toHaveBeenCalledWith('/test/file.md', expect.any(Error));
-    });
+  it('ordinary duplicate watch does not replace the subscription or baseline', async () => {
+    const { watcher, onExternalChange } = setup();
+    await watcher.watchFile('/a', 'disk'); await watcher.watchFile('/a', 'wrong'); await tick();
+    expect(nativeFs.subscribeWatch).toHaveBeenCalledTimes(1);
+    expect(onExternalChange).not.toHaveBeenCalled();
   });
-
-  describe('event handling', () => {
-    it('should call onExternalChange when file content changes', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'old content');
-
-      vi.mocked(readTextFile).mockResolvedValueOnce('new content');
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).toHaveBeenCalledWith('/test/file.md', 'new content');
-    });
-
-    it('should not call onExternalChange when content is unchanged', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'same content');
-
-      vi.mocked(readTextFile).mockResolvedValueOnce('same content');
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).not.toHaveBeenCalled();
-    });
-
-    it('should skip access events', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'content');
-
-      capturedWatchHandler?.({ type: { access: { kind: 'open', mode: 'read' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(readTextFile).not.toHaveBeenCalledWith('/test/file.md');
-      expect(onExternalChange).not.toHaveBeenCalled();
-    });
-
-    it('should handle modify events', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'old');
-
-      vi.mocked(readTextFile).mockResolvedValueOnce('new');
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).toHaveBeenCalledWith('/test/file.md', 'new');
-    });
-
-    it('should handle create events (file recreated)', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'old');
-
-      vi.mocked(readTextFile).mockResolvedValueOnce('recreated content');
-
-      capturedWatchHandler?.({ type: { create: { kind: 'file' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).toHaveBeenCalledWith('/test/file.md', 'recreated content');
-    });
-
-    it('should handle string "any" event type', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'old');
-
-      vi.mocked(readTextFile).mockResolvedValueOnce('changed');
-
-      capturedWatchHandler?.({ type: 'any', paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).toHaveBeenCalledWith('/test/file.md', 'changed');
-    });
-
-    it('should handle string "other" event type', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'old');
-
-      vi.mocked(readTextFile).mockResolvedValueOnce('changed');
-
-      capturedWatchHandler?.({ type: 'other', paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).toHaveBeenCalledWith('/test/file.md', 'changed');
-    });
-
-    it('should call onFileDeleted when readTextFile throws', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'content');
-
-      vi.mocked(readTextFile).mockRejectedValueOnce(new Error('file not found'));
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onFileDeleted).toHaveBeenCalledWith('/test/file.md');
-    });
-
-    it('should call onWatchError when readTextFile throws and no onFileDeleted handler', async () => {
-      const watcher = useFileWatcher({ onExternalChange: onExternalChange!, onWatchError });
-      await watcher.watchFile('/test/file.md', 'content');
-
-      vi.mocked(readTextFile).mockRejectedValueOnce(new Error('disk error'));
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onWatchError).toHaveBeenCalledWith('/test/file.md', expect.any(Error));
-    });
+  it('reports installation failure and permits retry of transient failure', async () => {
+    const { watcher, onWatchError } = setup();
+    const error = { code: 'io_error' }; vi.mocked(nativeFs.subscribeWatch).mockRejectedValueOnce(error);
+    await watcher.watchFile('/a', 'disk'); expect(onWatchError).toHaveBeenCalledWith('/a', error);
+    await watcher.watchFile('/a', 'other'); await tick();
+    expect(nativeFs.subscribeWatch).toHaveBeenCalledTimes(2);
   });
-
-  describe('own-save detection', () => {
-    it('should skip events during own save (markSaveStart)', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'content');
-
-      watcher.markSaveStart('/test/file.md');
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).not.toHaveBeenCalled();
-    });
-
-    it('should skip events when disk content matches saved content (markSaveEnd)', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'content');
-
-      watcher.markSaveStart('/test/file.md');
-      watcher.markSaveEnd('/test/file.md', 'saved content');
-
-      // Disk content matches what we just saved — should be filtered by content comparison
-      vi.mocked(readTextFile).mockResolvedValueOnce('saved content');
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).not.toHaveBeenCalled();
-    });
-
-    it('should process events after grace period expires', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'old content');
-
-      watcher.markSaveStart('/test/file.md');
-      watcher.markSaveEnd('/test/file.md', 'saved content');
-
-      // Advance past grace period (2000ms)
-      vi.advanceTimersByTime(2500);
-
-      vi.mocked(readTextFile).mockResolvedValueOnce('externally changed');
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).toHaveBeenCalledWith('/test/file.md', 'externally changed');
-    });
-
-    it('should update known content on markSaveEnd', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'old content');
-
-      watcher.markSaveStart('/test/file.md');
-      watcher.markSaveEnd('/test/file.md', 'saved content');
-
-      // After grace period, simulate event where disk content matches saved content
-      vi.advanceTimersByTime(2500);
-      vi.mocked(readTextFile).mockResolvedValueOnce('saved content');
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      // Content matches what we saved — should not trigger callback
-      expect(onExternalChange).not.toHaveBeenCalled();
-    });
+  it('only typed NotFound reports deletion and a later recreated file is observed', async () => {
+    const { watcher, onFileDeleted, onExternalChange, onWatchError } = setup();
+    vi.mocked(nativeFs.readWatchBytes).mockRejectedValueOnce({ code: 'file_not_found' });
+    await watcher.watchFile('/a', 'old'); await tick();
+    expect(onFileDeleted).toHaveBeenCalledWith('/a'); expect(onWatchError).not.toHaveBeenCalled();
+    await tick(1000); expect(onExternalChange).toHaveBeenCalledWith('/a', 'disk');
   });
-
-  describe('updateKnownContent', () => {
-    it('should update known content so matching events are ignored', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'initial');
-
-      // Update known content to new value
-      watcher.updateKnownContent('/test/file.md', 'updated');
-
-      // Simulate event where disk content matches updated known content
-      vi.mocked(readTextFile).mockResolvedValueOnce('updated');
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).not.toHaveBeenCalled();
-    });
-
-    it('should trigger onExternalChange when content differs from updated known content', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'initial');
-
-      watcher.updateKnownContent('/test/file.md', 'updated');
-
-      vi.mocked(readTextFile).mockResolvedValueOnce('different content');
-
-      capturedWatchHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).toHaveBeenCalledWith('/test/file.md', 'different content');
-    });
+  it.each([{ code: 'io_error' }, { code: 'too_large' }, new Error('not found')])
+  ('does not infer deletion from a non-NotFound error %s', async error => {
+    const { watcher, onFileDeleted, onWatchError } = setup();
+    vi.mocked(nativeFs.readWatchBytes).mockRejectedValueOnce(error);
+    await watcher.watchFile('/a', 'disk'); await tick();
+    expect(onFileDeleted).not.toHaveBeenCalled(); expect(onWatchError).toHaveBeenCalledWith('/a', error);
   });
-
-  describe('unwatchFile', () => {
-    it('should call unwatch function and clean up state', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'content');
-
-      watcher.unwatchFile('/test/file.md');
-
-      expect(mockUnwatch).toHaveBeenCalledTimes(1);
-    });
-
-    it('should not error when unwatching a file not being watched', () => {
-      const watcher = createWatcher();
-      expect(() => watcher.unwatchFile('/nonexistent.md')).not.toThrow();
-    });
-
-    it('should allow re-watching after unwatch', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file.md', 'content');
-      watcher.unwatchFile('/test/file.md');
-
-      mockWatchCallback.mockClear();
-      await watcher.watchFile('/test/file.md', 'new content');
-
-      expect(mockWatchCallback).toHaveBeenCalledTimes(1);
-    });
+  it('rejects invalid UTF-8 without publishing replacement text or deletion', async () => {
+    const { watcher, onFileDeleted, onWatchError, onExternalChange } = setup();
+    vi.mocked(nativeFs.readWatchBytes).mockResolvedValueOnce(new Uint8Array([0xff]));
+    await watcher.watchFile('/a', 'disk'); await tick();
+    expect(onWatchError).toHaveBeenCalledTimes(1); expect(onFileDeleted).not.toHaveBeenCalled();
+    expect(onExternalChange).not.toHaveBeenCalled();
   });
-
-  describe('unwatchAll', () => {
-    it('should unwatch all watched files', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file1.md', 'content1');
-      await watcher.watchFile('/test/file2.md', 'content2');
-
-      watcher.unwatchAll();
-
-      expect(mockUnwatch).toHaveBeenCalledTimes(2);
-    });
-
-    it('should not error when no files are being watched', () => {
-      const watcher = createWatcher();
-      expect(() => watcher.unwatchAll()).not.toThrow();
-    });
+  it('pauses revoked authority, deduplicates warnings and requires explicit rebind', async () => {
+    const { watcher, onWatchError, onExternalChange } = setup();
+    vi.mocked(nativeFs.readWatchBytes).mockRejectedValueOnce({ code: 'permission_required' });
+    await watcher.watchFile('/a', 'old'); await tick(); await tick(5000);
+    await watcher.watchFile('/a', 'wrong');
+    expect(nativeFs.subscribeWatch).toHaveBeenCalledTimes(1); expect(onWatchError).toHaveBeenCalledTimes(1);
+    await watcher.restartWatch('/a', 'wrong', 'selected-new'); await tick();
+    expect(nativeFs.subscribeWatch).toHaveBeenLastCalledWith('/a', 'selected-new');
+    expect(onExternalChange).toHaveBeenCalledWith('/a', 'disk');
   });
-
-  describe('multiple files', () => {
-    it('should track separate content for different files', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file1.md', 'content1');
-
-      // Reset captured handler for second file
-      const firstHandler = capturedWatchHandler;
-
-      await watcher.watchFile('/test/file2.md', 'content2');
-      const secondHandler = capturedWatchHandler;
-
-      // Trigger event on file1 with changed content
-      vi.mocked(readTextFile).mockResolvedValueOnce('new content1');
-      firstHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file1.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).toHaveBeenCalledWith('/test/file1.md', 'new content1');
-
-      // Trigger event on file2 with same content — should not trigger
-      vi.mocked(readTextFile).mockResolvedValueOnce('content2');
-      secondHandler?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file2.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-
-      expect(onExternalChange).toHaveBeenCalledTimes(1); // Only file1
-    });
-
-    it('should only suppress own-save for the specific file', async () => {
-      const watcher = createWatcher();
-      await watcher.watchFile('/test/file1.md', 'content1');
-      const handler1 = capturedWatchHandler;
-
-      await watcher.watchFile('/test/file2.md', 'content2');
-      const handler2 = capturedWatchHandler;
-
-      // Mark file1 as being saved
-      watcher.markSaveStart('/test/file1.md');
-
-      // Event on file1 should be suppressed
-      handler1?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file1.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-      expect(onExternalChange).not.toHaveBeenCalled();
-
-      // Event on file2 should NOT be suppressed
-      vi.mocked(readTextFile).mockResolvedValueOnce('changed content2');
-      handler2?.({ type: { modify: { kind: 'data', mode: 'content' } }, paths: ['/test/file2.md'], attrs: {} });
-      await vi.runAllTimersAsync();
-      expect(onExternalChange).toHaveBeenCalledWith('/test/file2.md', 'changed content2');
-    });
+  it('does not reread during own save and immediately checks actual saved content after End', async () => {
+    const { watcher, onExternalChange } = setup(); disk.set('/a', 'old');
+    await watcher.watchFile('/a', 'old'); await tick(); watcher.markSaveStart('/a');
+    disk.set('/a', 'saved'); await tick(5000); expect(nativeFs.readWatchBytes).toHaveBeenCalledTimes(1);
+    watcher.markSaveEnd('/a', 'saved'); await tick(); expect(onExternalChange).not.toHaveBeenCalled();
+    disk.set('/a', 'external'); await tick(1000);
+    expect(onExternalChange).toHaveBeenCalledWith('/a', 'external');
+  });
+  it('Abort catches up without accepting the failed candidate as the baseline', async () => {
+    const { watcher, onExternalChange } = setup(); await watcher.watchFile('/a', 'old');
+    watcher.markSaveStart('/a'); await tick(1000); watcher.markSaveAbort('/a'); await tick();
+    expect(onExternalChange).toHaveBeenCalledWith('/a', 'disk');
+  });
+  it('updateKnownContent suppresses only an identical disk revision', async () => {
+    const { watcher, onExternalChange } = setup(); await watcher.watchFile('/a', 'old');
+    watcher.updateKnownContent('/a', 'disk'); await tick(); expect(onExternalChange).not.toHaveBeenCalled();
+    disk.set('/a', 'later'); await tick(1000); expect(onExternalChange).toHaveBeenCalledWith('/a', 'later');
+  });
+  it('releases individual paths once and clears state for reopen', async () => {
+    const { watcher, onExternalChange } = setup(); await watcher.watchFile('/a', 'disk'); await tick();
+    watcher.unwatchFile('/a'); watcher.unwatchFile('/a'); watcher.unwatchFile('/missing');
+    await tick(1000); expect(nativeFs.readWatchBytes).toHaveBeenCalledTimes(1);
+    expect(nativeFs.unsubscribeWatch).toHaveBeenCalledTimes(1);
+    await watcher.watchFile('/a', 'new baseline'); await tick();
+    expect(onExternalChange).toHaveBeenCalledWith('/a', 'disk');
+  });
+  it('keeps per-path baselines and save suppression independent while spacing starts', async () => {
+    const { watcher, onExternalChange } = setup(); disk.set('/b', 'b');
+    await watcher.watchFile('/a', 'disk'); await watcher.watchFile('/b', 'old-b'); await tick();
+    expect(nativeFs.readWatchBytes).toHaveBeenCalledTimes(1); await tick(249);
+    expect(nativeFs.readWatchBytes).toHaveBeenCalledTimes(1); await tick(1);
+    expect(onExternalChange).toHaveBeenCalledWith('/b', 'b');
+    watcher.markSaveStart('/a'); disk.set('/b', 'next-b'); await tick(1000);
+    expect(onExternalChange).toHaveBeenLastCalledWith('/b', 'next-b');
+    watcher.unwatchAll(); expect(nativeFs.unsubscribeWatch).toHaveBeenCalledTimes(2);
+  });
+  it('callback failures are reported without claiming deletion', async () => {
+    const error = new Error('callback'); const { watcher, onWatchError, onFileDeleted } = setup({ onExternalChange: () => { throw error; } });
+    await watcher.watchFile('/a', 'old'); await tick();
+    expect(onWatchError).toHaveBeenCalledWith('/a', error); expect(onFileDeleted).not.toHaveBeenCalled();
+  });
+  it('does not change the accepted baseline when a read fails', async () => {
+    const { watcher, onExternalChange } = setup();
+    vi.mocked(nativeFs.readWatchBytes).mockRejectedValueOnce({ code: 'io_error' }).mockResolvedValueOnce(bytes('old'));
+    await watcher.watchFile('/a', 'old'); await tick(); await tick(1000);
+    expect(onExternalChange).not.toHaveBeenCalled();
   });
 });

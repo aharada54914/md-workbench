@@ -2,6 +2,13 @@ import type { Translations } from '../index';
 
 const pl: Translations = {
   appName: 'MD Workbench',
+  imageWindowTransferBlocked: "Ten dokument zawiera zaimportowane obrazy, których nie można jeszcze przenieść do innego okna. Dokument pozostał w tym oknie.",
+  clipboardOperationFailed: "Nie udało się wykonać operacji schowka.",
+  clipboardCompositionPending: "Zakończ wprowadzanie tekstu, a następnie ponów operację schowka.",
+  imageImportFailed: "Nie udało się dodać obrazu.",
+  imageTooLarge: "Obraz przekracza limit 8 MiB.",
+  imageBudgetExceeded: "Osiągnięto limit pamięci obrazów. Zamknij inny dokument lub użyj mniejszego obrazu.",
+  imagePathConflict: "Ta ścieżka wskazuje już inny zaimportowany obraz. Zmień nazwę nowego obrazu przed dodaniem.",
   mathInline: 'Wzór w tekście',
   mathBlock: 'Wzór blokowy',
   mathEdit: 'Edytuj wzór',
@@ -191,6 +198,7 @@ const pl: Translations = {
   workspaceMutationUnsupported: "Ta operacja nie jest obsługiwana dla tego elementu lub systemu plików.",
   openPermissionRequired: "Wymagany jest dostęp do dokumentu. Wybierz go ponownie przez Otwórz plik.",
   openDocumentFailed: "Nie udało się otworzyć dokumentu.",
+  externalLinkFailed: "Nie udało się otworzyć odnośnika w przeglądarce.",
   openFile: 'Otwórz plik Markdown',
   saveFile: 'Zapisz plik Markdown',
   markdownFiles: 'Pliki Markdown',
@@ -289,6 +297,9 @@ const pl: Translations = {
   preSaveConflict: 'Plik zmodyfikowany',
   preSaveConflictMessage: 'Plik został zmodyfikowany zewnętrznie od ostatniego wczytania lub zapisania.',
   saveAnyway: 'Zapisz mimo to',
+  fileSavedMonitoringPermission: (path: string) => `Zapisano, ale monitorowanie zmian zewnętrznych dla ${path} jest wstrzymane. Wybierz plik ponownie przez Otwórz plik.`,
+  fileMonitoringPermission: (path: string) => `Monitorowanie zmian zewnętrznych wstrzymane: ${path}. Wybierz plik ponownie przez Otwórz plik.`,
+  fileMonitoringError: (path: string) => `Nie można odczytać zmian zewnętrznych: ${path}.`,
   fileDeletedExternally: (fileName: string) => `"${fileName}" został usunięty zewnętrznie.`,
   anchorNotFound: (anchor: string) => `Żaden nagłówek nie pasuje do "#${anchor}".`,
 

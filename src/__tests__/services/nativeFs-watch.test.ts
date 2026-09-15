@@ -8,6 +8,12 @@ const invokeMock = vi.mocked(invoke);
 describe('native owned polling subscriptions', () => {
   beforeEach(() => { invokeMock.mockReset(); });
 
+  it('resolves document READ authority using the existing host resolver without minting grants', async () => {
+    invokeMock.mockResolvedValue({ grantId: 'selected' });
+    expect(await nativeFs.resolveDocumentReadGrant('/a.md')).toEqual({ grantId: 'selected' });
+    expect(invokeMock.mock.calls).toEqual([['native_resolve_image_document', { documentPath: '/a.md' }]]);
+  });
+
   it('subscribes only with the supplied current identity and does not install a scheduler or read implicitly', async () => {
     const watch = { id: 'host-token', grantId: 'current-grant' };
     invokeMock.mockResolvedValue(watch);

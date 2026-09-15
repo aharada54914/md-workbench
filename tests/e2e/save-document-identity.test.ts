@@ -6,7 +6,8 @@ const b = '/test/b.md';
 const copy = '/test/captured-copy.md';
 const source = '\uFEFF# Original A\r\n\r\n  exact\t';
 const preview = (page: Page) => page.frameLocator('iframe[title="Isolated document preview"]').locator('body');
-const watchedPaths = (page: Page) => page.evaluate(() => Object.keys((window as any).__watchCallbacks).sort());
+const watchedPaths = (page: Page) => page.evaluate(() =>
+  Object.values((window as any).__nativeWatchSubscriptions).map((watch: any) => watch.path).sort());
 
 async function beginSaveAs(page: Page) {
   await page.evaluate(() => { (window as any).__mockDeferSaveDialog = true; });
@@ -31,7 +32,7 @@ async function setup(page: Page) {
   return fs;
 }
 
-test('Save As keeps the captured document when another tab becomes active and transfers its watch', async ({ page }) => {
+test('Save As keeps the captured document when another tab becomes active and requires explicit READ for its new watch', async ({ page }) => {
   const fs = await setup(page);
   await beginSaveAs(page);
   await page.locator('.tab-bar .tab', { hasText: 'b.md' }).click();
@@ -41,7 +42,16 @@ test('Save As keeps the captured document when another tab becomes active and tr
   await expect(page.locator('.tab-bar .tab.active')).toContainText('b.md');
   await expect(preview(page)).toContainText('Other B');
   await expect(page.locator('.tab-bar .tab', { hasText: 'captured-copy.md' })).toBeVisible();
+  await expect.poll(() => watchedPaths(page)).toEqual([b]);
+  // Save authority cannot install READ. The inactive saved document retains a
+  // warning, then explicit native same-path selection resumes its own watch.
+  await page.locator('.tab-bar .tab', { hasText: 'captured-copy.md' }).click();
+  await expect(preview(page)).toContainText('Original A');
+  await expect(page.getByTestId('monitoring-warning')).toContainText('Saved, but');
+  await page.evaluate(copy => { (window as any).__mockDocumentSelection = [copy]; }, copy);
+  await page.getByTestId('monitoring-warning').getByRole('button').click();
   await expect.poll(() => watchedPaths(page)).toEqual([b, copy]);
+  await expect(page.getByTestId('monitoring-warning')).not.toBeVisible();
   expect(fs.getFs()[a]).toBe(source);
   expect(fs.getFs()[b]).toBe('# Other B\n');
 });

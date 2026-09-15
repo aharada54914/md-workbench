@@ -1,13 +1,18 @@
-import { ref } from 'vue';
+import { getCurrentScope, onScopeDispose, ref } from 'vue';
 import { aiCommands, type SnapshotIndexEntry } from '../services/aiCommands';
 
 export function useAiSnapshots() {
   const items = ref<SnapshotIndexEntry[]>([]);
   const docPath = ref<string | null>(null);
 
+  let listRevision = 0;
+  if (getCurrentScope()) onScopeDispose(() => { listRevision++; });
   async function loadFor(path: string) {
+    const revision = ++listRevision;
     docPath.value = path;
-    items.value = await aiCommands.snapshotList(path);
+    items.value = [];
+    const result = await aiCommands.snapshotList(path);
+    if (revision === listRevision) items.value = result;
   }
 
   async function create(content: string, sourceSessionId: string | null, keep: number) {

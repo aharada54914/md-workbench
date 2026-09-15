@@ -1,63 +1,48 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue';
-import { Marp } from '@marp-team/marp-core';
-import { renderDeck } from '../composables/useMarpExport';
+import { ref, shallowRef, computed, watch, onBeforeUnmount } from 'vue';
+import { renderDeck, buildStandaloneHtml } from '../composables/useMarpExport';
 
 const props = defineProps<{ markdown: string }>();
-
-// Live preview renders into the app document (Shadow DOM), so raw HTML in the
-// deck is disabled here — an inline handler (e.g. <img onerror>) in an opened
-// deck would otherwise run in the app context. Present/export keep html:true
-// because they render inside a sandboxed iframe.
-const safeMarp = new Marp({ html: false });
-
-const host = ref<HTMLElement | null>(null);
-let shadow: ShadowRoot | null = null;
-
-function render() {
-  if (!shadow) return;
-  let body = '';
-  let css = '';
+const emit = defineEmits<{ 'scroll-ready': []; 'scroll-reset': [] }>();
+const scrollEl = shallowRef<HTMLElement | null>(null);
+const frame = ref<HTMLIFrameElement | null>(null);
+const srcdoc = computed(() => {
   try {
-    const deck = renderDeck(props.markdown || '', safeMarp);
-    body = deck.html;
-    css = deck.css;
+    const deck = renderDeck(props.markdown || '');
+    return buildStandaloneHtml({
+      html: `<div class="marp-scroll" style="height:100vh!important;overflow-y:auto!important"><div class="deck">${deck.html}</div></div>`,
+      css: `${deck.css}
+        html,body { margin:0; padding:0; }
+        * { box-sizing:border-box; }
+        .deck { padding:16px; display:flex; flex-direction:column; gap:16px; align-items:center; }
+        .deck svg[data-marpit-svg], .deck > svg { width:100%; height:auto; max-width:960px;
+          box-shadow:0 2px 12px rgba(0,0,0,.25); border-radius:6px; }`,
+    });
   } catch {
-    body = '<p style="padding:16px;color:#a33">Nie udało się wyrenderować slajdów.</p>';
-  }
-  // Marp renders each slide as a block <svg>; stack them with spacing and make
-  // them responsive to the pane width. The deck CSS (incl. any author `style:`
-  // directive) lives inside this Shadow DOM, so it is encapsulated — at worst it
-  // restyles this preview pane, it cannot reach the app document.
-  shadow.innerHTML = `<style>
-    :host, * { box-sizing: border-box; }
-    .deck { padding: 16px; display: flex; flex-direction: column; gap: 16px; align-items: center; }
-    .deck svg[data-marpit-svg], .deck > svg { width: 100%; height: auto; max-width: 960px;
-      box-shadow: 0 2px 12px rgba(0,0,0,.25); border-radius: 6px; }
-    ${css}
-  </style><div class="deck">${body}</div>`;
-}
-
-onMounted(() => {
-  if (host.value) {
-    shadow = host.value.attachShadow({ mode: 'open' });
-    render();
+    return buildStandaloneHtml({ html: '<p>Unable to render slides.</p>', css: '' });
   }
 });
-
-watch(() => props.markdown, render);
-
-defineExpose({ scrollEl: host });
+function resetScroll() { scrollEl.value = null; emit('scroll-reset'); }
+watch(srcdoc, resetScroll, { flush: 'sync' });
+function onFrameLoad() {
+  scrollEl.value = frame.value?.contentDocument?.querySelector<HTMLElement>('.marp-scroll') ?? null;
+  emit('scroll-ready');
+}
+onBeforeUnmount(resetScroll);
+// Bind directly to the real scroll container so iframe wheel/touch intent and
+// long decks participate in the same bidirectional synchronization as the editor.
+defineExpose({ scrollEl });
 </script>
 
 <template>
-  <div ref="host" class="marp-live"></div>
+  <div class="marp-live">
+    <iframe :key="srcdoc" ref="frame" class="marp-live-frame" title="Slide preview"
+      :srcdoc="srcdoc" sandbox="allow-same-origin"
+      @load="onFrameLoad"></iframe>
+  </div>
 </template>
 
 <style scoped>
-.marp-live {
-  height: 100%;
-  overflow-y: auto;
-  background: var(--bg-secondary, #15151c);
-}
+.marp-live { height:100%; overflow:hidden; background:var(--bg-secondary, #15151c); }
+.marp-live-frame { display:block; width:100%; height:100%; border:0; }
 </style>

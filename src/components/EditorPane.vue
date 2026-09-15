@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { getTabImageOwner, getTabImageAuthorityRevision } from '../composables/useSplitView';
 import { ref, computed } from 'vue';
 import type { Pane } from '../types/pane';
 import TabBar from './TabBar.vue';
@@ -7,6 +8,7 @@ import IsolatedPreview from './IsolatedPreview.vue';
 import { useTabDrag } from '../composables/useTabDrag';
 import { useWorkspace } from '../composables/useWorkspace';
 import { useI18n } from '../i18n';
+import { serializeEditorHtml } from '../utils/editor-image-dom';
 
 const { t } = useI18n();
 const ws = useWorkspace();
@@ -104,9 +106,10 @@ defineExpose({
   editor: computed(() => activeTab.value?.readOnly ? undefined : editorRef.value?.editor),
   paneId: computed(() => props.pane.id),
   getFilePath: () => activeTab.value?.filePath ?? null,
+  getImageOwner: () => activeTab.value ? getTabImageOwner(activeTab.value) : undefined,
   insertImagesByPath: (items: { path: string; alt: string }[]) =>
     !activeTab.value?.readOnly && editorRef.value?.insertImagesByPath?.(items),
-  getEditorContent: () => editorRef.value?.editor?.getHTML() ?? activeTab.value?.content ?? '',
+  getEditorContent: () => editorRef.value?.editor ? serializeEditorHtml(editorRef.value.editor.state.doc) : activeTab.value?.content ?? '',
   setEditorContent: (_content: string) => { /* handled reactively via modelValue prop */ },
   getSearchTextMap: () => activeTab.value?.readOnly ? null : editorRef.value?.getSearchTextMap?.() ?? null,
   setSearchHighlights: (...args: Parameters<NonNullable<InstanceType<typeof Editor>['setSearchHighlights']>>) =>
@@ -160,6 +163,8 @@ defineExpose({
         ref="editorRef"
         :model-value="editorContent"
         :document-id="activeTab?.id"
+        :image-owner="activeTab ? getTabImageOwner(activeTab) : undefined"
+        :image-authority-revision="activeTab ? getTabImageAuthorityRevision(activeTab) : 0"
         :file-path="editorFilePath"
         :source-markdown="editorSource"
         @update:source-markdown="handleSourceUpdate"

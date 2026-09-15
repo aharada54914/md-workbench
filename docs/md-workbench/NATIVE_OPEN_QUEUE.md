@@ -109,3 +109,60 @@ cold delivery, ignored event paths, ordered runtime delivery, failed reads,
 existing clean/dirty targets, ACK races and deferred read/registration. These are
 frontend tests with mocked IPC; packaged multi-window delivery remains a native
 acceptance requirement.
+
+
+## Windows release queue probe (prepared; native execution pending)
+
+`scripts/benchmark/native_open_queue.mjs` adds a separate disposable-process
+exercise after the existing 30 cold / 50 warm timing trials and authority probe.
+It does not add observations to benchmark statistics or call the native queue
+getter on the frontend's behalf. `windows_native.mjs` runs it only for the fork;
+the upstream comparison and timing trial counts remain unchanged.
+
+The fixed, exclusive fixture tree contains three independent batches, each with
+Japanese/space filenames, literal `%20`, and a nested absolute path of at least
+320 UTF-16 code units. LF, CRLF, BOM, unknown directive text and trailing spaces
+are retained. Long-path fixture creation failure is a failure, not a substituted
+short-path pass. No association, registry or filesystem policy is changed.
+
+The probe checks:
+
+- Cold argv `A,B,A,C` opens exactly `A,B,C` in order, ending on C.
+- Warm argv appends a fresh batch in the original process; the forwarding
+  process must exit successfully, without creating another document window.
+- Two blank native-created editors exist before clean main receives an ordinary
+  close request. After native destruction is observed, a new warm batch opens
+  in the lowest numeric surviving editor, without recreating main.
+- Reopening an existing document focuses its current tab without adding a
+  duplicate. Each new batch's inactive tabs must also show their actual fixture
+  body when selected.
+- Real native READ IDs return exact fixture hashes, foreign old-main IDs remain
+  denied, and the uninvolved sibling cannot look up newly delivered grants.
+  An unselected sentinel receives no grant.
+- `is_focused`, `is_minimized` and `is_visible` native window queries establish
+  focus/restore after ingress, before the test clicks tabs. The test establishes
+  a different sibling's focus beforehand and never repairs focus afterward.
+  Minimized setup uses `windows_queue_state.ps1`, selecting exactly one HWND by
+  the owned process PID and a temporary synthetic native title. It restores the
+  title and confirms state with the native getter; product IPC permissions are
+  unchanged. This setup runs only before ingress.
+  DOM focus and CDP target selection are not accepted as native focus evidence.
+- Original fixture and sentinel hashes are checked between phases and before
+  and after terminating only this probe's owned processes, including failure
+  cleanup. Hash mismatches and unreadable inputs remain in the report.
+
+`native-fork/native-open-queue.json` records phase, ordered tabs, window labels,
+PID, grant IDs, source/authorized-read hashes, path lengths, focus observations
+and limitations. Bounded screenshots contain only the disposable synthetic
+application windows. The existing Windows workflow uploads these artifacts on
+success or failure. Five Node helper tests cover fixture bounds, exact byte
+formats, invalid tab/focus witnesses and hash corruption/deletion; they do not
+establish native execution success.
+
+The first real execution is the existing `windows-2022` CDP job using the release
+executable built with `tauri build --no-bundle`. This section records prepared
+coverage, **not a passing Windows result**. The Windows 11 Arm UIA job does not
+execute this new CDP probe. macOS/Linux, installed shell associations and the
+already-enqueued-but-undrained destruction interval remain unmeasured. Closing
+main before the next batch establishes owner promotion, not durable or
+acknowledged queue delivery. T05 remains open.

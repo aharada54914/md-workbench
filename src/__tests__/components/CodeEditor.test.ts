@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { nextTick, ref } from 'vue';
+import { EditorState } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 
 vi.stubGlobal('ResizeObserver', class {
   observe() {}
@@ -31,6 +33,37 @@ vi.mock('../../composables/useEditorZoom', () => ({
 }));
 
 describe('CodeEditor virtualization (issue #129)', () => {
+  it('highlights the current DOM line after a redraw between measure read and write', () => {
+    const wrapper = mount(CodeEditor, { props: { modelValue: 'original' }, attachTo: document.body });
+    const view = EditorView.findFromDOM(wrapper.element)!;
+    const handle = (wrapper.vm as unknown as { editor: CodeEditorHandle }).editor;
+    let request: Parameters<EditorView['requestMeasure']>[0];
+    const measure = vi.spyOn(view, 'requestMeasure').mockImplementation((value) => {
+      if (value?.key === 'cursor-line-highlight') request = value;
+    });
+    const cancel = vi.fn();
+    const animate = vi.fn(() => ({ cancel, addEventListener: vi.fn() }));
+    const originalAnimate = Element.prototype.animate;
+    Element.prototype.animate = animate as unknown as typeof Element.prototype.animate;
+    try {
+      handle.highlightSelectionLine();
+      const readResult = request!.read(view);
+      const oldLine = wrapper.get('.cm-line').element;
+      // CodeMirror updates docView between measure.read and measure.write.
+      // Resetting the actual view here deterministically replaces its line DOM.
+      view.setState(EditorState.create({ doc: 'redrawn' }));
+      expect(oldLine.isConnected).toBe(false);
+      request!.write!(readResult, view);
+      expect(wrapper.get('.cm-line').classes()).toContain('code-cursor-highlight-line');
+      expect(animate).toHaveBeenCalledOnce();
+    } finally {
+      wrapper.unmount();
+      measure.mockRestore();
+      Element.prototype.animate = originalAnimate;
+    }
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it('exposes the complete editable document through the editor handle', async () => {
     const wrapper = mount(CodeEditor, { props: { modelValue: 'a\nb\nc' } });
     await nextTick();

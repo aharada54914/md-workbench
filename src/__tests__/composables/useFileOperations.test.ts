@@ -18,7 +18,7 @@ const mockRemove = vi.fn();
 const mockExists = vi.fn();
 const mockOpenDialog = vi.fn();
 const mockSaveDialog = vi.fn();
-const mockOpenShell = vi.fn();
+const mockOpenExternal = vi.fn();
 vi.mock('../../services/documentText', () => ({
   readTextFile: (...args: unknown[]) => mockReadTextFile(...args),
 }));
@@ -45,8 +45,8 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   save: (...args: unknown[]) => mockSaveDialog(...args),
 }));
 
-vi.mock('@tauri-apps/plugin-shell', () => ({
-  open: (...args: unknown[]) => mockOpenShell(...args),
+vi.mock('../../services/nativeExternalLink', () => ({
+  openExternal: (...args: unknown[]) => mockOpenExternal(...args),
 }));
 
 vi.mock('@tauri-apps/api/window', () => ({
@@ -890,6 +890,34 @@ describe('useFileOperations', () => {
       expect(operations.isLoadingFile.value).toBe(false);
     });
 
+    it('reselects current native authority for an existing dirty tab without replacing source', async () => {
+      const onFileReselected = vi.fn(async () => {});
+      const { options, tabs, findTabByFilePath, switchToTab } = makeOptions({ pendingMarkdown: 'dirty raw' }, { onFileReselected });
+      findTabByFilePath.mockReturnValue(tabs.value[0] as never);
+      mockPickDocuments.mockResolvedValue([{ id: 'new-grant', path: '/test/file.md' }]);
+      const before = JSON.stringify(tabs.value);
+      await useFileOperations(options).openFile();
+      expect(onFileReselected).toHaveBeenCalledWith(tabs.value[0], 'new-grant');
+      expect(JSON.stringify(tabs.value)).toBe(before);
+      expect(mockNativeRead).not.toHaveBeenCalled();
+      expect(switchToTab).toHaveBeenCalledWith('tab-1');
+    });
+
+    it.each(['close', 'rebind', 'obsolete'])('does not switch to an old selection after pending rebind and %s', async change => {
+      let finish!: () => void;
+      let current = true;
+      const onFileReselected = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+      const { options, tabs, findTabByFilePath, switchToTab } = makeOptions({}, { onFileReselected });
+      Object.assign(options, { isTabOpen: (tab: Tab) => tabs.value.includes(tab) });
+      findTabByFilePath.mockReturnValue(tabs.value[0] as never);
+      const pending = useFileOperations(options).openFileFromPath('/test/file.md', { expectedGrantId: 'new', isCurrent: () => current });
+      if (change === 'close') tabs.value = [];
+      if (change === 'rebind') tabs.value[0].filePath = '/saved-as.md';
+      if (change === 'obsolete') current = false;
+      finish(); await pending;
+      expect(switchToTab).not.toHaveBeenCalled();
+    });
+
     it('native picker cancellation preserves the active document', async () => {
       const { options, tabs } = makeOptions();
       const before = JSON.stringify(tabs.value);
@@ -954,8 +982,9 @@ describe('useFileOperations', () => {
 
     it.each(['path', 'link'])('reuses a tab created by another %s open during the pending read', async (entry) => {
       const onFileOpened = vi.fn();
-      const { options, createNewTab, switchToTab, findTabByFilePath } = makeOptions({}, { onFileOpened });
-      findTabByFilePath.mockReturnValueOnce(undefined).mockReturnValue(makeTab({ id: 'concurrently-opened' }) as never);
+      const { options, tabs, createNewTab, switchToTab, findTabByFilePath } = makeOptions({}, { onFileOpened });
+      tabs.value.push(makeTab({ id: 'concurrently-opened', filePath: '/test/next.md' }));
+      findTabByFilePath.mockReturnValueOnce(undefined).mockReturnValue(tabs.value[1] as never);
       const operations = useFileOperations(options);
       if (entry === 'path') await operations.openFileFromPath('/test/next.md');
       else await operations.openFileInNewTab('next.md');
@@ -976,9 +1005,8 @@ describe('useFileOperations', () => {
 
   describe('openFileFromPath', () => {
     it('switches to existing tab if file already open', async () => {
-      const existingTab = makeTab({ id: 'existing-tab' });
-      const { options, switchToTab } = makeOptions();
-      (options.findTabByFilePath as ReturnType<typeof vi.fn>).mockReturnValue(existingTab);
+      const { options, tabs, switchToTab } = makeOptions({ id: 'existing-tab' });
+      (options.findTabByFilePath as ReturnType<typeof vi.fn>).mockReturnValue(tabs.value[0]);
 
       const { openFileFromPath } = useFileOperations(options);
       await openFileFromPath('/test/file.md');

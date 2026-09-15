@@ -8,7 +8,6 @@ import { writeFile, exists, remove } from '@tauri-apps/plugin-fs';
 import { readTextFile } from './services/documentText';
 import { nativeFs, type NativeGrant } from './services/nativeFs';
 import { htmlToMarkdown, markdownToHtml } from './utils/markdown-converter';
-import { getDirectoryFromFilePath } from './utils/image-resolver';
 import { useMarkdownImageInlining } from './composables/useMarkdownImageInlining';
 import type { Editor as TiptapEditor } from '@tiptap/vue-3';
 
@@ -36,6 +35,7 @@ import WorkspaceSidebar from './components/WorkspaceSidebar.vue';
 import WorkspaceQuickSwitcher from './components/WorkspaceQuickSwitcher.vue';
 import DocumentSearchBar from './components/DocumentSearchBar.vue';
 import AiPanel from './components/ai/AiPanel.vue';
+import { useAiSnapshotTarget } from './composables/useAiSnapshotRestore';
 import AiFirstRunTooltip from './components/ai/AiFirstRunTooltip.vue';
 import AiTmpRecoveryModal from './components/ai/AiTmpRecoveryModal.vue';
 import ToastNotification from './components/ToastNotification.vue';
@@ -47,7 +47,8 @@ import { useCodeView } from './composables/useCodeView';
 import { useSplitEditor } from './composables/useSplitEditor';
 import { useScrollSync } from './composables/useScrollSync';
 import { useSettings } from './composables/useSettings';
-import { useSplitView } from './composables/useSplitView';
+import { useSplitView, getTabImageOwner, getTabImageAuthorityRevision, refreshTabImageAuthority, resetTabImageOwner } from './composables/useSplitView';
+import { serializeEditorHtml } from './utils/editor-image-dom';
 import { useFileOperations, type OpenDocumentSelection } from './composables/useFileOperations';
 import { useCloseConfirmation } from './composables/useCloseConfirmation';
 import { useWindowManager } from './composables/useWindowManager';
@@ -267,7 +268,7 @@ const {
   handleConflictKeepLocal, handleConflictLoadExternal, handleConflictMerge,
   manualReload,
   reloadTabContent,
-  watchFile, unwatchFile, unwatchAll, markSaveStart, markSaveEnd, markSaveAbort,
+  watchFile, restartWatch, monitoringError, unwatchFile, unwatchAll, markSaveStart, markSaveEnd, markSaveAbort,
 } = useFileReload({
   activePaneId,
   currentFile,
@@ -292,6 +293,14 @@ const {
 // Shown when the user tries to save but the file was modified externally since last load/save.
 // Reuses FileConflictModal with "Save Anyway" as the left-button label.
 const showPreSaveConflictModal = ref(false);
+// Keep the first dialog mounted until its answer; the other request retains its
+// existing state/Promise and cannot intercept clicks or consume Escape.
+const visibleConflictKind = ref<'save' | 'watch' | null>(null);
+watch([showPreSaveConflictModal, showConflictModal], ([save, external]) => {
+  if ((visibleConflictKind.value === 'save' && save)
+    || (visibleConflictKind.value === 'watch' && external)) return;
+  visibleConflictKind.value = save ? 'save' : external ? 'watch' : null;
+}, { flush: 'sync' });
 const preSaveConflictFilePath = ref('');
 const preSaveConflictFileName = ref('');
 const preSaveConflictDiffLines = ref<import('./composables/useDiffPreview').DiffLine[]>([]);
@@ -534,7 +543,15 @@ const {
   markSaveEnd: (filePath: string, content: string) => markSaveEnd(filePath, content),
   markSaveAbort: (filePath: string) => markSaveAbort(filePath),
   onOpenError: reportDocumentOpenError,
+  onFileReselected: async (tab, grantId) => {
+    if (isTabOpen(tab) && tab.filePath) {
+      refreshTabImageAuthority(tab);
+      await restartWatch(tab.filePath, tab.originalMarkdown ?? '', grantId);
+    }
+  },
   onFileOpened: (filePath: string, content: string) => {
+    const opened = findTabByFilePathSplit(filePath)?.tab;
+    if (opened) resetTabImageOwner(opened);
     watchFile(filePath, content);
     const fileName = filePath.split(/[/\\]/).pop() ?? filePath;
     addRecentFile(filePath, fileName);
@@ -549,7 +566,7 @@ const {
   onAfterSave: ({ tab, oldPath, filePath, content }) => {
     if (!isTabOpen(tab) || tab.filePath !== filePath) return;
     if (oldPath && oldPath !== filePath && !findTabByFilePathSplit(oldPath)) unwatchFile(oldPath);
-    watchFile(filePath, content);
+    watchFile(filePath, content, true);
   },
   onAnchorNotFound: (anchor: string) => {
     showToastNotification(t.value.anchorNotFound(anchor), 'warning');
@@ -618,11 +635,11 @@ async function openMarpDialog() {
   const raw = override ?? htmlToMarkdown(getEditorContent() ?? '');
   // Inline local images as data URIs: the deck renders inside a sandboxed
   // iframe (srcdoc) with no base URL, so relative/local paths won't load.
-  const baseDir = tab?.filePath ? getDirectoryFromFilePath(tab.filePath) : undefined;
-  await marpDialogImages.render(raw, baseDir, rendered => {
-    marpTitle.value = title;
+  marpTitle.value = title;
+  marpMarkdown.value = '';
+  showMarpDialog.value = true;
+  await marpDialogImages.render(raw, marpDocumentImageContext(), rendered => {
     marpMarkdown.value = rendered;
-    showMarpDialog.value = true;
   });
 }
 
@@ -757,10 +774,8 @@ const marpPreviewVisible = computed(
 
 async function refreshMarpLive() {
   if (!marpPreviewVisible.value) return;
-  const tab = activeTab.value;
   const raw = htmlToMarkdown(getEditorContent() ?? '');
-  const baseDir = tab?.filePath ? getDirectoryFromFilePath(tab.filePath) : undefined;
-  await marpLiveImages.render(raw, baseDir, rendered => { marpLiveMarkdown.value = rendered; });
+  await marpLiveImages.render(raw, marpDocumentImageContext(), rendered => { marpLiveMarkdown.value = rendered; });
 }
 
 function scheduleMarpLive() {
@@ -788,7 +803,10 @@ async function toggleMarpPreview() {
   }
 }
 
-watch(() => activeTab.value?.content, () => {
+watch(() => {
+  const tab = activeTab.value;
+  return [tab, tab?.content, tab ? getTabImageOwner(tab) : undefined, tab ? getTabImageAuthorityRevision(tab) : 0];
+}, () => {
   if (marpPreviewVisible.value) scheduleMarpLive();
 });
 
@@ -925,14 +943,20 @@ const scrollSync = useScrollSync();
 // can refuse to persist a source belonging to a different tab.
 const splitSourceTabId = ref<string | null>(null);
 
+function marpDocumentImageContext() {
+  const tab = activeTab.value;
+  return { owner: tab ? getTabImageOwner(tab) : undefined, path: tab?.filePath ?? null,
+    revision: tab ? getTabImageAuthorityRevision(tab) : 0 };
+}
 function marpImageContext() {
   const tab = activeTab.value;
   return [tab, tab?.id, tab?.filePath, tab?.content, tab?.pendingMarkdown,
+    tab ? getTabImageOwner(tab) : undefined, tab ? getTabImageAuthorityRevision(tab) : 0,
     activePaneId.value, editingEnabled.value, codeView.value, codeContent.value,
     splitEditorActive.value, splitSourceTabId.value, splitMarkdownSource.value];
 }
-const marpDialogImages = useMarkdownImageInlining(() => [...marpImageContext(), showMarpDialog.value]);
-const marpLiveImages = useMarkdownImageInlining(() => [...marpImageContext(), marpPreviewVisible.value]);
+const marpDialogImages = useMarkdownImageInlining(() => [...marpImageContext(), showMarpDialog.value], () => { marpMarkdown.value = ''; });
+const marpLiveImages = useMarkdownImageInlining(() => [...marpImageContext(), marpPreviewVisible.value], () => { marpLiveMarkdown.value = ''; });
 
 const enterSplitEditor = (html: string): void => {
   const tab = activeTab.value;
@@ -993,7 +1017,7 @@ const toggleSplitEditor = async () => {
     }
     // Read the live editor HTML so the latest (still-debounced) edit isn't lost
     // when seeding the markdown source.
-    const html = editorInstance.value?.getHTML() ?? activeTab.value?.content ?? '<p></p>';
+    const html = editorInstance.value ? serializeEditorHtml(editorInstance.value.state.doc) : activeTab.value?.content ?? '<p></p>';
     if (activeTab.value) {
       activeTab.value.content = html;
     }
@@ -1052,6 +1076,7 @@ const { handleDrop: handleImageDrop } = useImageDrop({
   codeView,
   codeEditor: getCodeEditor,
   activeFilePath: () => activeTab.value?.filePath ?? null,
+  activeImageOwner: () => getTabImageOwner(activeTab.value),
   findVisualTargetAt: (x, y) => splitContainerRef.value?.findVisualTargetAt?.(x, y) ?? null,
   onImagesImported: (isCurrent) => { void workspace.refreshAll(isCurrent); },
 });
@@ -1281,6 +1306,18 @@ function onAiApplyContent(content: string) {
     (tab as { originalMarkdown: string | null; hasChanges: boolean }).hasChanges = false;
   }
 }
+
+// Capture live App state rather than asynchronous panel props. The synchronous
+// revision also invalidates edit/revert and switch-away/back within one tick.
+const captureAiSnapshotTarget = useAiSnapshotTarget(() => ({
+  document: activeTab.value,
+  path: activeTab.value?.filePath ?? '',
+  enabled: editingEnabled.value && aiPanelOpen.value,
+  revisionInputs: aiPanelOpen.value ? [activeTab.value?.content, activeTab.value?.pendingMarkdown,
+    activeTab.value?.originalMarkdown, activeTab.value?.hasChanges,
+    activeTab.value?.editorMode, codeView.value, codeContent.value,
+    splitEditorActive.value, splitMarkdownSource.value, getEditorContent()] : [],
+}), onAiApplyContent);
 
 function onAiShowDiff(_orig: string, candidate: string) {
   if (!editingEnabled.value) return;
@@ -1917,8 +1954,16 @@ const openFileWithCrossWindowCheck = async (filePath: string, selection?: OpenDo
     const localResult = findTabByFilePathSplit(filePath);
     if (localResult) {
       console.log(`[App] File already open locally, switching to tab:`, filePath);
-      splitState.value.activePaneId = localResult.pane.id;
-      switchTab(localResult.pane.id, localResult.tab.id);
+      if (selection?.expectedGrantId) {
+        refreshTabImageAuthority(localResult.tab);
+        await restartWatch(filePath, localResult.tab.originalMarkdown ?? '', selection.expectedGrantId);
+        if (selection.isCurrent?.() === false || !isTabOpen(localResult.tab) || localResult.tab.filePath !== filePath) return;
+      }
+      const currentPane = splitState.value.panes.find(pane => pane.tabs.some(tab => tab === localResult.tab && tab.filePath === filePath));
+      const currentLocation = currentPane ? { pane: currentPane, tab: localResult.tab } : undefined;
+      if (!currentLocation) return;
+      splitState.value.activePaneId = currentLocation.pane.id;
+      switchTab(currentLocation.pane.id, currentLocation.tab.id);
       return;
     }
 
@@ -1951,7 +1996,7 @@ const openFileWithCrossWindowCheck = async (filePath: string, selection?: OpenDo
 const openFileWithCrossWindowDialog = async (): Promise<void> => {
   try {
     const selected = await nativeFs.pickDocuments();
-    for (const grant of selected) await openFileWithCrossWindowCheck(grant.path);
+    for (const grant of selected) await openFileWithCrossWindowCheck(grant.path, { expectedGrantId: grant.id });
   } catch (error) {
     console.error('[App] Error opening file dialog:', error);
     reportDocumentOpenError(error);
@@ -2006,9 +2051,11 @@ onMounted(async () => {
       if (paths.length > 0) hasExplicitFile = true;
       for (const path of paths) {
         try {
-          await openFileWithCrossWindowCheck(path);
+          const { grantId } = await nativeFs.resolveDocumentReadGrant(path);
+          await openFileWithCrossWindowCheck(path, { expectedGrantId: grantId });
         } catch (error) {
           console.error('[App] Could not open native file:', path, error);
+          reportDocumentOpenError(error);
         }
       }
     }).catch(error => console.error('[App] Could not drain native open queue:', error));
@@ -2051,7 +2098,19 @@ onMounted(async () => {
           success = false;
           console.error('[App] Could not acknowledge tab transfer:', error);
         }
-        if (!success) showToastNotification(t.value.windowTransferReceiveFailed, 'warning');
+        if (success) {
+          // Only a completed host transfer may rebind a previously open tab.
+          const received = findTabByFilePathSplit(transfer.file_path)?.tab;
+          if (received) {
+            try {
+              const { grantId } = await nativeFs.resolveDocumentReadGrant(transfer.file_path);
+              if (isTabOpen(received) && received.filePath === transfer.file_path) {
+                refreshTabImageAuthority(received);
+                await restartWatch(transfer.file_path, received.originalMarkdown ?? '', grantId);
+              }
+            } catch (error) { reportDocumentOpenError(error); }
+          }
+        } else showToastNotification(t.value.windowTransferReceiveFailed, 'warning');
       }
     }).catch(error => {
       console.error('[App] Could not drain tab transfers:', error);
@@ -2236,6 +2295,11 @@ onUnmounted(async () => {
       {{ isolatedReadMode ? (activeTab.editorMode ? 'Return to editor' : 'Edit') : 'Isolated read-only preview' }}
     </button>
 
+    <div v-if="monitoringError" class="monitoring-warning" role="status" data-testid="monitoring-warning">
+      <span>{{ monitoringError }}</span>
+      <button type="button" @click="openFileWithCrossWindowDialog">{{ t.openFile }}</button>
+    </div>
+
     <!-- Main content area with optional left bar -->
     <div
       class="main-area"
@@ -2319,6 +2383,8 @@ onUnmounted(async () => {
               :key="activeTab?.id"
               :model-value="splitPreviewHtml"
               :document-id="activeTab?.id"
+              :image-owner="getTabImageOwner(activeTab)"
+              :image-authority-revision="getTabImageAuthorityRevision(activeTab)"
               :source-markdown="splitMarkdownSource"
               :file-path="activeTab?.filePath || null"
               :editable="false"
@@ -2393,6 +2459,8 @@ onUnmounted(async () => {
           ref="marpLivePreviewRef"
           class="marp-live-pane"
           :markdown="marpLiveMarkdown"
+          @scroll-ready="attachMarpScroll"
+          @scroll-reset="marpScrollSync.detach"
         />
       </div>
 
@@ -2567,6 +2635,7 @@ onUnmounted(async () => {
       v-if="editingEnabled && aiPanelOpen"
       :open="aiPanelOpen"
       :document-id="activeTab?.id || ''"
+      :capture-snapshot-target="captureAiSnapshotTarget"
       :doc-path="aiDocPath"
       :doc-content="aiDocContent"
       :selection-range="aiSelectionRange"
@@ -2576,7 +2645,6 @@ onUnmounted(async () => {
       :workspace-root="aiWorkspaceRoot"
       @close="closeAiPanel"
       @layout-change="aiPanelReservedSide = $event"
-      @apply-content="onAiApplyContent"
       @show-diff="onAiShowDiff"
       @link-click="handleLinkClick"
     />
@@ -2610,7 +2678,7 @@ onUnmounted(async () => {
 
     <!-- Pre-Save Conflict Modal (file changed on disk since last load/save) -->
     <FileConflictModal
-      v-if="showPreSaveConflictModal"
+      v-if="showPreSaveConflictModal && visibleConflictKind === 'save'"
       :file-name="preSaveConflictFileName"
       :file-path="preSaveConflictFilePath"
       :diff-lines="preSaveConflictDiffLines"
@@ -2624,7 +2692,7 @@ onUnmounted(async () => {
 
     <!-- File Conflict Modal (watcher-based external change) -->
     <FileConflictModal
-      v-if="showConflictModal"
+      v-if="showConflictModal && visibleConflictKind === 'watch'"
       :key="conflictKey"
       :file-name="conflictFileName"
       :file-path="conflictFilePath"
@@ -2694,6 +2762,8 @@ onUnmounted(async () => {
 .main-area--reserve-ai-left {
   padding-left: var(--ai-panel-width);
 }
+
+.monitoring-warning { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: #fff4d6; color: #513500; }
 
 .editor-area {
   display: flex;

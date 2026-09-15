@@ -1,13 +1,35 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { htmlToMarkdown, markdownToHtml } from '../../utils/markdown-converter';
 import {
   safeHtmlRenderableTagSourceLines,
   safeHtmlTagTokens,
   sanitizeSafeHtml,
   sanitizeSafeInlineHtmlTag,
+  isStandaloneSafeHtmlBlock,
 } from '../../utils/safe-html';
 
 describe('safe README HTML', () => {
+  it('keeps raw image parsing and serialization in the template owner document', () => {
+    const parse = vi.spyOn(DOMParser.prototype, 'parseFromString').mockImplementation(() => {
+      throw new Error('Resource-capable parser used');
+    });
+    const create = vi.spyOn(document, 'createElement');
+    try {
+      const raw = '<a href="https://example.com"><img src="images/日本語.png" alt="図"></a>';
+      expect(isStandaloneSafeHtmlBlock(raw)).toBe(true);
+      expect(sanitizeSafeHtml(raw)).toBe('<a href="https://example.com"><img src="images/日本語.png" data-original-src="images/日本語.png" alt="図" class="editor-image safe-html-image"></a>');
+      expect(isStandaloneSafeHtmlBlock('<img src="one.png"><img src="two.png">')).toBe(false);
+      expect(sanitizeSafeHtml('<script><img src="hidden.png"></script><p>Visible</p>')).toBe('<p>Visible</p>');
+      // Only templates may be created through the browsing document. Raw-src
+      // output elements must stay in its separate, inert content owner document.
+      expect(create.mock.calls.every(([tag]) => tag === 'template')).toBe(true);
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+      create.mockRestore();
+    }
+  });
+
   it('preserves centered image blocks exactly through visual HTML', () => {
     const markdown = '<p align="center">\n  <img src="assets/banner.jpeg" alt="Banner" width="600">\n</p>';
     const html = markdownToHtml(markdown);

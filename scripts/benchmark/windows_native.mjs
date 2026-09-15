@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import os from 'node:os';
 import { summarizeNative } from './native_summary.mjs';
 import { exerciseNativeAuthority } from './native_authority.mjs';
+import { exerciseNativeOpenQueue } from './native_open_queue.mjs';
 
 if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') {
   throw new Error('Restricted to disposable GitHub-hosted Windows runners');
@@ -66,14 +67,16 @@ async function watchMemory(pid, name) {
     return JSON.parse(await readFile(join(directory, 'memory.json'), 'utf8'));
   };
 }
-function launch(fixture) {
-  const child = spawn(binary, [fixture.path], { env, stdio: 'ignore' });
+function launchPaths(paths) {
+  // Node quotes each Windows argv item; no shell or manual quoting of paths.
+  const child = spawn(binary, paths, { env, stdio: 'ignore' });
   child.on('error', () => {});
   if (!child.pid) throw new Error('Native process launch failed');
   owned.set(child.pid, child);
   child.once('exit', () => owned.delete(child.pid));
   return child;
 }
+function launch(fixture) { return launchPaths([fixture.path]); }
 async function connect() {
   const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
@@ -216,6 +219,12 @@ try {
   }
   await browser.close();
   await killOwned(child.pid);
+  if (appName === 'MD-Workbench') {
+    // Fresh process and disjoint fixtures, after all 30/50 timed observations.
+    report.native_open_queue = {};
+    await exerciseNativeOpenQueue({ out, launchPaths, connect, killOwned, observe, result: report.native_open_queue });
+    await verifyInputs();
+  }
   report.status = 'passed';
 } catch (error) {
   if (currentTrial) trials.push({ ...currentTrial, status: 'failed', error: String(error) });

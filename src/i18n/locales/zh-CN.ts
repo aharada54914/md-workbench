@@ -1,6 +1,13 @@
 import type { Translations } from '../index';
 
 const zhCN: Translations = {
+  imageWindowTransferBlocked: "此文档含有暂时无法移至其他窗口的导入图片。文档已保留在当前窗口。",
+  clipboardOperationFailed: "无法完成剪贴板操作。",
+  clipboardCompositionPending: "请先完成文字输入，再重试剪贴板操作。",
+  imageImportFailed: "无法添加此图片。",
+  imageTooLarge: "此图片超过 8 MiB 限制。",
+  imageBudgetExceeded: "图片内存已达上限。请关闭其他文档或使用更小的图片。",
+  imagePathConflict: "此路径已对应另一张导入的图片。请先重命名新图片再添加。",
   mathInline: '行内公式',
   mathBlock: '块公式',
   mathEdit: '编辑公式',
@@ -191,6 +198,7 @@ const zhCN: Translations = {
   workspaceMutationUnsupported: "此项目或文件系统不支持该操作。",
   openPermissionRequired: "需要文档访问权限。请通过“打开文件”重新选择此文档。",
   openDocumentFailed: "无法打开文档。",
+  externalLinkFailed: "无法在浏览器中打开链接。",
   openFile: '打开 Markdown 文件',
   saveFile: '保存 Markdown 文件',
   markdownFiles: 'Markdown 文件',
@@ -289,6 +297,9 @@ const zhCN: Translations = {
   preSaveConflict: '文件已修改',
   preSaveConflictMessage: '自上次加载或保存以来，文件已被外部修改。',
   saveAnyway: '仍然保存',
+  fileSavedMonitoringPermission: (path: string) => `已保存，但 ${path} 的外部更改监视已暂停。请通过“打开文件”重新选择。`,
+  fileMonitoringPermission: (path: string) => `外部更改监控已暂停： ${path}. 请使用“打开文件”重新选择。`,
+  fileMonitoringError: (path: string) => `无法读取外部更改： ${path}.`,
   fileDeletedExternally: (fileName: string) => `"${fileName}" 已被外部删除。`,
   anchorNotFound: (anchor: string) => `没有标题与 "#${anchor}" 匹配。`,
 

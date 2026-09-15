@@ -1,0 +1,16 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import { readManifest, verifyAssets, parseArgs, verifyObservation, sha256, WAR_SHA256 } from './contract.mjs';
+const args = parseArgs(process.argv.slice(2), ['--work-dir', '--report']);
+assert(args['--work-dir'] && args['--report'], 'Require --work-dir and --report');
+const workDir = await fs.realpath(args['--work-dir']);
+const war = path.join(workDir, 'drawio.war');
+assert.equal((await fs.stat(war)).size, 53_739_401);
+assert.equal(sha256(await fs.readFile(war)), WAR_SHA256);
+await verifyAssets(workDir, await readManifest());
+assert((await fs.stat(args['--report'])).size <= 1_000_000, 'Report too large');
+const report = JSON.parse(await fs.readFile(args['--report'], 'utf8'));
+assert.equal(report.mode, 'approved-xml-negative');
+verifyObservation(report);
+console.log('PASS: fixed WAR/assets and finite Chromium observations. Not T16 acceptance.');
