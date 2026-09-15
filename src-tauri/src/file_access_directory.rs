@@ -7,6 +7,7 @@ pub(crate) const MAX_DIRECTORY_ENTRIES: usize = 10_000;
 pub(crate) struct DirectoryEntry {
     pub(crate) name: String,
     pub(crate) is_directory: bool,
+    pub(crate) modified: u64,
 }
 
 #[derive(Debug)]
@@ -15,6 +16,16 @@ pub(crate) struct DirectoryListing {
     /// Nonportable names, links and special files cannot be safely opened by
     /// the broker. Surface the omission count instead of hiding incomplete data.
     pub(crate) omitted: usize,
+    pub(crate) modified: u64,
+}
+
+fn modified_millis(metadata: &cap_std::fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.into_std().duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 impl FileAccess {
@@ -51,6 +62,7 @@ impl FileAccess {
         let mut listing = DirectoryListing {
             entries: Vec::new(),
             omitted: 0,
+            modified: modified_millis(&directory.dir_metadata()?),
         };
         for (index, entry) in directory.entries()?.enumerate() {
             // Count every scanned entry, including ones excluded below. Never
@@ -67,9 +79,11 @@ impl FileAccess {
                 listing.omitted += 1;
                 continue;
             };
-            // file_type does not follow symlinks. No ambient absolute path is
-            // constructed, and listing a link never grants its target access.
-            let kind = entry.file_type()?;
+            // DirEntry metadata is nofollow and anchored to this enumeration.
+            // Use the same snapshot for type and mtime; absolute paths are never
+            // reopened and symlink target metadata is never requested.
+            let metadata = entry.metadata()?;
+            let kind = metadata.file_type();
             if kind.is_symlink() || (!kind.is_file() && !kind.is_dir()) {
                 listing.omitted += 1;
                 continue;
@@ -77,6 +91,7 @@ impl FileAccess {
             listing.entries.push(DirectoryEntry {
                 name: name.into(),
                 is_directory: kind.is_dir(),
+                modified: modified_millis(&metadata),
             });
         }
         listing.entries.sort_by(|a, b| {

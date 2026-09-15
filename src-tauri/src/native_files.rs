@@ -299,3 +299,7 @@ pub(crate) use ack::*;
 #[path = "native_files_path.rs"]
 mod path;
 pub(crate) use path::*;
+
+#[path = "native_files_workspace.rs"]
+mod workspace;
+pub(crate) use workspace::*;

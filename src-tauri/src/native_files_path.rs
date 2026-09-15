@@ -53,7 +53,7 @@ fn has_spelled_prefix(path: &str, root: &str) -> bool {
     })
 }
 impl NativeState {
-    fn resolve_owned_path(
+    pub(super) fn resolve_owned_path(
         &self,
         label: &str,
         path: &str,

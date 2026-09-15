@@ -132,6 +132,7 @@ by the existing memory-backed custom protocol without custom IPC.
 | `native_get_grant({path})` | `NativeGrant` or `null` | Existing caller-owned metadata lookup only; no disk I/O or new grant. |
 | `native_read_grant({id, relative, limit})` | `number[]` | Reads bytes through the owned grant on a blocking worker; `relative: ""` for an exact file, limit at most 67108864. |
 | `native_read_path({path, limit})` | `number[]` | Existing caller-owned exact READ metadata first, otherwise the most specific owned Workspace READ prefix. Uses retained-handle reads; limit at most 67108864. |
+| `read_workspace_tree({root})` | Existing `WorkspaceNode` tree (`name`, `path`, `kind`, `children`, `modified`). | Caller-owned Workspace READ only; typed errors, bounded retained-handle traversal. |
 | `native_list_directory({path, limit})` | `{entries: {name, isDirectory}[], omitted}` | Direct children of an owned Workspace READ root or subdirectory; at most 10000 scanned entries. |
 
 Commands reject `{code, message}`. Branch on `code`, one of
@@ -161,6 +162,43 @@ outside the portable policy. Limits count all scanned entries including omission
 an exceeded count rejects with `file_too_large` instead of returning a silently
 partial list. List access is intentionally restricted to Workspace grants in this
 IPC stage even though the host core can also list Resource directories.
+
+### Workspace tree migration
+
+`read_workspace_tree` no longer grants filesystem scope from its `root` string,
+including roots restored from local storage. Native workspace selection must
+already have granted READ access to the actual caller window. The command captures
+that window's generation, revalidates on a blocking worker, and keeps the native
+registry lock through the entire walk. A closed/reused window cannot use queued work.
+
+Root lookup chooses one existing Workspace grant; every recursive directory list
+uses that grant's retained handle and a validated relative path. Absolute node
+paths are display/routing metadata, never I/O authority. The tree is not an atomic
+filesystem snapshot: concurrent rename/removal can reject the operation, and errors
+never switch to ambient I/O or a different grant. Symlinks/junctions, special files
+and nonportable names are omitted by the core's nofollow enumeration.
+
+Limits are 50,000 total scanned entries, 10,000 per directory, and directory depth
+50 with the requested root at depth 0 (files within depth 50 remain visible).
+The returned tree also has a conservative 32 MiB JSON budget. Before creating each
+node, including the requested root, the host reserves six times its name/path UTF-8
+byte lengths plus 256 bytes for keys, values and punctuation. Checked arithmetic
+rejects overflow; the shared budget rejects an over-limit tree with `file_too_large`
+before returning any partial result. Actual serialized bytes may be smaller.
+Hidden names, non-document files and omitted entries count toward scanning limits;
+hidden directories are not entered. Exceeding any limit rejects the entire request
+with `file_too_large`, and other I/O failures reject with `filesystem_error` rather
+than returning a partial successful tree.
+
+The existing DTO and UI filters remain: dot-prefixed names and `node_modules` are
+hidden, folders are shown, and files use Markdown (`md`, `markdown`, `mdx`) or image
+(`png`, `jpg`, `jpeg`, `gif`, `svg`, `webp`, `bmp`) extensions without case sensitivity.
+Folders precede files, then names sort without case sensitivity. An explicitly
+selected hidden root remains usable. `modified` is milliseconds since Unix epoch
+(or 0 when unavailable), read from nofollow entry metadata or the opened directory
+handle. Host-only directory metadata additions do not change `native_list_directory`'s
+JSON shape. Create, search, reveal, save and broad plugin permissions remain separate
+migration work; this step does not complete the filesystem security issue.
 
 **Current save integration constraint:** metadata lookup stores the latest grant
 per native alias. Selecting the same exact path with the Save picker can replace
@@ -272,3 +310,10 @@ separator and unselected UNC regression, plus two spellings re-selected against
 different retained roots; actual Windows execution remains required.
 The macOS full native suite passed 261 tests after the read/list command addition
 and equivalent-alias selection regression fix.
+
+The workspace migration adds tests for unselected/persisted/foreign roots, READ
+and grant-kind restrictions, hidden-root selection, filtering/sorting/mtime/DTO,
+total scan and real depth bounds, stale generations, retained Unix roots, and
+Windows junction/separator handling. Output-size boundary, JSON escaping and overflow regressions are also covered.
+The macOS native suite passes 271 tests;
+Windows/Linux native and packaged UI execution remain CI acceptance work.

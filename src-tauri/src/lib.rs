@@ -2,7 +2,6 @@ use std::sync::Mutex;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use tauri::{Manager, Emitter, WebviewUrl, WebviewWindowBuilder, RunEvent, WindowEvent};
-use tauri_plugin_fs::FsExt;
 use serde::Serialize;
 use font_kit::source::SystemSource;
 
@@ -310,153 +309,13 @@ fn ai_image_save(
 
 // ============== Workspace (folder browser) commands ==============
 
-#[derive(Serialize)]
-struct WorkspaceNode {
-    name: String,
-    path: String,
-    /// "file" or "folder"
-    kind: &'static str,
-    /// None for files; Some for folders (may be empty).
-    children: Option<Vec<WorkspaceNode>>,
-    /// Last-modified time in milliseconds since the Unix epoch (0 if unavailable).
-    /// Used by the frontend to offer "sort by modified" in the workspace tree.
-    modified: u64,
-}
-
-const WORKSPACE_TREE_MAX_DEPTH: usize = 50;
-
 fn is_workspace_markdown(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".mdx")
 }
 
-fn is_workspace_image(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    [".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp"]
-        .iter()
-        .any(|ext| lower.ends_with(ext))
-}
-
-fn is_workspace_visible(name: &str) -> bool {
-    is_workspace_markdown(name) || is_workspace_image(name)
-}
-
 fn is_workspace_hidden(name: &str) -> bool {
     name.starts_with('.') || name == "node_modules"
-}
-
-fn read_workspace_subtree(path: &Path, depth: usize) -> Result<WorkspaceNode, String> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|e| format!("read metadata for {}: {}", path.display(), e))?;
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned());
-    let path_str = path.to_string_lossy().into_owned();
-    let modified_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-
-    if metadata.is_file() {
-        return Ok(WorkspaceNode {
-            name,
-            path: path_str,
-            kind: "file",
-            children: None,
-            modified: modified_ms,
-        });
-    }
-
-    if !metadata.is_dir() {
-        return Err(format!("path is neither file nor directory: {}", path.display()));
-    }
-
-    let mut children: Vec<WorkspaceNode> = Vec::new();
-    if depth < WORKSPACE_TREE_MAX_DEPTH {
-        let entries = std::fs::read_dir(path)
-            .map_err(|e| format!("read_dir {}: {}", path.display(), e))?;
-        let mut folders: Vec<PathBuf> = Vec::new();
-        let mut files: Vec<PathBuf> = Vec::new();
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            let entry_name = entry.file_name().to_string_lossy().into_owned();
-            if is_workspace_hidden(&entry_name) {
-                continue;
-            }
-            let entry_type = match entry.file_type() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if entry_type.is_dir() {
-                folders.push(entry_path);
-            } else if entry_type.is_file() {
-                if is_workspace_visible(&entry_name) {
-                    files.push(entry_path);
-                }
-            }
-        }
-        // Folders first then files, both alphabetical (case-insensitive).
-        folders.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default());
-        files.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default());
-
-        for folder in folders {
-            match read_workspace_subtree(&folder, depth + 1) {
-                Ok(node) => children.push(node),
-                Err(_) => {
-                    // Skip folders we cannot read (perms, broken symlinks, etc.)
-                    continue;
-                }
-            }
-        }
-        for file in files {
-            if let Ok(node) = read_workspace_subtree(&file, depth + 1) {
-                children.push(node);
-            }
-        }
-    }
-
-    Ok(WorkspaceNode {
-        name,
-        path: path_str,
-        kind: "folder",
-        children: Some(children),
-        modified: modified_ms,
-    })
-}
-
-#[tauri::command]
-async fn read_workspace_tree(app: tauri::AppHandle, root: String) -> Result<WorkspaceNode, String> {
-    let requested_path = PathBuf::from(&root);
-    if !requested_path.exists() {
-        return Err(format!("workspace path does not exist: {}", root));
-    }
-    if !requested_path.is_dir() {
-        return Err(format!("workspace path is not a directory: {}", root));
-    }
-
-    // The dialog plugin grants a selected folder to the fs plugin only for the
-    // current process. Restored workspaces do not pass through the dialog, and
-    // on Unix the generic `**` capability deliberately excludes dot-prefixed
-    // path segments. Re-grant the persisted workspace root on every tree load.
-    // Canonicalization matters for visible symlinks pointing into hidden dirs:
-    // plugin-fs canonicalizes a file before checking its runtime scope too.
-    let scoped_path = std::fs::canonicalize(&requested_path)
-        .map_err(|e| format!("canonicalize workspace {}: {}", root, e))?;
-    app.fs_scope()
-        .allow_directory(&scoped_path, true)
-        .map_err(|e| format!("allow workspace {}: {}", root, e))?;
-
-    // Walking a large folder is CPU/IO bound and can take seconds. Run it on
-    // tokio's blocking pool so the Tauri command thread (and the renderer
-    // IPC) stays responsive — the UI shows its loading state in the meantime.
-    tokio::task::spawn_blocking(move || {
-        read_workspace_subtree(&requested_path, 0)
-    })
-    .await
-    .map_err(|e| format!("worker join: {}", e))?
 }
 
 #[tauri::command]
@@ -963,7 +822,7 @@ pub fn run() {
             check_file_open,
             focus_window_with_file,
             list_system_fonts,
-            read_workspace_tree,
+            native_files::read_workspace_tree,
             create_md_file,
             create_folder,
             rename_path,

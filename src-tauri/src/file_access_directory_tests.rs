@@ -41,18 +41,15 @@ fn lists_direct_children_and_nested_unicode_directory_without_changing_bytes() {
         .list_directory("main", grant.id, Path::new(""), 2)
         .unwrap();
     assert_eq!(
-        listing.entries,
-        vec![
-            DirectoryEntry {
-                name: "日本語 folder".into(),
-                is_directory: true
-            },
-            DirectoryEntry {
-                name: "z.md".into(),
-                is_directory: false
-            },
-        ]
+        listing
+            .entries
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.is_directory))
+            .collect::<Vec<_>>(),
+        vec![("日本語 folder", true), ("z.md", false)]
     );
+    assert!(listing.modified > 0);
+    assert!(listing.entries.iter().all(|entry| entry.modified > 0));
     assert_eq!(listing.omitted, 0);
     let nested = access
         .list_directory("main", grant.id, Path::new("日本語 folder"), 2)

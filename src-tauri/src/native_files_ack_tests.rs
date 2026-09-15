@@ -276,7 +276,12 @@ fn duplicate_pending_aliases_are_rejected_and_failed_copy_restores_existing_targ
         .unwrap();
     let previous = state.lookup("window-1", &fixture.path()).unwrap().unwrap();
     // A native-selected spelling differs from the canonical metadata spelling.
+    #[cfg(not(windows))]
     let alias = fixture.0.join(".").join("doc.md");
+    // Joining a dot onto a Windows verbatim path normalizes it away. Use
+    // the ordinary drive spelling to retain a distinct, equivalent alias.
+    #[cfg(windows)]
+    let alias = PathBuf::from(fixture.path().strip_prefix(r"\\?\").unwrap());
     state
         .select(
             "main",
