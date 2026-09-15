@@ -5,7 +5,7 @@ use crate::file_access::GrantId;
 pub(crate) struct FileCopy {
     target: String,
     generation: Uuid,
-    id: GrantId,
+    pub(super) id: GrantId,
     previous: Vec<((String, String), Option<GrantInfo>)>,
 }
 impl NativeState {

@@ -248,7 +248,7 @@ fn destruction_and_reused_label_deny_a_previously_scheduled_read_or_list() {
     );
 }
 #[test]
-fn write_only_latest_metadata_is_not_upgraded_from_a_hidden_older_read_grant() {
+fn save_selection_keeps_the_current_document_read_binding() {
     let fixture = Fixture::new();
     let mut state = fixture.state();
     fixture.grant(&mut state, "work/doc.md", Purpose::Document);
@@ -256,18 +256,22 @@ fn write_only_latest_metadata_is_not_upgraded_from_a_hidden_older_read_grant() {
         .lookup("main", &fixture.path("work/doc.md"))
         .unwrap()
         .unwrap();
+    let before = read(&state, "main", &fixture.path("work/doc.md"), 100).unwrap();
     fixture.grant(&mut state, "work/doc.md", Purpose::Save);
     assert_eq!(
-        read(&state, "main", &fixture.path("work/doc.md"), 100).unwrap_err(),
-        "permission_required"
+        read(&state, "main", &fixture.path("work/doc.md"), 100).unwrap(),
+        before
     );
-    // The prior UUID still exists; path lookup deliberately does not search hidden
-    // grant history. Purpose-specific save lookup is a separate migration step.
-    assert!(state
-        .access
-        .read("main", GrantId::parse(&old.id).unwrap(), Path::new(""), 100)
-        .is_ok());
+    assert_eq!(
+        state
+            .lookup("main", &fixture.path("work/doc.md"))
+            .unwrap()
+            .unwrap()
+            .id,
+        old.id
+    );
 }
+
 #[cfg(unix)]
 #[test]
 fn read_and_list_follow_pinned_workspaces_after_parent_replacement() {

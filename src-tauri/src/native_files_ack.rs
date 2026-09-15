@@ -90,6 +90,16 @@ impl NativeState {
             self.finish_transfer(id, Err("transfer_window_closed".into()));
             return Err("transfer_window_closed".into());
         }
+        // A native reselection can retain a different directory at the same
+        // textual path. Never acknowledge delivery through that replacement.
+        if success
+            && !self
+                .resolve_owned_path(target, &entry.payload.file_path, false)
+                .is_ok_and(|(grant, relative)| grant == entry.copy.id && relative.is_empty())
+        {
+            self.finish_transfer(id, Err("transfer_grant_changed".into()));
+            return Err("transfer_grant_changed".into());
+        }
         self.finish_transfer(
             id,
             if success {
@@ -181,3 +191,7 @@ pub(crate) fn native_ack_tab_transfer(
 #[cfg(test)]
 #[path = "native_files_ack_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "native_files_save_metadata_tests.rs"]
+mod save_metadata_tests;

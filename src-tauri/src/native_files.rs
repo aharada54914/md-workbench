@@ -43,6 +43,8 @@ struct NativeState {
     building: HashSet<String>,
     transfers: Vec<ack::PendingTransfer>,
     owned: HashMap<(String, String), GrantInfo>,
+    // Save destinations must not replace the retained READ binding for an alias.
+    save_exports: HashMap<(String, String), GrantInfo>,
     // Only OS ingress adds these capabilities; a path lookup cannot populate it.
     pending: HashMap<String, HeldGrant>,
     distributed: HashSet<(String, String)>,
@@ -89,25 +91,32 @@ impl NativeState {
         self.windows.remove(label);
         self.building.remove(label);
         self.owned.retain(|(owner, _), _| owner != label);
+        self.save_exports.retain(|(owner, _), _| owner != label);
         self.access.revoke_window(label);
         self.distributed.retain(|(owner, _)| owner != label);
         // Pending native ingress owns its original anchor independently.
     }
     fn remember(&mut self, label: &str, requested: &Path, info: GrantInfo) -> NativeGrant {
         let result = NativeGrant::from(&info);
-        self.owned.insert(
+        let metadata = if info.kind == GrantKind::Export {
+            &mut self.save_exports
+        } else {
+            &mut self.owned
+        };
+        metadata.insert(
             (label.to_owned(), requested.to_string_lossy().into_owned()),
             info.clone(),
         );
-        self.owned
-            .insert((label.to_owned(), result.path.clone()), info);
+        metadata.insert((label.to_owned(), result.path.clone()), info);
         result
     }
     fn lookup(&self, label: &str, path: &str) -> Result<Option<NativeGrant>, String> {
         self.generation(label)?;
+        let key = (label.to_owned(), path.to_owned());
         Ok(self
             .owned
-            .get(&(label.to_owned(), path.to_owned()))
+            .get(&key)
+            .or_else(|| self.save_exports.get(&key))
             .map(NativeGrant::from))
     }
     fn select(

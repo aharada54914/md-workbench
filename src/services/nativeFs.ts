@@ -17,6 +17,7 @@ export interface NativeFsError {
     | 'invalid_grant_kind'
     | 'unsupported_platform'
     | 'file_too_large'
+    | 'file_not_found'
     | 'native_state_unavailable'
     | 'dialog_unavailable'
     | 'filesystem_error';

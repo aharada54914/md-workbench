@@ -97,6 +97,9 @@ impl std::fmt::Display for AccessError {
             Self::InvalidKind => f.write_str("invalid_grant_kind"),
             Self::UnsupportedPlatform => f.write_str("unsupported_platform"),
             Self::TooLarge => f.write_str("file_too_large"),
+            Self::Io(error) if error.kind() == io::ErrorKind::NotFound => {
+                f.write_str("file_not_found")
+            }
             Self::Io(error) => write!(f, "filesystem: {error}"),
         }
     }

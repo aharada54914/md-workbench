@@ -135,10 +135,27 @@ by the existing memory-backed custom protocol without custom IPC.
 | `read_workspace_tree({root})` | Existing `WorkspaceNode` tree (`name`, `path`, `kind`, `children`, `modified`). | Caller-owned Workspace READ only; typed errors, bounded retained-handle traversal. |
 | `native_list_directory({path, limit})` | `{entries: {name, isDirectory}[], omitted}` | Direct children of an owned Workspace READ root or subdirectory; at most 10000 scanned entries. |
 
+Grant metadata retains the latest non-Save selection per caller and native alias,
+with Save/Export destinations stored separately. `native_get_grant` prefers the
+non-Save entry and falls back to an Export entry only when no non-Save entry
+exists. This changes the previous last-selection behavior: Document → Save now
+returns Document metadata. Save callers must use the Export UUID returned by the
+Save picker. Save selection cannot hide an existing READ binding, supply READ,
+or combine its WRITE rights with another grant. A later Document/Resource
+selection still replaces the current non-Save binding; old grant history is not
+searched. Equal path strings may refer to different retained directories after
+native reselection. Window revocation removes both metadata sets.
+
 Commands reject `{code, message}`. Branch on `code`, one of
 `permission_required`, `invalid_path`, `invalid_grant_kind`,
-`unsupported_platform`, `file_too_large`, `native_state_unavailable`,
+`unsupported_platform`, `file_too_large`, `file_not_found`, `native_state_unavailable`,
 `dialog_unavailable`, `filesystem_error`. `message` is diagnostic text.
+`file_not_found` reflects the OS NotFound error, not a parsed diagnostic string.
+Read operations validate ownership before opening a file: an unowned missing path
+still returns `permission_required`. Permission, decoding and other I/O failures
+must not be interpreted as deletion. An exact-file grant retains its parent and
+leaf name, so a normal atomic replacement or delete/recreate in that same parent
+is read using the existing grant; it does not pin the original file contents.
 There is no create/overwrite/rename/delete IPC in this stage.
 
 Path read/list commands run on a blocking worker and revalidate the captured
@@ -200,12 +217,11 @@ handle. Host-only directory metadata additions do not change `native_list_direct
 JSON shape. Create, search, reveal, save and broad plugin permissions remain separate
 migration work; this step does not complete the filesystem security issue.
 
-**Current save integration constraint:** metadata lookup stores the latest grant
-per native alias. Selecting the same exact path with the Save picker can replace
-visible Document READ metadata with Export WRITE metadata, while an older READ UUID
-still exists in the core. Path reads reject with `permission_required` when no
-other visible READ authority covers the path; they do not revive that older UUID.
-Purpose-specific save lookup must address this before migrating the save flow.
+**Save integration boundary:** Save/Export metadata is separate from the current
+Document/Resource/Workspace binding, so selecting a destination cannot interrupt
+READ or transfer. Future Save operations must use the selected Export UUID; equal
+path text does not mean its retained directory matches the document's READ grant.
+Actual save/overwrite IPC migration remains separate work.
 
 CLI, second instance and macOS Opened capture Document READ_WRITE anchors in a
 host-only pending map. The existing ordered queue and getters remain compatible.
@@ -257,15 +273,20 @@ lookup. Target code acknowledges after the open result is known; it must not
 acknowledge a cancelled, denied or failed read as success. Window command errors
 remain strings: `permission_required`, `transfer_not_found`, `transfer_open_failed`,
 `transfer_timeout`, `transfer_window_closed`, `transfer_cancelled`,
-`transfer_in_progress`, or diagnostic
-native errors. An expired/already acknowledged UUID cannot be acknowledged again.
+`transfer_grant_changed`, `transfer_in_progress`, or diagnostic native errors. An expired/already acknowledged UUID cannot be acknowledged again.
 
 Only one transfer to the same target and canonical document may be pending. A
 duplicate, including a native selection alias, rejects with `transfer_in_progress`
 without modifying the first transfer or existing target metadata.
 
 One host lock decides acknowledgement, timeout and destruction. If a successful
-ACK wins that lock as the timer fires, the waiting sender receives success. Failed
+ACK wins that lock as the timer fires, the waiting sender receives success.
+Success ACK also requires the current target path READ binding to resolve to the copied UUID. A native
+Document/Resource reselection that supersedes it rejects with
+`transfer_grant_changed`, retains the source, and preserves the newer target
+selection through rollback. Save selection does not supersede READ and therefore
+does not cause this rejection. This is conservative: a superseded binding is
+rejected even if the target previously read the copied grant successfully. Failed
 transfers roll back only their capability and nonce-owned temporary routing entry;
 concurrent normal registrations and other pending transfers remain intact. A later
 native selection cannot be erased by a delayed rollback. Cancelling the invoke

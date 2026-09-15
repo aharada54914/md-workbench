@@ -15,6 +15,7 @@ impl From<String> for NativeCommandError {
             "invalid_grant_kind" => "invalid_grant_kind",
             "unsupported_platform" => "unsupported_platform",
             "file_too_large" => "file_too_large",
+            "file_not_found" => "file_not_found",
             "native_state_unavailable" => "native_state_unavailable",
             "dialog_unavailable" => "dialog_unavailable",
             _ => "filesystem_error",

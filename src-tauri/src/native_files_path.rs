@@ -85,10 +85,8 @@ impl NativeState {
                 return Ok((info.id, String::new()));
             }
         }
-        // NativeState intentionally indexes the latest metadata per alias. A
-        // later WRITE-only Save selection can hide an older READ grant. Reject
-        // rather than resurrect old IDs or recanonicalize; purpose-specific save
-        // lookup must address this before migrating that flow.
+        // Only current non-Save metadata participates. Older grant IDs are not
+        // searched, and separate WRITE-only Save destinations cannot supply READ.
         let candidate = owned
             .iter()
             .filter(|(_, info)| info.kind == GrantKind::Workspace)
@@ -187,3 +185,7 @@ pub(crate) async fn native_list_directory(
 #[cfg(test)]
 #[path = "native_files_path_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "native_files_read_lifecycle_tests.rs"]
+mod read_lifecycle_tests;
